@@ -4,14 +4,14 @@
     "type": "project",
     "license": "AGPL-3.0-or-later",
     "require": {
-        "php": ">=8.1",
-        "gemorroj/m3u-parser": "6.0.1",
+        "php": ">=8.3",
+        "gemorroj/m3u-parser": "6.2.0",
         "chrisyue/php-m3u8": "^4",
         "mobiledetect/mobiledetectlib": "^4.9",
         "geoip2/geoip2": "~3.0"
     },
     "require-dev": {
-        "phpstan/phpstan": "2.2.16",
+        "phpstan/phpstan": "2.3.5",
         "squizlabs/php_codesniffer": "^3.10",
         "slevomat/coding-standard": "^8.15",
         "tomasvotruba/unused-public": "^2.2",
@@ -28,11 +28,12 @@
     "config": {
         "optimize-autoloader": false,
         "classmap-authoritative": false,
+        "platform-check": false,
         "allow-plugins": {
             "dealerdirect/phpcodesniffer-composer-installer": true
         },
         "platform": {
-            "php": "8.1.33"
+            "php": "8.3.36"
         }
     },
     "scripts": {

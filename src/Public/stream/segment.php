@@ -5,6 +5,7 @@ use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Util\Encryption;
+use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\AsyncFileOperations;
 use XcVm\Streaming\Codec\FfmpegPaths;
@@ -70,21 +71,34 @@ if (isset($_GET['token'])) {
 
 	if (6 > count($rTokenArray)) {
 	} else {
-		if ($rTokenArray[0] == 'TS') {
+		// A catch-up link begins with TS and has its start in the sixth field. A
+		// live link has the viewer's connection id there, and a line may be named TS.
+		$rArchive = $rTokenArray[0] == 'TS' && !preg_match('/^[0-9a-f]{32}\z/', $rTokenArray[5]);
+
+		if ($rArchive) {
+			// A catch-up link has nine fields, each read by its position: no more, no fewer.
+			if (count($rTokenArray) != 9) {
+				generate404();
+			}
+
 			$rServerID = $rTokenArray[8];
 		} else {
 			$rServerID = $rTokenArray[6];
 		}
 
 		if ($rServerID == SERVER_ID) {
-			if ($rTokenArray[0] == 'TS') {
+			if ($rArchive) {
 				$rType = 'ARCHIVE';
 				list(, $rUsername, $rPassword, $rUserIP, $rDuration, $rStartDate, $rSegmentData, $rUUID) = $rTokenArray;
 				list($rStreamID, $rSegmentID, $rOffset) = explode('_', $rSegmentData);
 				$rStreamID = intval($rStreamID);
 				$rSegment = ARCHIVE_PATH . $rStreamID . '/' . $rSegmentID;
 
-				if (!file_exists($rSegment)) {
+				// Only a recorded minute (the name ArchiveCommand gives it) is served,
+				// and only to a viewer whose marker a connection id names. The path is
+				// an integer id and that name, checked before the file is looked at.
+				// nosemgrep: php.lang.security.injection.tainted-filename.tainted-filename
+				if (!preg_match('/^\d{4}-\d{2}-\d{2}:\d{2}-\d{2}\.ts\z/', (string) $rSegmentID) || !preg_match('/^[0-9a-f]{32}\z/', $rUUID) || !file_exists($rSegment)) {
 					generate404();
 				}
 			} else {
@@ -116,7 +130,7 @@ if (isset($_GET['token'])) {
 					if (FanoutMode::legacyDelivery($rSettings) || !file_exists(CONS_TMP_PATH . $rUUID)) {
 						generate404();
 					}
-					$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rUserIP), 0, -1)) == implode('.', array_slice(explode('.', getuserip()), 0, -1)) : $rUserIP == getuserip());
+					$rIPMatch = NetworkUtils::ipMatches((bool) $rSettings['ip_subnet_match'], $rUserIP, getuserip());
 					if (!($rIPMatch || !$rSettings['restrict_same_ip'])) {
 						generate404();
 					}
@@ -149,13 +163,20 @@ if (isset($_GET['token'])) {
 				generate404();
 			}
 
+			// Before the viewer is heard: a request refused for its address touches nothing.
+			$rIPMatch = NetworkUtils::ipMatches((bool) $rSettings['ip_subnet_match'], $rUserIP, getuserip());
+
+			if (!$rIPMatch && $rSettings['restrict_same_ip']) {
+				generate404();
+			}
+
 			// A timeshift playlist is one whole VOD list, asked for once: its
 			// segments keep the viewer heard, or the sweep's 30 s rule ends it
 			// mid-programme. One ended since (the limiter, an admin) gets no more;
 			// a store that cannot be asked does not stop the playback.
 			if ($rType == 'ARCHIVE') {
 				try {
-					$rHeard = ConnectionTracker::heartbeat($rSettings, $rUUID, time() - intval($rServers[SERVER_ID]['time_offset']));
+					$rHeard = ConnectionTracker::heartbeat($rSettings, $rUUID, time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0));
 				} catch (\Throwable) {
 					$rHeard = null;
 				}
@@ -165,11 +186,6 @@ if (isset($_GET['token'])) {
 			}
 
 			$rFilesize = filesize($rSegment);
-			$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rUserIP), 0, -1)) == implode('.', array_slice(explode('.', getuserip()), 0, -1)) : $rUserIP == getuserip());
-
-			if (!$rIPMatch && $rSettings['restrict_same_ip']) {
-				generate404();
-			}
 
 			header('Access-Control-Allow-Origin: *');
 			$rExtension = pathinfo($rSegment, PATHINFO_EXTENSION);

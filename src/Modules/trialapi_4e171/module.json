@@ -1,0 +1,13 @@
+{
+    "name": "trialapi",
+    "hash_id": "4e1717fae5d611cd5c72613c172d7991",
+    "description": "API REST pour gestion des trials",
+    "version": "1.0.0",
+    "requires_core": ">=2.0",
+    "environment": "any",
+    "dependencies": [],
+    "optional_dependencies": [],
+    "has_navbar": false,
+    "has_settings": false,
+    "priority": 100
+}

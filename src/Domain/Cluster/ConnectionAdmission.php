@@ -5,6 +5,8 @@ namespace XcVm\Domain\Cluster;
 use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\StoredConnections;
 use XcVm\Core\Cluster\StrictQuery;
+use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Config\StreamSecret;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Redis\RedisManager;
@@ -12,8 +14,8 @@ use XcVm\Streaming\Protection\ConnectionLimiter;
 
 /**
  * Admission when MAIN mints a stream token (plan, Phase 6, "Global
- * max_connections and kills"): the line's limit is applied before the viewer
- * reaches a node, instead of a second after it opened there.
+ * max_connections and kills"): reserve the viewer at mint and queue the
+ * line's limit check for MAIN's signals loop, as conn_admit does.
  *
  * It applies to targets whose agent holds the viewers (the node that records
  * the connection, the originator behind a proxy, is active in mode ≥ 1 with
@@ -31,8 +33,8 @@ use XcVm\Streaming\Protection\ConnectionLimiter;
  *      by the uuid.
  * 2. The identity's open connections are cut, in ConnectionLimiter's order
  *    (the requesting device first, oldest first), to leave room for this
- *    viewer and the other reservations. The viewer is never evicted: it is not
- *    open yet. Evictions on CONNECTIONS nodes go out as conn.close / conn.drop
+ *    viewer and the other reservations. The queued check protects the viewer
+ *    if it has already opened. Evictions on CONNECTIONS nodes go out as conn.close / conn.drop
  *    commands, as every close MAIN makes does.
  * 3. The token carries the admission as its `adm` claim {exp, sid}: when the
  *    reservation expires (MAIN's unix seconds) and the node it was made for.
@@ -106,7 +108,252 @@ LUA;
 		if ($rClaim !== null) {
 			$rTokenData['adm'] = $rClaim;
 		}
+		$rProof = self::mintProof($rSettings, $rTokenData);
+		if ($rProof !== null) {
+			$rTokenData['prf'] = $rProof;
+		}
 		return $rTokenData;
+	}
+
+	/** The proof key's label: HMAC-SHA256(live_streaming_pass, this). */
+	public const PROOF_LABEL = 'xc_vm mint proof v1';
+
+	/** The setting that says what MAIN does with a record that proves no mint: `observe` (the default) or `enforce`. */
+	public const BINDING = 'cluster_conn_binding';
+
+	/** A record's `mint` (`<uuid>.<iat>.<p>`), as the node's PHP writes it (ConnectionTracker::openRecord). */
+	private const MINT = '/^(' . AgentConnections::CONN_UUID_CHARS . ')\.(\d{1,12})\.([0-9a-f]{32})\z/';
+
+	/**
+	 * The proof of a mint (ADR 0004, "The line a node names", B): the first
+	 * 16 bytes, as hex, of HMAC-SHA256 under the proof key over the token's
+	 * uuid, the node that records the viewer, the time of the mint and the
+	 * identity (StoredConnections::identity), the identity last so that no
+	 * other split of the fields gives the same message. The key is derived
+	 * from the stream secret and stored nowhere; a node that is not sent the
+	 * secret cannot make one.
+	 */
+	public static function proof(string $rSecret, string $rUUID, string $rIdentity, int $rServerID, int $rIat): string {
+		$rKey = hash_hmac('sha256', self::PROOF_LABEL, $rSecret, true);
+		return substr(hash_hmac('sha256', $rUUID . '|' . $rServerID . '|' . $rIat . '|' . $rIdentity, $rKey), 0, 32);
+	}
+
+	/**
+	 * The `prf` {iat, p} of a viewer token MAIN mints for a node, so that the
+	 * node's record of the viewer can show MAIN minted it for that identity.
+	 * Null without the cluster API, a secret, a uuid, a node or an identity.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @param array<string, mixed> $rTokenData
+	 * @return array{iat: int, p: string}|null
+	 */
+	private static function mintProof(array $rSettings, array $rTokenData): ?array {
+		$rSecret = (string) ($rSettings['live_streaming_pass'] ?? '');
+		$rUUID = (string) ($rTokenData['uuid'] ?? '');
+		$rNode = self::nodeOf($rTokenData);
+		$rHMAC = (int) ($rTokenData['hmac_id'] ?? 0);
+		$rLineID = (int) ((is_array($rTokenData['user_info'] ?? null) ? $rTokenData['user_info'] : [])['id'] ?? 0);
+		if (empty($rSettings['cluster_api_enabled']) || $rSecret === '' || $rNode <= 0 || !preg_match(AgentConnections::CONN_UUID, $rUUID) || ($rHMAC === 0 && $rLineID === 0)) {
+			return null;
+		}
+		// The identity the node records the viewer under (ConnectionTracker::createLive).
+		$rIdentity = StoredConnections::identity($rHMAC !== 0 ? ['hmac_id' => $rHMAC, 'hmac_identifier' => (string) ($rTokenData['identifier'] ?? '')] : ['user_id' => $rLineID]);
+		$rIat = self::now();
+		return ['iat' => $rIat, 'p' => self::proof($rSecret, $rUUID, $rIdentity, $rNode, $rIat)];
+	}
+
+	/**
+	 * A record's or a conn_admit's `mint`: its age in seconds when it proves a
+	 * mint for $rIdentity and node $rServerID, under the stream secret or the
+	 * one it replaced while that is still accepted, and is no older than
+	 * $rMaxAge (null: any age). Null otherwise.
+	 */
+	public static function verifyMint(mixed $rMint, string $rIdentity, int $rServerID, ?int $rMaxAge = null): ?int {
+		if (!is_string($rMint) || !preg_match(self::MINT, $rMint, $rM)) {
+			return null;
+		}
+		$rAge = self::now() - (int) $rM[2];
+		if ($rAge < -60 || ($rMaxAge !== null && $rAge > $rMaxAge)) {
+			return null;
+		}
+		foreach ([(string) SettingsManager::get('live_streaming_pass'), StreamSecret::previousEntry()['value'] ?? null] as $rSecret) {
+			if (is_string($rSecret) && $rSecret !== '' && hash_equals(self::proof($rSecret, $rM[1], $rIdentity, $rServerID, (int) $rM[2]), $rM[3])) {
+				return max(0, $rAge);
+			}
+		}
+		return null;
+	}
+
+	/** @var array<int, array{0: bool, 1: int}> server id => [proven for its enrolment, when read] */
+	private static array $rProven = [];
+
+	/** @var array<int, array{0: bool, 1: int}> server id => [its records are refused without a proof, when read] (enforces()) */
+	private static array $rEnforced = [];
+
+	/**
+	 * @var array<int, array{unproven: int, admit_unproven: int, proven: int, age_max: int, mark: bool, close: list<string>}>
+	 *      what this request noted per node, written at its end (flushBinding)
+	 */
+	private static array $rNoted = [];
+
+	private static bool $rAtExit = false;
+
+	/** @var (callable(int, string): mixed)|null */
+	private static $rCloser = null;
+
+	private static ?string $rBindingDir = null;
+
+	/**
+	 * Is a record that proves no mint refused for node $rServerID? Under
+	 * `enforce`, for a node whose stream secret MAIN withholds (mode 2, the
+	 * cluster locked down, the node on its own viewer key:
+	 * ReplicaBuilder::withholdsStreamPass()): only such a node cannot derive
+	 * the proof's key, and whether it is one is MAIN's to say, not the node's.
+	 * A node that holds the secret could forge a proof, so it is handled as
+	 * under `observe`. Whether a node has sent proofs (proved()) is shown, and
+	 * decides nothing. A read that fails throws (the batch is not applied).
+	 */
+	public static function enforces(int $rServerID): bool {
+		if (SettingsManager::get(self::BINDING) !== 'enforce') {
+			return false;
+		}
+		$rNow = time();
+		if (!isset(self::$rEnforced[$rServerID]) || $rNow - self::$rEnforced[$rServerID][1] >= 60) {
+			$rDb = self::db();
+			StrictQuery::orThrow($rDb, 'db', 'SELECT `mode` FROM `cluster_nodes` WHERE `server_id` = ?;', $rServerID);
+			$rRow = $rDb->num_rows() > 0 ? $rDb->get_row() : null;
+			$rWithheld = is_array($rRow) && ReplicaBuilder::withholdsStreamPass(['mode' => (int) $rRow['mode'], 'server_id' => $rServerID], (string) SettingsManager::get('live_streaming_pass'));
+			self::$rEnforced[$rServerID] = [$rWithheld, $rNow];
+		}
+		return self::$rEnforced[$rServerID][0];
+	}
+
+	/** A record of node $rServerID proved its mint, $rAge seconds old: counted, and the node marked as proving. */
+	public static function proved(int $rServerID, int $rAge): void {
+		$rNote = &self::note($rServerID);
+		$rNote['proven']++;
+		$rNote['age_max'] = max($rNote['age_max'], $rAge);
+		if (!(self::$rProven[$rServerID][0] ?? false)) {
+			$rNote['mark'] = true;
+		}
+	}
+
+	/**
+	 * A record of node $rServerID that first entered MAIN's store without a
+	 * proof (a conn_admit without one when $rAdmit), counted. $rDropUUID: the
+	 * record was refused, and the node's registry is told to drop it
+	 * (`conn.close {uuid, remove: true}`, no kill).
+	 */
+	public static function unproven(int $rServerID, bool $rAdmit = false, ?string $rDropUUID = null): void {
+		$rNote = &self::note($rServerID);
+		$rNote[$rAdmit ? 'admit_unproven' : 'unproven']++;
+		if ($rDropUUID !== null) {
+			$rNote['close'][] = $rDropUUID;
+		}
+	}
+
+	/** @return array{unproven: int, admit_unproven: int, proven: int, age_max: int, mark: bool, close: list<string>} */
+	private static function &note(int $rServerID): array {
+		if (!self::$rAtExit) {
+			self::$rAtExit = true;
+			register_shutdown_function([self::class, 'flushBinding']);
+		}
+		self::$rNoted[$rServerID] ??= ['unproven' => 0, 'admit_unproven' => 0, 'proven' => 0, 'age_max' => 0, 'mark' => false, 'close' => []];
+		return self::$rNoted[$rServerID];
+	}
+
+	/**
+	 * Write what this request noted, at its end: outside an events batch's
+	 * transaction, whose statements must not fail unseen (EventIngest). Per
+	 * node: the mark that it proves, the closes of the records refused, and
+	 * the counts of the day (TMP_PATH/cluster_binding/<server id>.json),
+	 * with one `conn.unproven` audit line at most a minute when the minute
+	 * saw records or conn_admits without a proof. Never throws.
+	 */
+	public static function flushBinding(): void {
+		$rNoted = self::$rNoted;
+		self::$rNoted = [];
+		foreach ($rNoted as $rServerID => $rNote) {
+			try {
+				if ($rNote['mark']) {
+					self::db()->query('INSERT INTO `cluster_meta` (`name`, `value`, `updated_at`) SELECT ?, `gen`, ? FROM `cluster_nodes` WHERE `server_id` = ? ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), `updated_at` = VALUES(`updated_at`);', 'conn_proven.' . $rServerID, self::now(), $rServerID);
+					unset(self::$rProven[$rServerID]);
+				}
+				foreach (array_unique($rNote['close']) as $rUUID) {
+					self::$rCloser !== null ? (self::$rCloser)($rServerID, $rUUID) : ClusterRoute::closeConnection($rServerID, $rUUID, true);
+				}
+				self::count($rServerID, $rNote);
+			} catch (\Throwable) {
+				// Counted again from the next record: the node's digest asks for a
+				// snapshot while a refused record is still in its registry.
+			}
+		}
+	}
+
+	/** @param array{unproven: int, admit_unproven: int, proven: int, age_max: int} $rNote */
+	private static function count(int $rServerID, array $rNote): void {
+		$rDir = self::bindingDir();
+		if (!is_dir($rDir) && !@mkdir($rDir, 0750, true) && !is_dir($rDir)) {
+			return;
+		}
+		$rFile = @fopen($rDir . $rServerID . '.json', 'c+');
+		if ($rFile === false) {
+			return;
+		}
+		try {
+			flock($rFile, LOCK_EX);
+			$rNow = self::now();
+			$rDay = gmdate('Y-m-d', $rNow);
+			$rZero = ['unproven' => 0, 'admit_unproven' => 0, 'proven' => 0, 'age_max' => 0];
+			$rDoc = json_decode((string) stream_get_contents($rFile), true);
+			if (!is_array($rDoc) || ($rDoc['day'] ?? null) !== $rDay) {
+				$rDoc = ['day' => $rDay, 'logged_at' => $rDoc['logged_at'] ?? 0, 'since' => $rDoc['since'] ?? $rZero] + $rZero;
+			}
+			foreach (['unproven', 'admit_unproven', 'proven'] as $rKey) {
+				$rDoc[$rKey] += $rNote[$rKey];
+				$rDoc['since'][$rKey] += $rNote[$rKey];
+			}
+			$rDoc['age_max'] = max($rDoc['age_max'], $rNote['age_max']);
+			$rDoc['since']['age_max'] = max($rDoc['since']['age_max'], $rNote['age_max']);
+			if ($rNow - (int) $rDoc['logged_at'] >= 60) {
+				if ($rDoc['since']['unproven'] + $rDoc['since']['admit_unproven'] > 0) {
+					ClusterAudit::log('conn.unproven', $rServerID, $rDoc['since'] + ['mode' => SettingsManager::get(self::BINDING) === 'enforce' ? 'enforce' : 'observe'], 'node');
+				}
+				$rDoc['since'] = $rZero;
+				$rDoc['logged_at'] = $rNow;
+			}
+			ftruncate($rFile, 0);
+			rewind($rFile);
+			fwrite($rFile, (string) json_encode($rDoc));
+		} finally {
+			flock($rFile, LOCK_UN);
+			fclose($rFile);
+		}
+	}
+
+	/**
+	 * Node $rServerID's counts of the day (the Cluster Nodes page): records
+	 * that first entered MAIN's store without a proof, conn_admits without
+	 * one, records that proved, and the oldest proof verified (seconds).
+	 *
+	 * @return array{day: string, unproven: int, admit_unproven: int, proven: int, age_max: int}|null
+	 */
+	public static function bindingCounts(int $rServerID): ?array {
+		$rDoc = json_decode((string) @file_get_contents(self::bindingDir() . $rServerID . '.json'), true);
+		return is_array($rDoc) && ($rDoc['day'] ?? null) === gmdate('Y-m-d', self::now()) ? array_intersect_key($rDoc, array_flip(['day', 'unproven', 'admit_unproven', 'proven', 'age_max'])) : null;
+	}
+
+	private static function bindingDir(): string {
+		return self::$rBindingDir ?? ((defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_binding/');
+	}
+
+	/** Tests: the close a refused record queues, and the counts' directory; null restores the defaults. */
+	public static function useBinding(?callable $rCloser, ?string $rDir = null): void {
+		self::$rCloser = $rCloser;
+		self::$rBindingDir = $rDir;
+		self::$rProven = [];
+		self::$rEnforced = [];
+		self::$rNoted = [];
 	}
 
 	/**
@@ -155,7 +402,16 @@ LUA;
 			// Room left for open connections: the limit, less this viewer and
 			// the others still on their way to a node.
 			$rRoom = max(0, $rMax - $rOthers - 1);
-			self::enforce($rHMAC !== 0 ? null : $rLineID, (int) ($rUser['pair_id'] ?? 0), $rRoom, $rHMAC !== 0 ? $rHMAC : null, $rIdentifier, $rIP, $rUserAgent, $rUUID);
+			// As for conn_admit, let the signals loop perform a line's cut.
+			// Closing a large stale set inside every concurrent viewer login
+			// amplifies the same kill commands and holds a MySQL handle for
+			// the entire sweep. The queued cut counts current reservations.
+			$rQueued = $rHMAC === 0 && ($rTokenData['extension'] ?? '') !== 'm3u8' && ConnectionLimits::queueAdmission($rNode, $rUUID, $rLineID, (string) $rIP, (string) $rUserAgent, self::now() + $rTtl);
+			if (!$rQueued) {
+				// HLS uses a different playlist UUID from the reservation UUID:
+				// keep its existing cut, as well as HMACs and a stopped/full queue.
+				self::enforce($rHMAC !== 0 ? null : $rLineID, (int) ($rUser['pair_id'] ?? 0), $rRoom, $rHMAC !== 0 ? $rHMAC : null, $rIdentifier, $rIP, $rUserAgent, $rUUID);
+			}
 			if ($rHls) {
 				self::makeWay($rSettings, $rNode, $rHMAC !== 0 ? $rHMAC : null, $rIdentifier, $rLineID, $rStreamID, (string) $rIP, (string) $rUserAgent);
 			}
@@ -230,7 +486,7 @@ LUA;
 	 * cuts it.
 	 *
 	 * @param array<string, mixed> $rSettings
-	 * @param array<string, mixed> $rRequest {uuid, line_id | hmac_id + identifier, stream_id, ip, ua}
+	 * @param array<string, mixed> $rRequest {uuid, line_id | hmac_id + identifier, stream_id, ip, ua, mint?}
 	 * @return array{admit: bool, exp: int, reason?: string}|null null for a malformed request
 	 */
 	public static function forNode(array $rSettings, int $rServerID, array $rRequest): ?array {
@@ -274,7 +530,16 @@ LUA;
 			$rMax = null;
 		}
 		$rTtl = self::ttl($rSettings);
-		if ($rMax === null || $rMax > 0) {
+		// The token's proof of its mint, which a newer agent copies from the
+		// register (`mint`): no older than the token's life plus PAD_SEC, for
+		// this identity and node. Without it, under `enforce` on a node that
+		// proves its records, the viewer is admitted with no reservation and no
+		// cut (the node's word names the line): its conn.limit follows the open.
+		$rMinted = self::verifyMint($rRequest['mint'] ?? null, $rIdentity, $rServerID, $rTtl) !== null;
+		if (!$rMinted) {
+			self::unproven($rServerID, true);
+		}
+		if (($rMax === null || $rMax > 0) && ($rMinted || !self::enforces($rServerID))) {
 			try {
 				$rReserved = self::reserve(!empty($rSettings['redis_handler']), $rIdentity, $rUUID, $rTtl, $rServerID, $rStreamID) !== null;
 			} catch (\Throwable) {
@@ -282,7 +547,7 @@ LUA;
 			}
 			// The cut counts the reservations in flight when it runs (cut()).
 			if ($rReserved && $rIsLine) {
-				ConnectionLimits::queueAdmission($rServerID, $rUUID, (int) $rLineID, $rIP, $rUserAgent);
+				ConnectionLimits::queueAdmission($rServerID, $rUUID, (int) $rLineID, $rIP, $rUserAgent, self::now() + $rTtl);
 			}
 		}
 		return ['admit' => true, 'exp' => self::now() + $rTtl];
@@ -298,8 +563,16 @@ LUA;
 	 * meanwhile is already counted among the open ones, so it takes no room
 	 * of its own; it is never cut. A store that cannot be read cuts nothing,
 	 * as at mint: conn.limit follows the open.
+	 *
+	 * A viewer that has not opened by $rExp, when its reservation runs out,
+	 * never will on this admission: there is no one to leave room for, and a
+	 * cut run late (a queue behind) would close a viewer of the line to keep a
+	 * place nobody takes. Null: the caller knows no expiry.
 	 */
-	public static function cut(bool $rRedisMode, int $rLineID, bool $rOpen, string $rIP, string $rUserAgent, string $rUUID): bool {
+	public static function cut(bool $rRedisMode, int $rLineID, bool $rOpen, string $rIP, string $rUserAgent, string $rUUID, ?int $rExp = null): bool {
+		if (!$rOpen && $rExp !== null && $rExp < self::now()) {
+			return false;
+		}
 		$rDb = self::db();
 		$rDb->query('SELECT `max_connections`, `pair_id` FROM `lines` WHERE `id` = ?;', $rLineID);
 		if ($rDb->num_rows() !== 1) {

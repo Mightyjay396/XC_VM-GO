@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Epg;
 
+use InvalidArgumentException;
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
@@ -29,18 +30,66 @@ class EpgService {
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
 	public static function process(array $rData) {
+		return EpgConfiguration::locked(static fn() => self::processLocked($rData));
+	}
+
+	private static function processLocked(array $rData) {
 		$db = self::db();
+		unset($rData['merge_config'], $rData['merge_status']);
+		if (isset($rData['edit']) && intval($rData['edit']) === CreatedChannelEpg::reservedSourceId()) {
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
+		}
 		if (isset($rData['edit'])) {
 			if (!Authorization::check('adv', 'epg_edit')) {
 				exit();
 			}
-			$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
+			// The edit starts from the EPG source as stored: the row cleaner's
+			// escaping would be written back into every field not sent.
+			$db->query('SELECT * FROM `epg` WHERE `id` = ?;', intval($rData['edit']));
+			$rArray = AdminHelpers::overwriteData($db->get_raw_row(), $rData);
 		} else {
 			if (!Authorization::check('adv', 'add_epg')) {
 				exit();
 			}
 			$rArray = QueryHelper::verifyPostTable('epg', $rData);
 			unset($rArray['id']);
+		}
+
+		// The reserved created-channel source is identified by its name, and MySQL
+		// matches it case- and trailing-space-insensitively (utf8_unicode_ci). Refuse
+		// any create OR rename whose resulting name collides with it — on either path
+		// — so it cannot be duplicated, shadowed or unlinked. (The reserved row itself
+		// is already blocked from editing above.) strcasecmp+trim mirror the SQL match;
+		// exotic unicode-fold collisions remain possible but need the add_epg/epg_edit
+		// permission and cannot be reached by an ordinary user.
+		if (!empty(EpgMerge::config($rArray)['selection']) || str_starts_with(trim((string) ($rArray['epg_name'] ?? '')), EpgSelectionGuide::PREFIX) || strcasecmp(trim((string) ($rArray['epg_name'] ?? '')), CreatedChannelEpg::SOURCE_NAME) === 0) {
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
+		}
+
+		if (array_key_exists('merge_enabled', $rData)) {
+			$db->query('SELECT * FROM `epg`;');
+			$sources = array_column($db->get_raw_rows(), null, 'id');
+			$id = (int) ($rData['edit'] ?? 0);
+			foreach ($sources as $source) {
+				if (in_array($id, EpgMerge::config($source)['sources'] ?? [], true) && (!empty($rData['merge_enabled']) || empty($rArray['epg_file']))) {
+					return ['status' => STATUS_FAILURE, 'data' => $rData];
+				}
+			}
+			if ($id && (bool) EpgMerge::config($sources[$id]) !== !empty($rData['merge_enabled'])) {
+				$db->query('SELECT `id` FROM `streams` WHERE `epg_id` = ? LIMIT 1;', $id);
+				if ($db->num_rows() > 0) {
+					return ['status' => STATUS_FAILURE, 'data' => $rData];
+				}
+			}
+			try {
+				$rArray['merge_config'] = !empty($rData['merge_enabled']) ? json_encode(EpgMerge::fromForm($rData, $sources, $id)) : null;
+			} catch (InvalidArgumentException $e) {
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
+			}
+			if ($rArray['merge_config']) {
+				$rArray['epg_file'] = '';
+				$rArray['offset'] = 0;
+			}
 		}
 
 		$rPrepare = QueryHelper::prepareArray($rArray);
@@ -83,11 +132,14 @@ class EpgService {
 	 */
 	public static function findByName(string $rEPGName) {
 		$db = self::db();
-		$db->query('SELECT `id`, `data` FROM `epg`;');
+		$db->query('SELECT `id`, `data`, `merge_config` FROM `epg`;');
 
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				foreach (json_decode($rRow['data'], true) as $rChannelID => $rChannelData) {
+				if (!empty(EpgMerge::config($rRow)['selection'])) {
+					continue;
+				}
+				foreach (json_decode((string) ($rRow['data'] ?? ''), true) ?: [] as $rChannelID => $rChannelData) {
 					if ($rChannelID == $rEPGName) {
 						if (count($rChannelData['langs']) > 0) {
 							$rEPGLang = $rChannelData['langs'][0];
@@ -218,7 +270,10 @@ class EpgService {
 	public static function getAll() {
 		$db = self::db();
 		$rReturn = [];
-		$db->query('SELECT * FROM `epg` ORDER BY `id` ASC;');
+		// Hide the reserved created-channel source by id — the same identity the
+		// edit/delete gates use — so all three stay consistent (id 0 when the row
+		// is missing hides nothing, since no real source has id 0).
+		$db->query('SELECT * FROM `epg` WHERE `id` <> ? ORDER BY `id` ASC;', CreatedChannelEpg::reservedSourceId());
 
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
@@ -236,11 +291,23 @@ class EpgService {
 	 * @return bool True on success.
 	 */
 	public static function deleteEpgById(int $rID) {
+		return EpgConfiguration::locked(static fn() => self::deleteLocked($rID));
+	}
+
+	private static function deleteLocked(int $rID) {
 		$db = self::db();
 		$rEPG = self::getById($rID);
 
-		if (!$rEPG) {
+		if (!$rEPG || $rID === CreatedChannelEpg::reservedSourceId()) {
 			return false;
+		}
+
+		EpgSelectionGuide::cleanupUnused();
+		$db->query('SELECT * FROM `epg`;');
+		foreach ($db->get_raw_rows() as $source) {
+			if (in_array($rID, EpgMerge::config($source)['sources'] ?? [], true)) {
+				return false;
+			}
 		}
 
 		$db->query('SELECT `id` FROM `streams` WHERE `epg_id` = ?;', $rID);

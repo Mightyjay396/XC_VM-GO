@@ -4,6 +4,7 @@ namespace XcVm\Infrastructure\Bootstrap;
 
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\SessionManager;
+use XcVm\Core\Bootstrap\Stage\SessionStage;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
@@ -44,7 +45,7 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 		}
 
 		if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
-			session_start();
+			SessionStage::startSession();
 		}
 
 		// Expire session after timeout
@@ -147,7 +148,8 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 			}
 
 			$rPermissions = AuthRepository::getPermissions($rUserInfo['member_group_id']);
-			$rPermissions['advanced'] = json_decode($rPermissions['allowed_pages'], true);
+			// A group that stores no list lists no permissions (Authorization::check).
+			$rPermissions['advanced'] = json_decode((string) $rPermissions['allowed_pages'], true) ?: [];
 
 			if (!SessionManager::adminSessionValid($rUserInfo, $rPermissions, $rSettings)) {
 				unset($rUserInfo, $rPermissions);
@@ -167,8 +169,9 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 
 			$rServerError = false;
 
-			foreach ($rServers as $rServer) {
-				if (!$rServer['server_online'] && $rServer['enabled'] && $rServer['status'] != 3 && $rServer['status'] != 5) {
+			// Every streaming server, offline ones too: $rServers holds the online ones only.
+			foreach ($allServers as $rServer) {
+				if ((int) ($rServer['server_type'] ?? 0) === 0 && !$rServer['server_online'] && $rServer['enabled'] && $rServer['status'] != 3 && $rServer['status'] != 5) {
 					// phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- global consumed by legacy admin view templates
 					$rServerError = true;
 				}

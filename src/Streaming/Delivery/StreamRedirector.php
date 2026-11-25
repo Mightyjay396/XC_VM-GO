@@ -17,7 +17,11 @@ use XcVm\Domain\Stream\ConnectionTracker;
  */
 
 class StreamRedirector {
-	public static function redirectStream($rCached, $rSettings, $rServers, $rStreamID, $rExtension, $rUserInfo, $rCountryCode, $rUserISP = '', $rType = '') {
+	/**
+	 * @param int|null $rHere The server an RTMP viewer is connected to, which keeps it
+	 *                        when it can serve: this one, unless MAIN checks for a node (rtmp_auth).
+	 */
+	public static function redirectStream($rCached, $rSettings, $rServers, $rStreamID, $rExtension, $rUserInfo, $rCountryCode, $rUserISP = '', $rType = '', ?int $rHere = null) {
 		// The server map can arrive null during a transient cache rebuild; keep it an
 		// array so the array_key_exists()/foreach below neither fatal nor warn.
 		if (!is_array($rServers)) {
@@ -57,12 +61,18 @@ class StreamRedirector {
 							$rAvailableServers[] = $rServerID;
 						}
 					} else {
-						if (($rStreamServers[$rServerID]['on_demand'] == 1 && $rStreamServers[$rServerID]['stream_status'] != 1 || 0 < $rStreamServers[$rServerID]['pid'] && $rStreamServers[$rServerID]['stream_status'] == 0) && $rStreamServers[$rServerID]['to_analyze'] == 0 && (int) $rStreamServers[$rServerID]['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || $rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1) {
+						if (($rStreamServers[$rServerID]['on_demand'] == 1 || 0 < $rStreamServers[$rServerID]['pid'] && $rStreamServers[$rServerID]['stream_status'] == 0 || $rStreamServers[$rServerID]['stream_status'] == 2 && 0 < intval($rStreamServers[$rServerID]['monitor_pid'] ?? 0) /* od_live: 24/7 stream being restarted by its node */) && $rStreamServers[$rServerID]['to_analyze'] == 0 && (int) $rStreamServers[$rServerID]['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || $rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1) {
 							$rAvailableServers[] = $rServerID;
 						}
 					}
 				}
 			} else {
+				// A direct source is played from its own URL, which no RTMP server
+				// relays; and an RTMP check (rtmp.php, MAIN's rtmp_auth) has no
+				// player to send there.
+				if ($rExtension == 'rtmp') {
+					return false;
+				}
 				header('Location: ' . str_replace(' ', '%20', json_decode($rStream['info']['stream_source'], true)[0]));
 				exit();
 			}
@@ -73,7 +83,7 @@ class StreamRedirector {
 		}
 
 		shuffle($rAvailableServers);
-		$rServerCapacity = ConnectionTracker::getCapacity();
+		$rServerCapacity = ConnectionTracker::capacity();
 		$rAcceptServers = [];
 		foreach ($rAvailableServers as $rServerID) {
 			$rOnlineClients = (isset($rServerCapacity[$rServerID]['online_clients']) ? $rServerCapacity[$rServerID]['online_clients'] : 0);
@@ -93,8 +103,9 @@ class StreamRedirector {
 		$rValues = array_values($rAcceptServers);
 		array_multisort($rValues, SORT_ASC, $rKeys, SORT_ASC);
 		$rAcceptServers = array_combine($rKeys, $rValues);
-		if ($rExtension == 'rtmp' && array_key_exists(SERVER_ID, $rAcceptServers)) {
-			$rRedirectID = SERVER_ID;
+		$rHere ??= (int) SERVER_ID;
+		if ($rExtension == 'rtmp' && array_key_exists($rHere, $rAcceptServers)) {
+			$rRedirectID = $rHere;
 		} else {
 			if (isset($rUserInfo) && $rUserInfo['force_server_id'] != 0 && array_key_exists($rUserInfo['force_server_id'], $rAcceptServers)) {
 				$rRedirectID = $rUserInfo['force_server_id'];

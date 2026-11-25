@@ -4,6 +4,7 @@ namespace XcVm\Ministra;
 
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Logging\RefusalLog;
 use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\TimeUtils;
 
@@ -18,6 +19,25 @@ use XcVm\Core\Util\TimeUtils;
  */
 
 class PortalHandler {
+	/**
+	 * Canonical Stalker adult alias. The adult gate is the genre's "censored"
+	 * flag plus the alias "for adults": tv.js (check_for_play) only skips the
+	 * per-channel PIN when genre.alias === "for adults", so an adult category
+	 * shown under any other name makes the portal ask for the PIN a second
+	 * time, per channel — unusable on a remote without number keys. Only the
+	 * live-TV genre list uses this: audioclub, VOD (vclub) and series (sclub)
+	 * copy genre.alias into the request as a filter (audioclub.js category
+	 * param; vclub/sclub get_genres_by_category_alias), so there the alias must
+	 * stay the category name or the listing returns nothing. The per-stream
+	 * "lock" flag is left untouched, so adult channels under a non-censored
+	 * genre ("All") stay PIN-gated there.
+	 *
+	 * @param array<string, mixed> $rCategory
+	 */
+	public static function categoryAlias(array $rCategory, string $rNormal): string {
+		return intval($rCategory["is_adult"]) === 1 ? "for adults" : $rNormal;
+	}
+
 	/**
 	 * Phase 1: Pre-init stub responses (no DB needed).
 	 * Exits immediately if the action is handled, otherwise returns void.
@@ -144,6 +164,20 @@ class PortalHandler {
 
 		switch ($rReqAction) {
 			case "get_profile":
+				// A get_profile that does not verify the device is a failed attempt. The
+				// guard keeps what it counts as JSON keys: it gets a digest of the MAC,
+				// whatever bytes the request carried.
+				if (!$ctx["authenticated"]) {
+					// A serial guessed for a device with a bound one is counted with the MAC
+					// (portal.php): one known MAC tried with many serials is many attempts.
+					// MAGSCAN Settings still judge the MAC alone.
+					$rMac = is_string($ctx["mac"]) ? $ctx["mac"] : null;
+					$rAttempt = $rMac !== null && isset($ctx["serialAttempt"]) ? hash("sha256", $rMac . "\n" . $ctx["serialAttempt"]) : null;
+					BruteforceGuard::checkBruteforce($ctx["ip"], $rMac !== null ? hash("sha256", $rMac) : null, null, false, null, $rAttempt);
+					BruteforceGuard::checkFlood();
+					RefusalLog::record("INVALID_CREDENTIALS", is_string($ctx["ip"] ?? null) ? $ctx["ip"] : null);
+				}
+
 				$rTotal = $ctx["authenticated"]
 					? array_merge($ctx["profile"], $ctx["device"]["get_profile_vars"])
 					: $ctx["profile"];
@@ -763,7 +797,7 @@ class PortalHandler {
 					&& in_array($rCategory["id"], $ctx["device"]["category_ids"])
 				) {
 					$rOutput["js"][] = [
-						"id" => $rCategory["id"],
+						"id" => (string) $rCategory["id"],
 						"title" => $rCategory["category_name"],
 						"alias" => $rCategory["category_name"],
 						"censored" => intval($rCategory["is_adult"]),
@@ -793,10 +827,10 @@ class PortalHandler {
 			case "create_link":
 				$rCommand = $rRequest["cmd"];
 				$rValue = "http://localhost/ch/";
-				[$rStreamID, $rStreamValue] = explode(
+				[$rStreamID, $rStreamValue] = array_pad(explode(
 					"_",
 					substr($rCommand, strpos($rCommand, $rValue) + strlen($rValue)),
-				);
+				), 2, null);
 
 				if (empty($rStreamValue)) {
 					$rEncData =
@@ -869,7 +903,11 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "get_fav_ids":
-				exit(json_encode(["js" => $ctx["device"]["fav_channels"]["live"]]));
+				// String ids to match the string channel id the portal JS compares them
+				// against (canonical Stalker returns fav ids as strings) — issue #393.
+				// array_values: set_fav's array_filter can leave non-consecutive keys,
+				// which json_encode would emit as an object instead of a JS array.
+				exit(json_encode(["js" => array_values(array_map("strval", $ctx["device"]["fav_channels"]["live"]))]));
 
 			case "get_all_channels":
 				$rGenre =
@@ -877,7 +915,7 @@ class PortalHandler {
 					? null
 					: intval($rRequest["genre"]);
 
-				exit(getStreams($rGenre, true));
+				exit(getStreams($ctx["player"], $rGenre, true));
 
 			case "get_ordered_list":
 				$rFav = !empty($rRequest["fav"]) ? 1 : null;
@@ -888,7 +926,7 @@ class PortalHandler {
 					: intval($rRequest["genre"]);
 				$rSearch = !empty($rRequest["search"]) ? $rRequest["search"] : null;
 
-				exit(getStreams($rGenre, false, $rFav, $rSortBy, $rSearch));
+				exit(getStreams($ctx["player"], $rGenre, false, $rFav, $rSortBy, $rSearch));
 
 			case "get_all_fav_channels":
 				$rGenre =
@@ -896,7 +934,7 @@ class PortalHandler {
 					? null
 					: intval($rRequest["genre"]);
 
-				exit(getStreams($rGenre, true, 1));
+				exit(getStreams($ctx["player"], $rGenre, true, 1));
 
 			case "get_epg_info":
 				exit(json_encode(["js" => ["data" => []]], JSON_PARTIAL_OUTPUT_ON_ERROR));
@@ -1001,11 +1039,13 @@ class PortalHandler {
 						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
-							"id" => $rCategory["id"],
+							"id" => (string) $rCategory["id"],
 							"title" => $rCategory["category_name"],
 							"modified" => "",
-							"number" => $rNumber++,
-							"alias" => strtolower($rCategory["category_name"]),
+							"number" => (string) $rNumber++,
+							"alias" => self::categoryAlias($rCategory, strtolower((string) $rCategory["category_name"])),
+							// A 0/1 flag the portal JS reads with a truthy check — must stay an int,
+							// or a string "0" prompts the adult PIN on every category (issue #393).
 							"censored" => intval($rCategory["is_adult"]),
 						];
 					}
@@ -1099,7 +1139,7 @@ class PortalHandler {
 						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
-							"id" => $rCategory["id"],
+							"id" => (string) $rCategory["id"],
 							"title" => $rCategory["category_name"],
 							"alias" => $rCategory["category_name"],
 							"censored" => intval($rCategory["is_adult"]),
@@ -1118,7 +1158,7 @@ class PortalHandler {
 						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
-							"id" => $rCategory["id"],
+							"id" => (string) $rCategory["id"],
 							"title" => $rCategory["category_name"],
 						];
 					}
@@ -1169,10 +1209,10 @@ class PortalHandler {
 
 					case "series":
 						if (!empty($rCommand["series_data"])) {
-							[$rCommand["series_id"], $rCommand["season_num"]] = explode(
+							[$rCommand["series_id"], $rCommand["season_num"]] = array_pad(explode(
 								":",
 								basename($rCommand["series_data"], ".mpg"),
-							);
+							), 2, null);
 						}
 
 						$db->query(
@@ -1326,7 +1366,7 @@ class PortalHandler {
 						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
-							"id" => $rCategory["id"],
+							"id" => (string) $rCategory["id"],
 							"title" => $rCategory["category_name"],
 							"alias" => $rCategory["category_name"],
 							"censored" => intval($rCategory["is_adult"]),
@@ -1345,7 +1385,7 @@ class PortalHandler {
 						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
-							"id" => $rCategory["id"],
+							"id" => (string) $rCategory["id"],
 							"title" => $rCategory["category_name"],
 						];
 					}
@@ -1418,10 +1458,10 @@ class PortalHandler {
 				$rFav = !empty($rRequest["fav"]) ? 1 : null;
 				$rSortBy = !empty($rRequest["sortby"]) ? $rRequest["sortby"] : "added";
 
-				exit(getStations(null, $rFav, $rSortBy));
+				exit(getStations($ctx["player"], null, $rFav, $rSortBy));
 
 			case "get_all_fav_radio":
-				exit(getStations(null, 1));
+				exit(getStations($ctx["player"], null, 1));
 
 			case "set_fav":
 				$f3f9f9fa3c58c22b = empty($rRequest["fav_radio"]) ? "" : $rRequest["fav_radio"];
@@ -1439,7 +1479,11 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "get_fav_ids":
-				exit(json_encode(["js" => $ctx["device"]["fav_channels"]["radio_streams"]]));
+				// String ids to match the string station id the portal JS compares them
+				// against (canonical Stalker returns fav ids as strings) — issue #393.
+				// array_values: set_fav's array_filter can leave non-consecutive keys,
+				// which json_encode would emit as an object instead of a JS array.
+				exit(json_encode(["js" => array_values(array_map("strval", $ctx["device"]["fav_channels"]["radio_streams"]))]));
 		}
 	}
 
@@ -1457,10 +1501,17 @@ class PortalHandler {
 				if (!empty($rRequest["id"])) {
 					$rID = $rRequest["id"];
 					$rStreamID = substr($rID, 0, strpos($rID, "_"));
-					$rDate = strtotime(substr($rID, strpos($rID, "_") + 1));
-					$rRow = getepg($rStreamID, $rDate, $rDate + 86400)[0] ?: null;
+					// The id is an EPG item's real_id, "<stream>_<start of the programme on
+					// screen>": the next part is the first programme that starts after it.
+					$rDate = intval(substr($rID, strpos($rID, "_") + 1));
+					$rRow = null;
+					foreach (getepg($rStreamID, $rDate, $rDate + 86400) as $rProgramme) {
+						if (0 < $rDate && $rDate < $rProgramme["start"]) {
+							$rRow = $rProgramme;
+							break;
+						}
+					}
 					if ($rRow) {
-						$rRow = $db->get_row();
 						$rProgramStart = $rRow["start"];
 						$rDuration = intval(($rRow["end"] - $rRow["start"]) / 60);
 						$rTitle = $rRow["title"];
@@ -1483,6 +1534,8 @@ class PortalHandler {
 							OPENSSL_EXTRA,
 							!empty($rSettings["secure_stream_tokens"]),
 						);
+						// The box decodes the title as a URL component, and asks for the part
+						// after this one with the real_id it reads here.
 						$rURL =
 							($rSettings["mag_disable_ssl"]
 								? $rServers[SERVER_ID]["http_url"]
@@ -1490,7 +1543,11 @@ class PortalHandler {
 							"play/" .
 							$rToken .
 							"?&osd_title=" .
-							$rTitle;
+							rawurlencode($rTitle) .
+							"&real_id=" .
+							intval($rStreamID) .
+							"_" .
+							$rProgramStart;
 						if ($rSettings["mag_keep_extension"]) {
 							$rURL .= "&ext=.ts";
 						}
@@ -1502,7 +1559,7 @@ class PortalHandler {
 
 			case "create_link":
 				$rCommand = empty($rRequest["cmd"]) ? "" : $rRequest["cmd"];
-				[$rEPGDataID, $rStreamID] = explode("_", pathinfo($rCommand)["filename"]);
+				[$rEPGDataID, $rStreamID] = array_pad(explode("_", pathinfo($rCommand)["filename"]), 2, null);
 				$rRow = getprogramme($rStreamID, $rEPGDataID) ?: null;
 
 				if (!$rRow) {
@@ -1807,49 +1864,157 @@ class PortalHandler {
 
 	/**
 	 * Phase 6: Unauthenticated fallthrough handler.
-	 * If not authenticated and action is stb/get_profile, performs bruteforce check.
-	 * Then exits.
+	 * Exits: stb/get_profile, the request the bruteforce check counts, is answered
+	 * in handleStbPublic() and never gets here.
 	 *
 	 * @param array  &$ctx Context array
 	 */
 	public static function handleUnauthenticated(string $rReqType, string $rReqAction, array &$ctx) {
-		if ($rReqType == "stb" && $rReqAction == "get_profile") {
-			BruteforceGuard::checkBruteforce($ctx["ip"], $ctx["mac"]);
-			BruteforceGuard::checkFlood();
+		// A missing or stale token (e.g. replaced by a newer handshake of the same
+		// MAC) gets the canonical Stalker middleware answer: Stalker clients take
+		// this exact plain-text body as the cue to handshake again, while an empty
+		// reply left them stuck on an "unknown error".
+		exit('Authorization failed.');
+	}
+
+	/** Seconds in the period a handshake's token is made in: get_profile takes the token in that period and in the next. */
+	private const HANDSHAKE_PERIOD = 600;
+
+	/**
+	 * The token a handshake hands a registered device: eight random bytes, then a
+	 * keyed digest of them, of the device's number and of the period it is made
+	 * in. Nothing is kept for it: by the digest get_profile tells that a handshake
+	 * made the token for this device, and not long ago.
+	 *
+	 * @param string|null $rRandom The random part of a token, to make that token again
+	 * @param int         $rAgo    How many periods ago that token was made
+	 */
+	private static function handshakeToken($rMagID, ?string $rRandom = null, int $rAgo = 0): string {
+		global $rSettings;
+
+		$rRandom ??= strtoupper(bin2hex(random_bytes(8)));
+		$rPeriod = intdiv(time(), self::HANDSHAKE_PERIOD) - $rAgo;
+		$rDigest = hash_hmac("sha256", $rMagID . "|" . $rRandom . "|" . $rPeriod, "mag handshake|" . $rSettings["live_streaming_pass"]);
+
+		return $rRandom . strtoupper(substr($rDigest, 0, 16));
+	}
+
+	/**
+	 * The device a handshake made $rToken for, as the panel has it now: what
+	 * get_profile verifies a box that comes with that token against. The token is
+	 * not the device's yet, and the device's entry is neither read nor written.
+	 *
+	 * @return array The device, not verified; [] when no handshake made the token, lately, for a device the panel has
+	 */
+	public static function handshakeDevice($rMagID, $rToken) {
+		global $db;
+
+		if (!is_scalar($rMagID) || !is_string($rToken) || strlen($rToken) != 32) {
+			return [];
+		}
+		$rRandom = substr($rToken, 0, 16);
+		if (!hash_equals(self::handshakeToken($rMagID, $rRandom), $rToken)
+			&& !hash_equals(self::handshakeToken($rMagID, $rRandom, 1), $rToken)
+		) {
+			return [];
+		}
+		// As in the handshake: a lookup that failed says nothing about the device.
+		if (!$db->query("SELECT `mac` FROM `mag_devices` WHERE `mag_id` = ? LIMIT 1", $rMagID)) {
+			http_response_code(503);
+			exit();
+		}
+		$rRow = $db->get_row();
+		$rDevice = empty($rRow["mac"]) ? null : getdevice(null, $rRow["mac"]);
+		if (!is_array($rDevice) && !empty($rRow["mac"])) {
+			http_response_code(503);
+			exit();
 		}
 
-		exit();
+		return is_array($rDevice) && (string) $rDevice["mag_id"] === (string) $rMagID ? $rDevice : [];
+	}
+
+	/**
+	 * A box get_profile has verified came with a handshake's token: from here on
+	 * that is the device's token, the one its stream links are checked against,
+	 * and the one before it stops.
+	 */
+	public static function adoptToken(string $rToken) {
+		global $db, $rDevice;
+		static $rLock = null;
+
+		// One verified get_profile of a device at a time stores its token and
+		// writes the device's entry: two at once would leave the entry under one
+		// token and the database under the other. Held until the request ends.
+		$rLock = @fopen(MINISTRA_TMP_PATH . "ministra_" . intval($rDevice["mag_id"]) . ".lock", "c");
+		if ($rLock) {
+			flock($rLock, LOCK_EX);
+		}
+		// Not stored, the token is not the device's: the box comes again, and the device keeps the one it has.
+		if (!$db->query("UPDATE `mag_devices` SET `token` = ? WHERE `mag_id` = ?", $rToken, $rDevice["mag_id"])) {
+			http_response_code(503);
+			exit();
+		}
+		$rDevice["token"] = $rToken;
+		SignalDispatcher::cache(intval(SERVER_ID), ["type" => "update_line", "id" => $rDevice["user_id"]], false, false, $db);
 	}
 
 	/**
 	 * Phase 7: Handshake — token generation.
-	 * Generates a new token for the device identified by MAC, updates DB, and exits with token.
+	 * Hands the device identified by MAC a token to come to get_profile with, and exits with it.
+	 * The device keeps the token and the entry it has until get_profile has verified that box.
 	 *
 	 */
-	public static function handleHandshake(string $rMAC) {
-		global $db, $rSettings, $rDevice;
+	public static function handleHandshake(?string $rMAC) {
+		global $db, $rSettings, $rDevice, $rIP;
+
+		// A handshake whose request and cookie both carried no MAC cannot identify
+		// a device; answer as a failed lookup does rather than throw a TypeError.
+		if ($rMAC === null || $rMAC === '') {
+			http_response_code(503);
+			exit();
+		}
 
 		$rDevice = getdevice(null, $rMAC);
 		$rVerifyToken = null;
 
 		if ($rDevice) {
-			$rDevice["token"] = strtoupper(md5(uniqid((string) rand(), true)));
 			$rVerifyToken = Encryption::mintToken(
-				igbinary_serialize(["id" => $rDevice["mag_id"], "token" => $rDevice["token"]]),
+				igbinary_serialize(["id" => $rDevice["mag_id"], "token" => self::handshakeToken($rDevice["mag_id"])]),
 				$rSettings["live_streaming_pass"],
 				OPENSSL_EXTRA,
 				!empty($rSettings["secure_stream_tokens"]),
 			);
-			$rDevice["authenticated"] = false;
-			$db->query(
-				"UPDATE `mag_devices` SET `token` = ? WHERE `mag_id` = ?",
-				$rDevice["token"],
-				$rDevice["mag_id"],
-			);
-			SignalDispatcher::cache(intval(SERVER_ID), ["type" => "update_line", "id" => $rDevice["user_id"]], false, false, $db);
-			updatecache();
+			// A device that has no entry gets one, not verified, under the token it has.
+			if (!file_exists(MINISTRA_TMP_PATH . "ministra_" . intval($rDevice["mag_id"]))) {
+				updatecache();
+			}
 		} else {
 			$rDevice = [];
+			// getDevice() answers a MAC the panel does not have and a lookup that failed
+			// alike, and a failed lookup says nothing about the device. The MAC is
+			// unknown once the database has said so: until then nothing is counted and
+			// no token goes out.
+			if (!$db->query("SELECT `mag_id` FROM `mag_devices` WHERE `mac` = ? LIMIT 1", $rMAC) || 0 < $db->num_rows()) {
+				http_response_code(503);
+				exit();
+			}
+			// An unknown MAC is a failed attempt (counted by its digest, as in
+			// get_profile). It is answered as a registered one is: with a token of the
+			// same form. Its number is derived from the MAC as sent, so the token is as
+			// long each time and as long as a device's, and starts with 0, so it is no
+			// device's number.
+			BruteforceGuard::checkBruteforce($rIP, hash("sha256", $rMAC));
+			BruteforceGuard::checkFlood();
+			RefusalLog::record("INVALID_CREDENTIALS", $rIP);
+			$db->query("SELECT MAX(`mag_id`) AS `last` FROM `mag_devices`");
+			$rLastID = max(1, intval($db->get_row()["last"]));
+			$rNumber = 1 + hexdec(substr(hash_hmac("sha256", $rMAC, (string) $rSettings["live_streaming_pass"]), 0, 8)) % $rLastID;
+			$rVerifyToken = Encryption::mintToken(
+				igbinary_serialize(["id" => "0" . substr((string) $rNumber, 1), "token" => strtoupper(bin2hex(random_bytes(16)))]),
+				$rSettings["live_streaming_pass"],
+				OPENSSL_EXTRA,
+				!empty($rSettings["secure_stream_tokens"]),
+			);
 		}
 
 		exit(json_encode(["js" => ["token" => $rVerifyToken]]));

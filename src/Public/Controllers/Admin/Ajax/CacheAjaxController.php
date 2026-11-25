@@ -2,14 +2,14 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
-use XcVm\Core\Localization\Translator;
-use XcVm\Domain\Cluster\ClusterAdmin;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Infrastructure\Redis\RedisManager;
 
 /**
  * Admin-ajax controller for cache and connection-handler operations:
  * regenerate_cache, enable_cache, disable_cache, enable_handler,
- * disable_handler, clear_redis. Every action is gated on `adv/backups`.
+ * disable_handler, clear_redis. Every action is gated on `adv/database`,
+ * the permission of the cache page.
  *
  * @package XC_VM_Public_Controllers_Admin
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -21,7 +21,7 @@ class CacheAjaxController extends BaseAjaxController {
 	/** action=regenerate_cache — force a run of the cache engine. */
 	public function regenerate(): never {
 		$this->requireXhr();
-		$this->gate('adv', 'backups');
+		$this->gate('adv', 'database');
 
 		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache_engine "force"');
 
@@ -31,7 +31,7 @@ class CacheAjaxController extends BaseAjaxController {
 	/** action=enable_cache — enable the cache and start cache_handler if not running. */
 	public function enableCache(): never {
 		$this->requireXhr();
-		$this->gate('adv', 'backups');
+		$this->gate('adv', 'database');
 
 		global $db;
 		$db->query('UPDATE `settings` SET `enable_cache` = 1;');
@@ -53,7 +53,7 @@ class CacheAjaxController extends BaseAjaxController {
 	/** action=disable_cache — disable the cache. */
 	public function disableCache(): never {
 		$this->requireXhr();
-		$this->gate('adv', 'backups');
+		$this->gate('adv', 'database');
 
 		global $db;
 		$db->query('UPDATE `settings` SET `enable_cache` = 0;');
@@ -70,15 +70,13 @@ class CacheAjaxController extends BaseAjaxController {
 	/** action=enable_handler — enable the Redis handler and restart redis/signals/watchdog. */
 	public function enableHandler(): never {
 		$this->requireXhr();
-		$this->gate('adv', 'backups');
+		$this->gate('adv', 'database');
 
 		global $db;
-		// A node in mode 2 may not open MAIN's Redis, and with this handler its
-		// stream entry does at every viewer: each one there would be turned
-		// away (ClusterAdmin::act() refuses the move to mode 2 for the same reason).
-		if (ClusterAdmin::anyInModeTwo()) {
-			$this->fail(['message' => Translator::get('cluster_redis_handler_mode2')]);
-		}
+		// Off until now: what Redis holds is then its snapshot from when it was
+		// last on, not anyone watching (the sync below empties it first).
+		$db->query('SELECT `redis_handler` FROM `settings`;');
+		$rWasOff = !intval($db->get_row()['redis_handler'] ?? 0);
 		$db->query('UPDATE `settings` SET `redis_handler` = 1;');
 
 		if (file_exists(CACHE_TMP_PATH . 'settings')) {
@@ -95,7 +93,8 @@ class CacheAjaxController extends BaseAjaxController {
 			posix_kill($rPID, 9);
 		}
 
-		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:users 1 > /dev/null 2>/dev/null &');
+		// Started as its own arguments, through no shell line (ProcessRunner::start()).
+		ProcessRunner::start(array_merge([PHP_BIN, MAIN_HOME . 'console.php', 'cron:users', '1'], $rWasOff ? ['fresh'] : []));
 
 		$this->ok();
 	}
@@ -103,7 +102,7 @@ class CacheAjaxController extends BaseAjaxController {
 	/** action=disable_handler — disable the Redis handler and stop redis/signals/watchdog. */
 	public function disableHandler(): never {
 		$this->requireXhr();
-		$this->gate('adv', 'backups');
+		$this->gate('adv', 'database');
 
 		global $db;
 		$db->query('UPDATE `settings` SET `redis_handler` = 0;');
@@ -126,7 +125,7 @@ class CacheAjaxController extends BaseAjaxController {
 	/** action=clear_redis — flush the entire Redis store. */
 	public function clearRedis(): never {
 		$this->requireXhr();
-		$this->gate('adv', 'backups');
+		$this->gate('adv', 'database');
 
 		$rRedis = RedisManager::instance();
 

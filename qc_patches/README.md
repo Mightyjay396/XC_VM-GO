@@ -1,80 +1,85 @@
-# QC patches pour XC_VM 2.7.2 / 2.7.4 — moteur de diffusion Go
+# XC_VM-GO — XC_VM 2.7.4 with the QC Go delivery engine
 
-Ce dossier regroupe les corrections et ajouts appliqués à XC_VM (panneau Main + serveurs de diffusion / LB),
-l'outil d'installation automatique et le code source Go des programmes de diffusion.
-Aucune donnée de serveur n'est incluse : pas de chaînes, d'URL de sources, d'EPG, de base de données,
-de liste de proxys, de clés ni d'adresses IP.
+This fork ships official **XC_VM 2.7.4** plus the QC fixes, modules and the Go delivery engine, released as
+**2.7.4-p1** (an XC_VM patch release). It installs, adds load balancers and updates exactly like the original
+XC_VM — every download points to this repository's Releases, so new servers always get this version.
+No server data is included: no channels, source URLs, EPG, database, proxy list, keys or IP addresses.
 
-## Installation en une ligne (en root, sur le Main)
+## Install
 
-Télécharger `qc_xcvm_updater.tgz` depuis la page **Releases** de ce dépôt (le paquet contient en plus
-les programmes Go compilés et FFmpeg 8.1-dash), puis :
+**Fresh Main** (same as the original installer):
+
+```bash
+wget https://github.com/Mightyjay396/XC_VM-GO/releases/latest/download/XC_VM.zip && unzip XC_VM.zip && sudo python3 install
+```
+
+**Load balancers**: add them from the panel (*Servers → Install Load Balancer*). The Main downloads this
+release's `loadbalancer.tar.gz`, checks it against `hashes.md5`, installs it and starts the Go engine.
+
+**Updates**: the panel's update button and *Auto-update load balancers* use this repository's Releases.
+Each node is pinned to the Main's version, as in the original XC_VM.
+
+**Existing XC_VM 2.7.2 / 2.7.4 panels** (keep your install, add the patches): download
+`qc_xcvm_updater.tgz` from the Release and run on the Main:
 
 ```bash
 cd /root && rm -rf qc_xcvm_pkg && tar xzf qc_xcvm_updater.tgz && python3 qc_xcvm_pkg/qc_xcvm_updater.py --restart --all-lbs
 ```
 
-| Option | Effet |
-|---|---|
-| `--all-lbs` | Sur le Main : met aussi à jour chaque LB actif (SSH root, clé dédiée installée au 1er passage ; mot de passe demandé une seule fois), un à la fois, arrêt au premier échec |
-| `--restart` | Redémarre XC_VM après la mise à jour (coupe les clients quelques secondes) |
-| `--dry-run` | Montre ce qui serait fait, sans rien changer |
-| `--no-deps` | N'installe pas les programmes Go ni FFmpeg |
-| `--rollback <dossier>` | Restaure la sauvegarde créée par une installation |
-| `--force` | Autre version de XC_VM que 2.7.2 / 2.7.4 (à vos risques) |
+`--all-lbs` also updates every enabled load balancer over SSH (a dedicated key is installed on first run,
+the root password is asked once), one at a time, stopping at the first failure. Other options:
+`--dry-run`, `--no-deps`, `--rollback <dir>`, `--force`.
 
-L'outil détecte seul le rôle (Main ou LB), sauvegarde chaque fichier, vérifie la syntaxe PHP et se restaure
-tout seul en cas d'erreur. Les fichiers déjà modifiés (ancienne version de ces patches ou modification locale)
-sont remplacés, avec sauvegarde.
+## Go delivery engine (installed and started on every load balancer)
 
-## Moteur de diffusion Go (installé et démarré sur chaque LB)
-
-| Programme | Port local | Rôle |
+| Program | Local port | Role |
 |---|---|---|
-| `odrelay` | 8147 | Démarrage rapide des chaînes à la demande : le client reçoit l'image tout de suite pendant que FFmpeg démarre (TS et HLS) |
-| `livehold` | 8150 | Garde les clients connectés pendant un redémarrage de FFmpeg ou une coupure de source (vidéo « hors ligne » au lieu d'une déconnexion), TS + HLS |
-| `ckts` | 8160 | Moteur ClearKey DASH → MPEG-TS (+ 15 relais `mpdproxy-ads` 8115-8129 pour les coupures publicitaires) |
-| `mpdproxy` | 8098-8113 | Proxy DASH/ClearKey (manifestes + segments, cache), 16 instances activées par socket systemd |
-| FFmpeg 8.1-dash | — | Build FFmpeg utilisé pour les sources DASH/ClearKey (`bin/ffmpeg_bin/8.1-dash`) |
+| `odrelay` | 8147 | Fast start for on-demand channels: the viewer gets video immediately while FFmpeg starts (TS and HLS) |
+| `livehold` | 8150 | Keeps viewers connected through FFmpeg restarts and source drops (offline slate instead of a disconnect), TS + HLS |
+| `ckts` | 8160 | ClearKey DASH → MPEG-TS engine, with 15 `mpdproxy-ads` relays (8115-8129) for ad breaks |
+| `mpdproxy` | 8098-8113 | DASH/ClearKey proxy (manifests + segments, cache), 16 socket-activated instances |
+| FFmpeg 8.1-dash | — | FFmpeg build used for DASH/ClearKey sources (`bin/ffmpeg_bin/8.1-dash`) |
 
-Ce n'est pas le fanout de XC_VM : le fanout reste tel quel (non activé par ces patches).
-Les listes `config/odrelay_streams.txt`, `config/livehold_streams.txt` et `/etc/qc_ckts_ids` valent `*`
-(toutes les chaînes) ; remplacer `*` par des IDs pour limiter.
-Le tableau de bord du Main affiche dans **Service Status** la ligne « Go delivery » avec les serveurs où
-le moteur tourne.
+This is not XC_VM's fanout (left as is). `config/odrelay_streams.txt`, `config/livehold_streams.txt` and
+`/etc/qc_ckts_ids` contain `*` (all channels); replace with stream IDs to limit. The Main dashboard shows a
+**Go delivery** line in *Service Status* listing the servers running the engine.
+The binaries ship in the release archives (`bin/qc/`), installed by `bin/qc/qc_deps.sh` (run as root by the
+installer and by every update).
 
-Code source dans `go/` : `odrelay` (identique au binaire livré), `livehold` et `mpdproxy`
-(versions sources antérieures aux binaires livrés dans le paquet). Le source de `ckts` n'est pas inclus
-(binaire seulement, dans le paquet de la Release). Compilation : `cd go/<prog> && CGO_ENABLED=0 go build`.
+Sources in `qc_patches/go/`: `odrelay` (same as the shipped binary), `livehold` and `mpdproxy` (earlier
+sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc_patches/go/<prog> && CGO_ENABLED=0 go build`.
 
-## Corrections XC_VM
+## XC_VM fixes
 
-- **Coupures de clients TS/VOD actifs (bug XC_VM 2.7.2 et 2.7.4)** — `Domain/Cluster/ConnectionIngest.php` :
-  sur les nodes qui gèrent eux-mêmes le HLS, les check-ins des workers TS (toutes les 300 s) n'allaient que
-  dans le cluster bus, alors que `cron:users` lit le store ; au bout de 900 s il croyait le client parti et le
-  coupait (sessions coupées à 10, 15, 20 min pile). Les check-ins TS/VOD vont maintenant aussi au store.
-  Le HLS n'est pas modifié.
-- Connexions fantômes : nettoyage des enregistrements dont le worker est mort (`Core/Cluster/QcGhostReaper.php`)
-  et comptage des connexions réellement actives pour la limite de connexions.
-- Démarrage rapide à la demande (sonde FFprobe courte, relance de flux), continuité HLS, lecture DASH/ClearKey
-  (FFmpeg 8.1-dash, mpdproxy, ckts), options de reconnexion des sources.
-- Films et séries : réparation et import (TMDB / TVDB de secours), import par lots.
-- EPG : décalage horaire par chaîne.
-- Proxys de source : page de gestion + choix « Proxy (liste) » par chaîne (table `source_proxies`, vide).
-- Tickets : indicateur de messages non lus.
+- **Active TS/VOD viewers disconnected (XC_VM 2.7.2 and 2.7.4 bug)** — `Domain/Cluster/ConnectionIngest.php`:
+  on nodes that reap their own HLS viewers, TS worker check-ins (every 300 s) only reached the cluster bus,
+  while `cron:users` reads the connection store; after 900 s it took the viewer for gone and closed it
+  (sessions cut at exactly 10, 15, 20 min). TS/VOD check-ins now reach the store too. HLS is unchanged.
+- Ghost connections: records whose worker died are cleaned (`Core/Cluster/QcGhostReaper.php`), and only
+  really active connections count toward the connection limit.
+- On-demand fast start (short FFprobe, stream re-arm), HLS continuity, DASH/ClearKey playback
+  (FFmpeg 8.1-dash, mpdproxy, ckts), source reconnect options.
+- Movies and series: repair and import (TMDB, TVDB fallback), batch import.
+- EPG: per-channel time shift.
+- Source proxies: management page + per-channel "Proxy (list)" option (`source_proxies` table, empty).
+- Tickets: unread indicator.
+- Ubuntu 26 support in the load balancer installer.
 
-## Modules et pages ajoutés (Main)
+## Modules and pages (Main)
 
-- **Remboursement de crédits revendeurs** (`refundcredit`, table `refund_history`) + prolongation de lignes par l'admin.
-- **API d'essais** (`trialapi`, route nginx `/trial_api`) et **API de lignes** (`/line_api`).
-- **Import fournisseur** (`providerimport`).
-- **API compatible XAccel** (`/xaapi/`), configuration à remplir dans `config/xaccel_compat_api.json`.
-- Les modules sont enregistrés comme installés dans `config/modules.php`.
+- **Reseller credit refunds** (`refundcredit`, `refund_history` table) + admin line extension.
+- **Trial API** (`trialapi`, nginx route `/trial_api`) and **Line API** (`/line_api`).
+- **Provider import** (`providerimport`).
+- **XAccel-compatible API** (`/xaapi/`), configured in `config/xaccel_compat_api.json`.
+- New tables come from migration `migrations/database/up/106_qc_tables.sql`.
 
-## Contenu
+## Repository layout
 
 ```
-qc_patches/
-  updater/   qc_xcvm_updater.py, manifest.json, files/ + diffs/ (2.7.2), files_2.7.4/ + diffs_2.7.4/, sql/, systemd/
-  go/        odrelay/, livehold/, mpdproxy/ (sources Go)
+src/                 XC_VM 2.7.4-p1 (Main tree; release archives add bin/qc/ with the Go binaries)
+qc_patches/updater/  qc_xcvm_updater.py + patched files for 2.7.2 and 2.7.4 (existing panels)
+qc_patches/go/       Go sources (odrelay, livehold, mpdproxy)
+qc_patches/build_dist.py + qc_deps.sh   how the release assets are built (binaries: release archives, bin/qc/)
 ```
+
+The previous content of this repository is kept in the `pre-qc-backup` branch.

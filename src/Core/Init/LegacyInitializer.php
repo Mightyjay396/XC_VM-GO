@@ -115,7 +115,8 @@ class LegacyInitializer {
 			return false;
 		}
 
-		shell_exec("crontab -r");
+		// `crontab -u xc_vm <file>` replaces that crontab whole. No `crontab -r`
+		// first: it removes the crontab of whoever boots, root's included.
 		$rTempName = tempnam("/tmp", "crontab");
 		$rHandle = fopen($rTempName, "w");
 		fwrite($rHandle, $rCrontab . "\n");
@@ -188,7 +189,10 @@ class LegacyInitializer {
 		$GLOBALS["rBlockedServers"] = CacheReader::get("blocked_servers") ?: [];
 		$GLOBALS["rAllowedIPs"] = CacheReader::get("allowed_ips") ?: [];
 		$GLOBALS["rProxies"] = CacheReader::get("proxy_servers") ?: [];
-		$GLOBALS["rBouquets"] = CacheReader::get("bouquets") ?: [];
+		// Not the bouquets: every bouquet's stream list is megabytes to decode,
+		// and only the scripts that sign a viewer in (auth, probe, rtmp) read
+		// them. They load the map themselves; a segment or a key request, the
+		// bulk of the traffic, paid for it on every hit.
 		$GLOBALS["rSegmentSettings"] = [
 			"seg_time" => intval($GLOBALS["rSettings"]["seg_time"]),
 			"seg_list_size" => intval($GLOBALS["rSettings"]["seg_list_size"]),

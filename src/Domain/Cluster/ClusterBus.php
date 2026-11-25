@@ -211,6 +211,54 @@ final class ClusterBus {
 		}
 	}
 
+	/** Seconds a viewer MAIN closed keeps a node's late upsert of it out (tomb()). */
+	public const TOMB_TTL = 3600;
+
+	/**
+	 * MAIN closed one of a node's viewers (a kick, a limit, its sweep): an
+	 * upsert of that same lifecycle already on its way from the node must not
+	 * open it again (ConnectionIngest). Versioned records use the lifecycle
+	 * token; older records use date_start. Each
+	 * connection closed under the uuid is kept (`tombs:<sid>:<uuid>`, a set,
+	 * for TOMB_TTL after the last close): a player that came back under the
+	 * same uuid and was closed again may still have the first one's upsert on
+	 * its way. False without the bus: the node's digest then corrects MAIN's
+	 * store, as before.
+	 */
+	public static function tomb(int $rServerID, string $rUUID, int $rDateStart, ?string $rToken = null): bool {
+		$rRedis = self::client();
+		if ($rRedis === null) {
+			return false;
+		}
+		$rKey = 'tombs:' . $rServerID . ':' . $rUUID;
+		try {
+			$rOut = $rRedis->multi()->sAdd($rKey, self::tombMember($rDateStart, $rToken))->expire($rKey, self::TOMB_TTL)->exec();
+		} catch (\Throwable) {
+			self::drop();
+			return false;
+		}
+		return is_array($rOut) && ($rOut[1] ?? false) === true;
+	}
+
+	/** Did MAIN close this lifecycle (token, or legacy date_start) in the last TOMB_TTL? False without the bus. */
+	public static function tombed(int $rServerID, string $rUUID, int $rDateStart, ?string $rToken = null): bool {
+		$rRedis = self::client();
+		if ($rRedis === null) {
+			return false;
+		}
+		try {
+			return (bool) $rRedis->sIsMember('tombs:' . $rServerID . ':' . $rUUID, self::tombMember($rDateStart, $rToken));
+		} catch (\Throwable) {
+			self::drop();
+			return false;
+		}
+	}
+
+	/** Versioned lifecycles never inherit an older date-only tomb. */
+	private static function tombMember(int $rDateStart, ?string $rToken): string {
+		return $rToken !== null && preg_match('/^[0-9a-f]{32}\z/', $rToken) ? 'v1:' . $rToken : (string) $rDateStart;
+	}
+
 	/**
 	 * The last reads a node's touches left on the bus: uuid => hls_last_read,
 	 * for the viewers that have one. Null without the bus.
@@ -325,14 +373,23 @@ final class ClusterBus {
 	 * servers cron as a watchdog). As root, it runs as xc_vm.
 	 */
 	public static function ensureRunning(): bool {
-		if (!defined('MAIN_HOME') || !file_exists(MAIN_HOME . 'bin/cluster_bus/cluster.conf') || !is_executable(MAIN_HOME . 'bin/redis/redis-server')) {
+		if (!defined('MAIN_HOME') || !file_exists(MAIN_HOME . 'bin/cluster_bus/cluster.conf')) {
 			return false;
 		}
 		if (self::running()) {
 			return true;
 		}
+		// A dedicated Redis can serve the control bus independently of the
+		// bundled cache server (KeyDB); keep the bundled binary as the default.
+		$rBinary = MAIN_HOME . 'bin/cluster_bus/redis-server';
+		if (!is_executable($rBinary)) {
+			$rBinary = MAIN_HOME . 'bin/redis/redis-server';
+		}
+		if (!is_executable($rBinary)) {
+			return false;
+		}
 		// The server daemonizes (cluster.conf), so this returns at once.
-		$rArgv = [MAIN_HOME . 'bin/redis/redis-server', MAIN_HOME . 'bin/cluster_bus/cluster.conf'];
+		$rArgv = [$rBinary, MAIN_HOME . 'bin/cluster_bus/cluster.conf'];
 		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
 			$rArgv = array_merge(['sudo', '-u', 'xc_vm'], $rArgv);
 		}

@@ -39,6 +39,7 @@ class MovieService {
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
 	public static function process(array $rData) {
+		$rData = Authorization::dropFfmpegArguments($rData);
 		$db = self::db();
 		if (InputValidator::validate('processMovie', $rData)) {
 			set_time_limit(0);
@@ -48,7 +49,10 @@ class MovieService {
 
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'edit_movie')) {
-					$rArray = AdminHelpers::overwriteData(StreamRepository::getById($rData['edit']), $rData);
+					// The edit starts from the stream as stored: the row cleaner's
+					// escaping would be written back into every field not sent.
+					$db->query('SELECT * FROM `streams` WHERE `id` = ?;', intval($rData['edit']));
+					$rArray = AdminHelpers::overwriteData($db->get_raw_row(), $rData);
 				} else {
 					exit();
 				}
@@ -233,13 +237,13 @@ class MovieService {
 							}
 							$rParts = explode(':', $rData['import_folder']);
 
-							if (is_numeric($rParts[1])) {
+							if (isset($rParts[1], $rParts[2]) && is_numeric($rParts[1])) {
 								if (isset($rData['scan_recursive'])) {
 									$rFiles = ApiClient::scanRecursive(intval($rParts[1]), $rParts[2], ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts']);
 								} else {
 									$rFiles = [];
 
-									foreach (ApiClient::listDir(intval($rParts[1]), rtrim($rParts[2], '/'), ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts'])['files'] as $rFile) {
+									foreach ((ApiClient::listDir(intval($rParts[1]), rtrim($rParts[2], '/'), ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts'])['files'] ?? []) as $rFile) {
 										$rFiles[] = rtrim($rParts[2], '/') . '/' . $rFile;
 									}
 								}
@@ -495,9 +499,13 @@ class MovieService {
 				}
 
 				$rStreamDatabase = [];
-				$db->query('SELECT `stream_source` FROM `streams` WHERE `type` = 2;');
+				$rSourceHashes = [];
+				$db->query('SELECT `stream_source`, `import_source_hash` FROM `streams` WHERE `type` = 2;');
 
 				foreach ($db->get_rows() as $rRow) {
+					if (!empty($rRow['import_source_hash'])) {
+						$rSourceHashes[$rRow['import_source_hash']] = true;
+					}
 					foreach (json_decode($rRow['stream_source'], true) as $rSource) {
 						if ((string) $rSource !== '') {
 							$rStreamDatabase[] = $rSource;
@@ -506,57 +514,41 @@ class MovieService {
 				}
 				$rImportStreams = [];
 
-				if (!empty($_FILES['m3u_file']['tmp_name'])) {
-					$rFile = '';
-
-					if (!empty($_FILES['m3u_file']['tmp_name']) && strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)) == 'm3u') {
-						$rFile = file_get_contents($_FILES['m3u_file']['tmp_name']);
+				try {
+					$rDownload = VodM3uImport::destination($rData);
+					if ($rDownload !== null) {
+						$rData['direct_source'] = $rData['direct_proxy'] = 0;
 					}
-
-					preg_match_all('/(?P<tag>#EXTINF:[-1,0])|(?:(?P<prop_key>[-a-z]+)=\\"(?P<prop_val>[^"]+)")|(?<name>,[^\\r\\n]+)|(?<url>http[^\\s]*:\\/\\/.*\\/.*)/', $rFile, $rMatches);
-					$rResults = [];
-					$rIndex = -1;
-					$counter = count($rMatches[0]);
-
-					for ($i = 0; $i < $counter; $i++) {
-						$rItem = $rMatches[0][$i];
-
-						if (!empty($rMatches['tag'][$i])) {
-							$rIndex++;
-						} else {
-							if (!empty($rMatches['prop_key'][$i])) {
-								$rResults[$rIndex][$rMatches['prop_key'][$i]] = trim($rMatches['prop_val'][$i]);
-							} else {
-								if (!empty($rMatches['name'][$i])) {
-									$rResults[$rIndex]['name'] = trim(substr($rItem, 1));
-								} else {
-									if (!empty($rMatches['url'][$i])) {
-										$rResults[$rIndex]['url'] = str_replace(' ', '%20', trim($rItem));
+				} catch (\InvalidArgumentException $rError) {
+					return ['status' => STATUS_INVALID_INPUT, 'data' => ['error' => $rError->getMessage()]];
+				}
+				if (VodM3uImport::hasPlaylist($rData)) {
+					try {
+						foreach (VodM3uImport::entries($rData) as $rEntry) {
+							$rEntry['source_hash'] = hash('sha256', $rEntry['url']);
+							if (!isset($rSourceHashes[$rEntry['source_hash']]) && !in_array($rEntry['url'], $rStreamDatabase, true)) {
+								if ($rDownload !== null) {
+									$rLocalSource = 's:' . $rDownload['server_id'] . ':' . rtrim($rDownload['directory'], '/') . '/' . VodDownload::filename($rEntry['url'], $rEntry['title']);
+									if (in_array($rLocalSource, $rStreamDatabase, true)) {
+										continue;
 									}
 								}
+								$rImportStreams[] = $rEntry;
 							}
 						}
-					}
-
-					foreach ($rResults as $rResult) {
-						if (!empty($rResult['url']) && !in_array($rResult['url'], $rStreamDatabase)) {
-							$rPathInfo = pathinfo(explode('?', $rResult['url'])[0]);
-							if (empty($rPathInfo['extension'])) {
-								$rPathInfo['extension'] = ($rData['target_container'] ?: 'mp4');
-							}
-							$rImportStreams[] = ['url' => $rResult['url'], 'title' => ($rResult['name'] ?: ''), 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container'])];
-						}
+					} catch (\Throwable $rError) {
+						return ['status' => STATUS_INVALID_INPUT, 'data' => ['error' => $rError instanceof \InvalidArgumentException ? $rError->getMessage() : 'vod_m3u_invalid']];
 					}
 				} else {
 					if (!empty($rData['import_folder'])) {
 						$rParts = explode(':', $rData['import_folder']);
-						if (is_numeric($rParts[1])) {
+						if (isset($rParts[1], $rParts[2]) && is_numeric($rParts[1])) {
 							if (isset($rData['scan_recursive'])) {
 								$rFiles = ApiClient::scanRecursive(intval($rParts[1]), $rParts[2], ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts']);
 							} else {
 								$rFiles = [];
 
-								foreach (ApiClient::listDir(intval($rParts[1]), rtrim($rParts[2], '/'), ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts'])['files'] as $rFile) {
+								foreach ((ApiClient::listDir(intval($rParts[1]), rtrim($rParts[2], '/'), ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts'])['files'] ?? []) as $rFile) {
 									$rFiles[] = rtrim($rParts[2], '/') . '/' . $rFile;
 								}
 							}
@@ -645,9 +637,18 @@ class MovieService {
 					}
 					$rItems = [];
 					foreach ($rImportStreams as $rImportStream) {
-						$rItems[] = ['import' => true, 'type' => 'movie', 'title' => $rImportStream['title'], 'file' => $rImportStream['url'], 'subtitles' => [], 'servers' => $rServerIDs, 'fb_category_id' => $rCategories, 'fb_bouquets' => $rBouquets, 'disable_tmdb' => $rDisableTMDB, 'ignore_no_match' => $rIgnoreMatch, 'bouquets' => [], 'category_id' => [], 'language' => SettingsManager::getString('tmdb_language'), 'read_native' => $rData['read_native'], 'movie_symlink' => $rData['movie_symlink'], 'remove_subtitles' => $rData['remove_subtitles'], 'direct_source' => $rData['direct_source'], 'direct_proxy' => $rData['direct_proxy'], 'auto_encode' => $rRestart, 'auto_upgrade' => false, 'fallback_title' => false, 'ffprobe_input' => false, 'transcode_profile_id' => $rData['transcode_profile_id'], 'target_container' => $rImportStream['container'], 'max_genres' => SettingsManager::getInt('max_genres'), 'duplicate_tmdb' => true];
+						$rItems[] = ['import' => true, 'type' => 'movie', 'source_hash' => $rImportStream['source_hash'] ?? null, 'title' => $rImportStream['title'], 'file' => $rImportStream['url'], 'subtitles' => [], 'servers' => $rServerIDs, 'fb_category_id' => $rCategories, 'fb_bouquets' => $rBouquets, 'disable_tmdb' => $rDisableTMDB, 'ignore_no_match' => $rIgnoreMatch, 'bouquets' => [], 'category_id' => [], 'language' => SettingsManager::getString('tmdb_language'), 'read_native' => $rData['read_native'], 'movie_symlink' => $rData['movie_symlink'], 'remove_subtitles' => $rData['remove_subtitles'], 'direct_source' => $rData['direct_source'], 'direct_proxy' => $rData['direct_proxy'], 'auto_encode' => $rRestart, 'auto_upgrade' => false, 'fallback_title' => false, 'ffprobe_input' => false, 'transcode_profile_id' => $rData['transcode_profile_id'], 'target_container' => $rImportStream['container'], 'max_genres' => SettingsManager::getInt('max_genres'), 'duplicate_tmdb' => true];
 					}
 
+					if ($rDownload !== null) {
+						foreach ($rItems as &$rItem) {
+							$rItem['download'] = $rDownload;
+							// A downloaded source is local; redirect/proxy mode would expose a file path.
+							$rItem['direct_source'] = $rItem['direct_proxy'] = 0;
+							$rItem['servers'] = array_values(array_unique(array_merge($rItem['servers'], [$rDownload['server_id']])));
+						}
+						unset($rItem);
+					}
 					return ['status' => VodItemImporter::queueBatch($rItems) ? STATUS_SUCCESS : STATUS_FAILURE];
 				}
 				return ['status' => STATUS_NO_SOURCES, 'data' => $rPostData];

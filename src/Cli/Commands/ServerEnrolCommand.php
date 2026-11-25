@@ -8,6 +8,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\NodeRegistry;
+use XcVm\Domain\Cluster\XcvtTargets;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -126,8 +127,10 @@ class ServerEnrolCommand implements CommandInterface {
 			if ($rHostKey !== $rStored) {
 				self::db()->query('UPDATE `servers` SET `ssh_hostkey_sha1` = ? WHERE `id` = ?;', $rHostKey, $rServerID);
 			}
+			XcvtTargets::noteHostKey($rServerID, (string) $rHostKey, $rExpected !== null && $rExpected !== '');
 
-			$rReady = $rSsh->run('test -f /home/xc_vm/bin/xc_agent/run.sh && test -f /home/xc_vm/config/config.enc && echo READY');
+			// As root, like the flow that follows: config/ is closed to the SSH user, and bin/ after an update.
+			$rReady = $rSsh->run('sudo test -f /home/xc_vm/bin/xc_agent/run.sh && sudo test -f /home/xc_vm/config/config.enc && echo READY');
 			if (trim($rReady['output']) !== 'READY') {
 				return $rFail('The node does not run this panel release yet (no bin/xc_agent/run.sh). Update it first, then retry');
 			}

@@ -3,7 +3,9 @@
 namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Config\Maintenance;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Error\ErrorResponder;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\GeoIP;
 use XcVm\Core\Util\NetworkUtils;
@@ -48,13 +50,22 @@ class PlaylistApiController extends BaseApiController {
 		$rUserInfo = $this->authenticate($rIP, true);
 
 		if (!$rUserInfo) {
-			BruteforceGuard::checkBruteforce(null, null, $rUsername);
+			$rPassword = RequestManager::get('password');
+			BruteforceGuard::checkBruteforce(null, null, $rUsername, false, is_string($rPassword) ? $rPassword : null);
 			generateError('INVALID_CREDENTIALS');
 		}
 
 		$this->deny = false;
 		$this->userInfo = $rUserInfo;
 		ini_set('memory_limit', -1);
+
+		if (Maintenance::active(SettingsManager::getAll())) {
+			Maintenance::refuse(SettingsManager::getAll());
+		}
+
+		if (!empty($rUserInfo['is_stalker']) && SettingsManager::get('disable_playlist_ministra')) {
+			generateError('PLAYLIST_DISABLED');
+		}
 
 		if (!$rUserInfo['is_restreamer'] && SettingsManager::get('disable_playlist')) {
 			generateError('PLAYLIST_DISABLED');
@@ -77,6 +88,11 @@ class PlaylistApiController extends BaseApiController {
 				generateError('GENERATE_PLAYLIST_FAILED');
 			}
 		} else {
+			// The address opened in a browser: a page that says why. A player
+			// keeps the bare status (and debug mode its own page).
+			if (ErrorResponder::wantsHtml() && !SettingsManager::get('debug_show_errors')) {
+				ErrorResponder::emit(ErrorResponder::respondPage(429, '', ''));
+			}
 			generateError('DOWNLOAD_LIMIT_REACHED', false);
 			http_response_code(429);
 			exit();

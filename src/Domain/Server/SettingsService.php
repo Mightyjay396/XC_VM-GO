@@ -2,9 +2,11 @@
 
 namespace XcVm\Domain\Server;
 
+use XcVm\Core\Audit\AdminAudit;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\CredentialFreeConfig;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Config\DashboardAlerts;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\StreamSecret;
 use XcVm\Core\Database\QueryHelper;
@@ -13,12 +15,15 @@ use XcVm\Core\Events\Settings\CrontabChangedEvent;
 use XcVm\Core\Events\Settings\SettingsChangedEvent;
 use XcVm\Core\Events\Stream\StreamArgumentsChangedEvent;
 use XcVm\Core\Localization\Translator;
+use XcVm\Core\Reference\UiReference;
+use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Cluster\ClusterEndpoint;
-use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\NodeRegistry;
+use XcVm\Domain\Cluster\XcvtTargets;
 use XcVm\Domain\Stream\CategoryService;
 use XcVm\Infrastructure\Database\DatabaseAware;
+use XcVm\Streaming\Codec\FfmpegPaths;
 use XcVm\Streaming\Fanout\FanoutConfig;
 use XcVm\Streaming\Fanout\FanoutMode;
 
@@ -39,7 +44,7 @@ class SettingsService {
 	private const CLUSTER_STATE = ['cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
 
 	/** The settings form's checkboxes, besides the cluster switches (checkboxes()). */
-	private const CHECKBOXES = ['alternative_titles', 'fallback_parser', 'php_loopback', 'restreamer_bypass_proxy', 'request_prebuffer', 'modal_edit', 'group_buttons', 'enable_search', 'on_demand_checker', 'ondemand_balance_equal', 'disable_mag_token', 'allow_cdn_access', 'dts_legacy_ffmpeg', 'mag_load_all_channels', 'disable_xmltv_restreamer', 'disable_playlist_restreamer', 'ffmpeg_warnings', 'reseller_ssl_domain', 'extract_subtitles', 'show_category_duplicates', 'vod_sort_newest', 'header_stats', 'mag_keep_extension', 'keep_protocol', 'read_native_hls', 'player_allow_playlist', 'player_allow_bouquet', 'player_hide_incompatible', 'player_allow_hevc', 'force_epg_timezone', 'check_vod', 'ignore_keyframes', 'save_login_logs', 'save_restart_logs', 'mag_legacy_redirect', 'restrict_playlists', 'monitor_connection_status', 'kill_rogue_ffmpeg', 'show_images', 'on_demand_instant_off', 'on_demand_failure_exit', 'playlist_from_mysql', 'ignore_invalid_users', 'legacy_mag_auth', 'ministra_allow_blank', 'block_proxies', 'block_streaming_servers', 'ip_subnet_match', 'auto_unban_ip', 'debug_show_errors', 'enable_debug_stalker', 'restart_php_fpm', 'restream_deny_unauthorised', 'api_probe', 'legacy_panel_api', 'hide_failures', 'verify_host', 'encrypt_playlist', 'encrypt_playlist_restreamer', 'mag_disable_ssl', 'legacy_get', 'legacy_xmltv', 'save_closed_connection', 'show_tickets', 'stream_logs_save', 'client_logs_save', 'streams_grouped', 'cloudflare', 'cleanup', 'dashboard_stats', 'dashboard_status', 'dashboard_map', 'dashboard_display_alt', 'recaptcha_enable', 'ip_logout', 'disable_player_api', 'disable_playlist', 'disable_xmltv', 'disable_enigma2', 'disable_ministra', 'enable_isp_lock', 'block_svp', 'disable_ts', 'disable_ts_allow_restream', 'disable_hls', 'disable_hls_allow_restream', 'disable_rtmp', 'disable_rtmp_allow_restream', 'case_sensitive_line', 'county_override_1st', 'disallow_2nd_ip_con', 'use_mdomain_in_lists', 'encrypt_hls', 'disallow_empty_user_agents', 'detect_restream_block_user', 'download_images', 'api_redirect', 'use_buffer', 'audio_restart_loss', 'show_isps', 'priority_backup', 'rtmp_random', 'show_connected_video', 'show_not_on_air_video', 'show_banned_video', 'show_expired_video', 'show_expiring_video', 'show_all_category_mag', 'always_enabled_subtitles', 'enable_connection_problem_indication', 'show_tv_channel_logo', 'show_channel_logo_in_preview', 'disable_trial', 'restrict_same_ip', 'fanout_source_insecure', 'fanout_enabled', 'fanout_supervise', 'secure_stream_tokens', 'js_navigate'];
+	private const CHECKBOXES = ['hide_active_codes', 'alternative_titles', 'fallback_parser', 'tmdb_episode_by_title', 'php_loopback', 'restreamer_bypass_proxy', 'request_prebuffer', 'enable_search', 'on_demand_checker', 'ondemand_balance_equal', 'disable_mag_token', 'allow_cdn_access', 'dts_legacy_ffmpeg', 'mag_load_all_channels', 'disable_xmltv_restreamer', 'disable_playlist_restreamer', 'disable_playlist_ministra', 'ffmpeg_warnings', 'reseller_ssl_domain', 'extract_subtitles', 'show_category_duplicates', 'vod_sort_newest', 'header_stats', 'mag_keep_extension', 'keep_protocol', 'read_native_hls', 'player_allow_playlist', 'player_allow_bouquet', 'player_hide_incompatible', 'player_allow_hevc', 'force_epg_timezone', 'check_vod', 'ignore_keyframes', 'save_login_logs', 'save_restart_logs', 'mag_legacy_redirect', 'restrict_playlists', 'monitor_connection_status', 'kill_rogue_ffmpeg', 'show_images', 'on_demand_instant_off', 'on_demand_failure_exit', 'playlist_from_mysql', 'ignore_invalid_users', 'block_proxies', 'block_streaming_servers', 'ip_subnet_match', 'auto_unban_ip', 'debug_show_errors', 'enable_debug_stalker', 'restart_php_fpm', 'restream_deny_unauthorised', 'api_probe', 'legacy_panel_api', 'hide_failures', 'verify_host', 'encrypt_playlist', 'encrypt_playlist_restreamer', 'mag_disable_ssl', 'legacy_get', 'legacy_xmltv', 'save_closed_connection', 'show_tickets', 'stream_logs_save', 'client_logs_save', 'streams_grouped', 'cloudflare', 'cleanup', 'dashboard_alerts', 'dashboard_alert_history', 'dashboard_stats', 'dashboard_status', 'dashboard_map', 'recaptcha_enable', 'ip_logout', 'disable_player_api', 'disable_playlist', 'disable_xmltv', 'disable_enigma2', 'disable_ministra', 'enable_isp_lock', 'block_svp', 'disable_ts', 'disable_ts_allow_restream', 'disable_hls', 'disable_hls_allow_restream', 'case_sensitive_line', 'county_override_1st', 'disallow_2nd_ip_con', 'use_mdomain_in_lists', 'encrypt_hls', 'disallow_empty_user_agents', 'detect_restream_block_user', 'download_images', 'api_redirect', 'use_buffer', 'audio_restart_loss', 'show_isps', 'priority_backup', 'rtmp_random', 'show_connected_video', 'show_not_on_air_video', 'show_banned_video', 'show_expired_video', 'show_expiring_video', 'show_all_category_mag', 'always_enabled_subtitles', 'enable_connection_problem_indication', 'show_tv_channel_logo', 'show_channel_logo_in_preview', 'disable_trial', 'restrict_same_ip', 'fanout_source_insecure', 'fanout_enabled', 'fanout_supervise', 'secure_stream_tokens', 'js_navigate', 'api_legacy_keys', 'maintenance_mode', 'reminders_email', 'reminders_mag', 'reminders_webhook'];
 
 	/** The settings that decide the transport policy's URLs besides MAIN's row: a change of them is announced (edit()). */
 	private const CLUSTER_POLICY = ['cluster_transport', 'cluster_main_host'];
@@ -52,6 +57,9 @@ class SettingsService {
 	 * @param array<string, mixed> $rSaved The keys saved.
 	 */
 	private static function saved(array $rPrevious, array $rSaved): void {
+		// The admin action trail names the settings a save changed, never their values.
+		$rChanged = array_keys(array_filter($rSaved, static fn($rValue, $rKey): bool => (string) json_encode($rValue) !== (string) json_encode($rPrevious[$rKey] ?? null), ARRAY_FILTER_USE_BOTH));
+		AdminAudit::note(['changed' => mb_substr(implode(',', $rChanged), 0, 1000)]);
 		EventDispatcher::dispatch(new SettingsChangedEvent($rPrevious, array_merge($rPrevious, $rSaved), (int) ($GLOBALS['rUserInfo']['id'] ?? 0), microtime(true)));
 	}
 
@@ -97,7 +105,6 @@ class SettingsService {
 		$rCurrent = SettingsManager::getAll();
 		$rEnv = [
 			'extension_ok' => ClusterCryptoFactory::available(),
-			'api_mode_allowed' => false, // Phase 9 (cutover) enables API-only new nodes
 			'credential_free_config' => CredentialFreeConfig::supported(),
 		];
 		if (($rKeys['cluster_transport'] ?? null) === 'https_required') {
@@ -110,9 +117,14 @@ class SettingsService {
 		[$rValues, $rErrors] = ClusterSettings::normalize($rKeys, $rMain, $rCurrent, $rEnv);
 		if (($rValues['cluster_api_enabled'] ?? 0) === 1 && empty($rCurrent['cluster_api_enabled'])) {
 			// Create the cluster root from php-fpm, so its files belong to the
-			// user that serves /cluster/v1/. Idempotent.
+			// user that serves /cluster/v1/. Idempotent, and never a new root
+			// where one was recorded (xcvm_core's ADR-005, XcvtTargets::initRoot).
 			try {
-				ClusterMeta::init(ClusterCryptoFactory::create());
+				[$rWhy] = XcvtTargets::initRoot(ClusterCryptoFactory::create());
+				if ($rWhy !== null) {
+					unset($rValues['cluster_api_enabled']);
+					$rErrors[] = ['cluster_api_enabled', 'cluster_error_root'];
+				}
 			} catch (\Throwable) {
 				unset($rValues['cluster_api_enabled']);
 				$rErrors[] = ['cluster_api_enabled', 'cluster_error_extension'];
@@ -183,6 +195,36 @@ class SettingsService {
 	 * @param array $rData Submitted settings.
 	 * @return array Result status payload.
 	 */
+
+	/**
+	 * What the first-run page sets beside the admin account, from what it
+	 * posted: the panel's language and timezone when they are ones it has, its
+	 * name when one was typed, and the message of the day as sent. A field
+	 * that was not sent, or that does not validate, is left out: the stored
+	 * value stays.
+	 *
+	 * @param array<string, mixed> $rPosted
+	 * @return array<string, string> `settings` column => value
+	 */
+	public static function firstRunValues(array $rPosted): array {
+		$rValues = [];
+		$rText = static fn(string $rKey): ?string => is_string($rPosted[$rKey] ?? null) ? trim($rPosted[$rKey]) : null;
+
+		if (in_array($rText('language'), Translator::available(), true)) {
+			$rValues['language'] = (string) $rText('language');
+		}
+		if (in_array($rText('default_timezone'), \DateTimeZone::listIdentifiers(), true)) {
+			$rValues['default_timezone'] = (string) $rText('default_timezone');
+		}
+		if ((string) $rText('server_name') !== '') {
+			$rValues['server_name'] = mb_substr((string) $rText('server_name'), 0, 255);
+		}
+		if ($rText('message_of_day') !== null) {
+			$rValues['message_of_day'] = mb_substr((string) $rText('message_of_day'), 0, 2000);
+		}
+		return $rValues;
+	}
+
 	public static function edit(array $rData) {
 		$db = self::db();
 		// The stream arguments' defaults: a change reaches the streams that use
@@ -208,9 +250,21 @@ class SettingsService {
 		CategoryService::saveGenreMap($rData);
 
 		$rArray = QueryHelper::verifyPostTable('settings', $rData, true);
+		if (array_key_exists('login_design', $rArray) && !in_array($rArray['login_design'], UiReference::loginDesigns(), true)) {
+			unset($rArray['login_design']);
+		}
 		// MAIN's own cluster state, never the form's: a POST cannot rewind the
 		// transport policy's version or drop a port kept for the nodes.
 		$rArray = array_diff_key($rArray, array_flip(self::CLUSTER_STATE));
+		// An FFmpeg build id becomes a binary path on every node: one that is no
+		// build id keeps the stored value ('' is the GPU's "same as CPU").
+		foreach (['ffmpeg_cpu', 'ffmpeg_gpu'] as $rKey) {
+			if (isset($rArray[$rKey]) && $rArray[$rKey] !== '' && !FfmpegPaths::isBuildId((string) $rArray[$rKey])) {
+				unset($rArray[$rKey]);
+			}
+		}
+		// Servers on a release that reads the single `update_channel` follow the panel's.
+		$rArray = UpdateChannels::withLegacy($rArray);
 
 		$isFullForm = isset($rData['submit_settings']);
 		foreach (self::checkboxes() as $rSetting) {
@@ -219,6 +273,16 @@ class SettingsService {
 			} elseif ($isFullForm) {
 				$rArray[$rSetting] = 0;
 			}
+		}
+
+		// Alert preferences are a delta from the rendered form, not a full-form
+		// snapshot that can undo another administrator's more recent choices.
+		$rArray = array_merge(array_diff_key($rArray, DashboardAlerts::values([])), DashboardAlerts::submitted($rData));
+
+		// Maintenance mode's end: the form sends a local date and time, the column
+		// holds a Unix time (0: no end).
+		if (array_key_exists('maintenance_until', $rArray) && !is_numeric($rArray['maintenance_until'])) {
+			$rArray['maintenance_until'] = (int) (strtotime((string) $rArray['maintenance_until']) ?: 0);
 		}
 
 		// "Responsive Tables" is presented as a positive toggle (on = columns collapse

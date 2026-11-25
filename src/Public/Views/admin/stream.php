@@ -14,9 +14,11 @@
  * xcModalSaved in the modal. Requires jstree (declared by the controller).
  */
 
+use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Module\StreamFormRegistry;
 use XcVm\Domain\Bouquet\BouquetService;
+use XcVm\Domain\Epg\EpgMerge;
 use XcVm\Domain\Stream\CategoryService;
 use XcVm\Core\Util\LayoutRenderer;
 
@@ -85,7 +87,9 @@ $rTitle = $rIsEdit ? $rStream['stream_display_name'] : ($rIsImport ? 'Import Str
                     <li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-advanced" role="tab"><i class="icon-base ti tabler-adjustments me-1"></i><?= $language::get('advanced'); ?></button></li>
                     <?php if (!$rIsImport): ?>
                         <li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-epg" role="tab"><i class="icon-base ti tabler-device-tv me-1"></i><?= $language::get('epg'); ?></button></li>
+                        <?php if (Authorization::isFullAdmin()): ?>
                         <li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-map" role="tab"><i class="icon-base ti tabler-map me-1"></i><?= $language::get('map'); ?></button></li>
+                        <?php endif; ?>
                         <?php if (empty($rMobile)): ?>
                             <li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-rtmp" role="tab"><i class="icon-base ti tabler-cloud-upload me-1"></i><?= $language::get('rtmp_push'); ?></button></li>
                         <?php endif; ?>
@@ -187,20 +191,36 @@ $rTitle = $rIsEdit ? $rStream['stream_display_name'] : ($rIsImport ? 'Import Str
                         <div class="col-md-6">
                             <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="direct_proxy" name="direct_proxy" value="1" <?= ($rIsEdit && ($rStream['direct_proxy'] ?? 0) == 1) ? 'checked' : ''; ?>><label class="form-check-label" for="direct_proxy">Direct Stream</label></div>
                         </div>
+                        <?php if ($rIsImport): ?>
+                            <div class="col-md-6">
+                                <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="add_source_as_backup" name="add_source_as_backup" value="1"><label class="form-check-label" for="add_source_as_backup"><?= $language::get('add_source_as_backup'); ?> <i class="icon-base ti tabler-help-circle text-muted" title="<?= $language::get('if_an_identical_stream_name_tooltip'); ?>"></i></label></div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="update_existing" name="update_existing" value="1"><label class="form-check-label" for="update_existing"><?= $language::get('update_existing'); ?> <i class="icon-base ti tabler-help-circle text-muted" title="<?= $language::get('if_the_source_exists_overwrite_tooltip'); ?>"></i></label></div>
+                            </div>
+                        <?php endif; ?>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="force_ffmpeg" name="force_ffmpeg" value="1" <?= ($rIsEdit && ($rStream['force_ffmpeg'] ?? 0) == 1) ? 'checked' : ''; ?>><label class="form-check-label" for="force_ffmpeg"><?= $language::get('always_use_ffmpeg'); ?> <i class="icon-base ti tabler-help-circle text-muted" title="<?= $language::get('always_use_ffmpeg_tooltip'); ?>"></i></label></div>
+                        </div>
                         <div class="col-md-6">
                             <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="fps_restart" name="fps_restart" value="1" <?= ($rIsEdit && ($rStream['fps_restart'] ?? 0) == 1) ? 'checked' : ''; ?>><label class="form-check-label" for="fps_restart">Restart on FPS Drop</label></div>
                         </div>
                         <div class="col-md-6"><label class="form-label" for="fps_threshold">FPS Threshold %</label><input type="text" inputmode="numeric" class="form-control" id="fps_threshold" name="fps_threshold" value="<?= $rIsEdit ? htmlspecialchars((string) $rStream['fps_threshold'], ENT_QUOTES) : '90'; ?>"></div>
                     </div>
                     <div class="mb-6"><label class="form-label" for="custom_sid">Custom Channel SID</label><input type="text" class="form-control" id="custom_sid" name="custom_sid" value="<?= $rIsEdit ? htmlspecialchars((string) $rStream['custom_sid'], ENT_QUOTES) : ''; ?>"></div>
+                    <?php if (Authorization::isFullAdmin()): ?>
                     <div class="mb-6"><label class="form-label" for="custom_ffmpeg"><?= $language::get('custom_ffmpeg_command'); ?></label><input type="text" class="form-control" id="custom_ffmpeg" name="custom_ffmpeg" placeholder="-i {STREAM_SOURCE} -c:v libx264 -c:a aac" value="<?= $rIsEdit ? htmlspecialchars((string) $rStream['custom_ffmpeg'], ENT_QUOTES) : ''; ?>"></div>
+                    <?php endif; ?>
                     <div class="row mb-6">
                         <div class="col-md-6"><label class="form-label" for="probesize_ondemand">On Demand Probesize</label><input type="text" inputmode="numeric" class="form-control" id="probesize_ondemand" name="probesize_ondemand" value="<?= $rIsEdit ? htmlspecialchars((string) $rStream['probesize_ondemand'], ENT_QUOTES) : htmlspecialchars((string) ($rSettings['probesize_ondemand'] ?? ''), ENT_QUOTES); ?>"></div>
                         <div class="col-md-6"><label class="form-label" for="delay_minutes">Minute Delay</label><input type="text" inputmode="numeric" class="form-control" id="delay_minutes" name="delay_minutes" value="<?= $rIsEdit ? htmlspecialchars((string) $rStream['delay_minutes'], ENT_QUOTES) : '0'; ?>"></div>
                     </div>
                     <div class="row mb-6">
                         <div class="col-md-6"><label class="form-label" for="user_agent"><?= $language::get('user_agent'); ?></label><input type="text" class="form-control" id="user_agent" name="user_agent" value="<?= htmlspecialchars($rArg('user_agent', 1), ENT_QUOTES); ?>"></div>
-                        <div class="col-md-6"><label class="form-label" for="http_proxy">HTTP Proxy</label><input type="text" class="form-control" id="http_proxy" name="http_proxy" value="<?= htmlspecialchars($rArg('proxy', 2), ENT_QUOTES); ?>"></div>
+                        <?php /* srcproxy */ $rSrcProxies = \XcVm\Domain\Stream\ProxyService::all(true); $rSrcProxyArg = \XcVm\Domain\Stream\ProxyService::argumentID(); $rSrcProxySel = (int) $rArg('proxy_id', $rSrcProxyArg); ?>
+                        <div class="col-md-3"><label class="form-label" for="proxy_id">Proxy (liste)</label><select class="form-select" id="proxy_id" name="proxy_id" data-testid="stream-proxy-select"><option value="0">— aucun / manuel —</option><?php foreach ($rSrcProxies as $rSP): ?><option value="<?= (int) $rSP['id']; ?>" <?= $rSrcProxySel === (int) $rSP['id'] ? 'selected' : ''; ?>><?= htmlspecialchars($rSP['name'] . ' (' . $rSP['host'] . ':' . $rSP['port'] . ')'); ?></option><?php endforeach; ?></select></div>
+                        <div class="col-md-3"><label class="form-label" for="http_proxy">HTTP Proxy (manuel)</label><input type="text" class="form-control" id="http_proxy" name="http_proxy" value="<?= htmlspecialchars($rArg('proxy', 2), ENT_QUOTES); ?>" <?= $rSrcProxySel > 0 ? 'readonly' : ''; ?>></div>
+                        <script>document.getElementById('proxy_id').addEventListener('change', function () { var t = document.getElementById('http_proxy'); t.readOnly = this.value !== '0'; if (this.value !== '0') { t.value = ''; t.placeholder = 'défini par le proxy choisi'; } else { t.placeholder = ''; } });</script>
                     </div>
                     <div class="row mb-6">
                         <div class="col-md-6"><label class="form-label" for="cookie">Cookie</label><input type="text" class="form-control" id="cookie" name="cookie" value="<?= htmlspecialchars($rArg('cookie', 17), ENT_QUOTES); ?>"></div>
@@ -211,6 +231,9 @@ $rTitle = $rIsEdit ? $rStream['stream_display_name'] : ($rIsImport ? 'Import Str
                             <div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="skip_ffprobe" name="skip_ffprobe" value="1" <?= (isset($rStreamOptions[21]) && $rStreamOptions[21]['value'] == 1) ? 'checked' : ''; ?>><label class="form-check-label" for="skip_ffprobe">Skip FFProbe</label></div>
                         </div>
                         <div class="col-md-6"><label class="form-label" for="force_input_acodec">Force Input Audio Codec</label><input type="text" class="form-control" id="force_input_acodec" name="force_input_acodec" placeholder="<?= $language::get('eg_aac_ac3'); ?>" value="<?= isset($rStreamOptions[20]) ? htmlspecialchars((string) $rStreamOptions[20]['value'], ENT_QUOTES) : ''; ?>"></div>
+                    </div>
+                    <div class="mb-6"><label class="form-label" for="max_height"><?= $language::get('max_resolution'); ?></label><input type="number" min="0" step="1" class="form-control" id="max_height" name="max_height" placeholder="720" value="<?= isset($rStreamOptions[22]) ? htmlspecialchars((string) $rStreamOptions[22]['value'], ENT_QUOTES) : ''; ?>">
+                        <div class="form-text"><?= $language::get('max_resolution_info'); ?></div>
                     </div>
                     <div class="mb-6">
                         <label class="form-label" for="transcode_profile_id">Transcoding Profile</label>
@@ -255,28 +278,48 @@ $rTitle = $rIsEdit ? $rStream['stream_display_name'] : ($rIsImport ? 'Import Str
                 <?php if (!$rIsImport): ?>
                     <?php
                     $rSelEpgId   = $rIsEdit ? (int) $rStream['epg_id'] : 0;
+                    $rSelectedPicks = json_decode((string) ($rStream['epg_bindings'] ?? ''), true) ?: [];
+                    $rPickActive = !empty($rSelectedPicks);
+                    if (!$rSelectedPicks && $rSelEpgId && !empty($rEPGSources[$rSelEpgId]['epg_file']) && !empty($rStream['channel_id'])) {
+                        $rSelectedPicks = [['source' => $rSelEpgId, 'channel' => (string) $rStream['channel_id'], 'lang' => (string) $rStream['epg_lang']]];
+                    }
+                    foreach ($rSelectedPicks as &$rPick) {
+                        $rPickSource = $rEPGSources[$rPick['source']] ?? [];
+                        $rPickData = json_decode((string) ($rPickSource['data'] ?? ''), true) ?: [];
+                        $rPick['name'] = $rPickData[$rPick['channel']]['display_name'] ?? $rPick['channel'];
+                        $rPick['source_name'] = $rPickSource['epg_name'] ?? (string) $rPick['source'];
+                    }
+                    unset($rPick);
+                    $rPickInputs = array_filter($rEPGSources, static fn($s) => !empty($s['epg_file']) && empty($s['merge_config']));
                     $rSelChannel = $rIsEdit ? (string) $rStream['channel_id'] : '';
                     $rSelLang    = $rIsEdit ? (string) $rStream['epg_lang'] : '';
                     $rEpgData    = ($rSelEpgId && isset($rEPGSources[$rSelEpgId])) ? (json_decode((string) $rEPGSources[$rSelEpgId]['data'], true) ?: []) : [];
                     ?>
                     <div class="tab-pane fade" id="tab-epg" role="tabpanel">
                         <ul class="nav nav-pills mb-4" role="tablist">
-                            <li class="nav-item"><button type="button" class="nav-link <?= $rIsEdit ? '' : 'active'; ?>" data-bs-toggle="tab" data-bs-target="#epg-quick" role="tab"><?= $language::get('search_epg'); ?></button></li>
-                            <li class="nav-item"><button type="button" class="nav-link <?= $rIsEdit ? 'active' : ''; ?>" data-bs-toggle="tab" data-bs-target="#epg-xmltv" role="tab"><?= $language::get('xmltv_epg'); ?></button></li>
+                            <li class="nav-item"><button type="button" class="nav-link <?= !$rIsEdit || $rPickActive ? 'active' : ''; ?>" data-bs-toggle="tab" data-bs-target="#epg-quick" role="tab"><?= $language::get('search_epg'); ?></button></li>
+                            <li class="nav-item"><button type="button" class="nav-link <?= $rIsEdit && !$rPickActive ? 'active' : ''; ?>" data-bs-toggle="tab" data-bs-target="#epg-xmltv" role="tab"><?= $language::get('xmltv_epg'); ?></button></li>
                         </ul>
                         <div class="tab-content p-0">
-                            <div class="tab-pane fade <?= $rIsEdit ? '' : 'show active'; ?>" id="epg-quick" role="tabpanel">
-                                <div>
-                                    <label class="form-label" for="quick_search"><?= $language::get('search_epg'); ?></label>
-                                    <select id="quick_search" class="form-select"></select>
+                            <div class="tab-pane fade <?= !$rIsEdit || $rPickActive ? 'show active' : ''; ?>" id="epg-quick" role="tabpanel">
+                                <input type="hidden" id="epg-pick-enabled" name="epg_pick_enabled" value="<?= $rPickActive ? '1' : '0'; ?>">
+                                <input type="hidden" id="epg-picks" name="epg_picks" value="">
+                                <p><?= $language::get('epg_pick_help'); ?></p>
+                                <h6><?= $language::get('epg_pick_selected'); ?></h6>
+                                <div id="epg-pick-list" class="mb-4"></div>
+                                <button type="button" class="btn btn-label-secondary mb-4" id="epg-pick-clear"><?= $language::get('epg_pick_clear'); ?></button>
+                                <div class="row g-3 mb-4">
+                                    <div class="col-md-8"><label class="form-label" for="quick_search"><?= $language::get('search_epg'); ?></label><input type="search" id="quick_search" class="form-control" value="<?= $rIsEdit ? htmlspecialchars((string) $rStream['stream_display_name'], ENT_QUOTES) : ''; ?>"></div>
+                                    <div class="col-md-4"><label class="form-label" for="epg-pick-source"><?= $language::get('epg_source'); ?></label><select id="epg-pick-source" class="form-select"><option value="0"><?= $language::get('epg_pick_all_sources'); ?></option><?php foreach ($rPickInputs as $rInput): ?><option value="<?= (int) $rInput['id']; ?>"><?= htmlspecialchars((string) $rInput['epg_name'], ENT_QUOTES); ?></option><?php endforeach; ?></select></div>
                                 </div>
+                                <div id="epg-search-results" aria-live="polite"></div>
                             </div>
-                            <div class="tab-pane fade <?= $rIsEdit ? 'show active' : ''; ?>" id="epg-xmltv" role="tabpanel">
+                            <div class="tab-pane fade <?= $rIsEdit && !$rPickActive ? 'show active' : ''; ?>" id="epg-xmltv" role="tabpanel">
                                 <div class="mb-6">
                                     <label class="form-label" for="epg_id"><?= $language::get('epg_source'); ?></label>
                                     <select name="epg_id" id="epg_id" class="form-select">
                                         <option value="0" <?= $rSelEpgId === 0 ? 'selected' : ''; ?>><?= $language::get('no_epg'); ?></option>
-                                        <?php foreach ($rEPGSources as $rEPG): ?>
+                                        <?php foreach ($rEPGSources as $rEPG): if (!empty(EpgMerge::config($rEPG)['selection'])) continue; ?>
                                             <option value="<?= (int) $rEPG['id']; ?>" <?= $rSelEpgId === (int) $rEPG['id'] ? 'selected' : ''; ?>><?= htmlspecialchars((string) $rEPG['epg_name'], ENT_QUOTES); ?></option>
                                         <?php endforeach; ?>
                                     </select>
@@ -307,13 +350,21 @@ $rTitle = $rIsEdit ? $rStream['stream_display_name'] : ($rIsImport ? 'Import Str
                         </div>
                     </div>
 
+                    <?php if (Authorization::isFullAdmin()): ?>
                     <div class="tab-pane fade" id="tab-map" role="tabpanel">
                         <div class="alert alert-info" role="alert"><?= $language::get('custom_map_info'); ?></div>
                         <div>
                             <label class="form-label" for="custom_map"><?= $language::get('custom_map'); ?></label>
-                            <input type="text" class="form-control" id="custom_map" name="custom_map" value="<?= $rIsEdit ? htmlspecialchars((string) $rStream['custom_map'], ENT_QUOTES) : ''; ?>">
+                            <div class="d-flex gap-2">
+                                <input type="text" class="form-control" id="custom_map" name="custom_map" value="<?= $rIsEdit ? htmlspecialchars((string) $rStream['custom_map'], ENT_QUOTES) : ''; ?>">
+                                <button type="button" class="btn btn-label-info text-nowrap" id="scan-map"><?= $language::get('scan_source'); ?></button>
+                                <button type="button" class="btn btn-label-secondary" id="clear-map"><?= $language::get('clear'); ?></button>
+                            </div>
+                            <div class="form-text"><?= $language::get('custom_map_scan_info'); ?></div>
+                            <div id="map-result" class="mt-3"></div>
                         </div>
                     </div>
+                    <?php endif; ?>
 
                     <?php if (empty($rMobile)): ?>
                         <div class="tab-pane fade" id="tab-rtmp" role="tabpanel">
@@ -492,7 +543,7 @@ LayoutRenderer::renderFooter('admin');
         var isImport = <?= $rIsImport ? 'true' : 'false'; ?>;
 
         function esc(s) {
-            return $('<div>').text(s == null ? '' : s).html();
+            return $('<div>').text(s == null ? '' : s).html().replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
         // Render the legacy probe HTML table (mdi icons, not in the new-UI) as clean
         // Bootstrap badges with Tabler icons: dims / video codec / audio codec / fps
@@ -585,6 +636,85 @@ LayoutRenderer::renderFooter('admin');
             $('#title_sync').val('').trigger('change');
         });
 
+
+
+        function updateManualEpgState() {
+            var picks = document.getElementById('epg-pick-enabled');
+            var disabled = !!(picks && picks.value === '1');
+            document.querySelectorAll('#epg-xmltv input, #epg-xmltv select').forEach(function(field) { field.disabled = disabled; });
+        }
+        var pickFlag = document.getElementById('epg-pick-enabled');
+        if (pickFlag) {
+            var pickedEntries = <?= json_encode($rSelectedPicks ?? [], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+            var pickList = document.getElementById('epg-pick-list');
+            var pickResults = document.getElementById('epg-search-results');
+            var pickSearch = document.getElementById('quick_search');
+            var pickSource = document.getElementById('epg-pick-source');
+            var pickTimer, pickRequest, pickSequence = 0;
+            var pickLabels = <?= json_encode(['add' => $language::get('epg_pick_add'), 'remove' => $language::get('delete'), 'up' => $language::get('epg_pick_up'), 'down' => $language::get('epg_pick_down'), 'empty' => $language::get('epg_pick_empty'), 'more' => $language::get('epg_pick_more'), 'limit' => $language::get('epg_pick_limit')], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+            function activatePicks() {
+                pickFlag.value = pickedEntries.length ? '1' : '0';
+                if (!pickedEntries.length && <?= !empty($rPickActive) ? 'true' : 'false'; ?>) $('#epg_id').val('0').trigger('change');
+                updateManualEpgState();
+                renderPicks();
+            }
+            function smallButton(text, label, action) {
+                var button = document.createElement('button');
+                button.type = 'button'; button.className = 'btn btn-sm btn-label-secondary';
+                button.textContent = text; button.setAttribute('aria-label', label); button.title = label;
+                button.addEventListener('click', action); return button;
+            }
+            function renderPicks() {
+                document.getElementById('epg-picks').value = JSON.stringify(pickedEntries.map(function(entry) { return { source: Number(entry.source), channel: entry.channel, lang: entry.lang || '' }; }));
+                pickList.textContent = '';
+                if (!pickedEntries.length) pickList.textContent = pickLabels.empty;
+                pickedEntries.forEach(function(entry, index) {
+                    var row = document.createElement('div'); row.className = 'd-flex align-items-center gap-2 border rounded p-3 mb-2';
+                    var title = document.createElement('div'); title.className = 'flex-grow-1';
+                    title.textContent = (index + 1) + '. ' + (entry.name || entry.channel) + ' — ' + (entry.source_name || entry.source) + ' (' + entry.channel + ')';
+                    row.appendChild(title);
+                    var up = smallButton('↑', pickLabels.up, function() { if (index) { var previous = pickedEntries[index - 1]; pickedEntries[index - 1] = entry; pickedEntries[index] = previous; activatePicks(); } });
+                    up.disabled = index === 0; row.appendChild(up);
+                    var down = smallButton('↓', pickLabels.down, function() { if (index + 1 < pickedEntries.length) { var next = pickedEntries[index + 1]; pickedEntries[index + 1] = entry; pickedEntries[index] = next; activatePicks(); } });
+                    down.disabled = index + 1 === pickedEntries.length; row.appendChild(down);
+                    row.appendChild(smallButton('×', pickLabels.remove, function() { pickedEntries.splice(index, 1); activatePicks(); }));
+                    pickList.appendChild(row);
+                });
+                pickResults.querySelectorAll('button[data-pick-key]').forEach(function(button) { button.disabled = pickedEntries.some(function(entry) { return button.dataset.pickKey === entry.source + ':' + entry.channel; }); });
+            }
+            function searchPicks() {
+                clearTimeout(pickTimer); var sequence = ++pickSequence;
+                if (pickRequest) pickRequest.abort();
+                var search = pickSearch.value.trim(); pickResults.textContent = '';
+                if (!search) return;
+                pickTimer = setTimeout(function() {
+                    pickRequest = $.ajax({ url: './api', dataType: 'json', data: { action: 'epg_search', search: search, source: pickSource.value } })
+                        .done(function(data) {
+                            if (sequence !== pickSequence) return;
+                            pickResults.textContent = '';
+                            if (!data.result) { pickResults.textContent = errText; return; }
+                            if (!data.items.length) pickResults.textContent = pickLabels.empty;
+                            data.items.forEach(function(entry) {
+                                var row = document.createElement('div'); row.className = 'd-flex align-items-center gap-2 border-bottom py-3';
+                                var title = document.createElement('div'); title.className = 'flex-grow-1';
+                                title.textContent = entry.name + (entry.country ? ' [' + entry.country.toUpperCase() + ']' : '') + ' — ' + entry.source_name + ' (' + entry.channel + ')'; row.appendChild(title);
+                                var add = smallButton('+', pickLabels.add, function() {
+                                    if (pickedEntries.length >= 20) { xcToast(pickLabels.limit, 'error'); return; }
+                                    if (!pickedEntries.some(function(item) { return Number(item.source) === Number(entry.source) && item.channel === entry.channel; })) { pickedEntries.push(entry); var channelName = document.getElementById('stream_display_name'); if (channelName && !channelName.value.trim()) channelName.value = entry.name; activatePicks(); }
+                                });
+                                add.className = 'btn btn-sm btn-primary'; add.dataset.pickKey = entry.source + ':' + entry.channel;
+                                row.appendChild(add); pickResults.appendChild(row);
+                            });
+                            if (data.more) { var more = document.createElement('p'); more.className = 'text-body-secondary mt-3'; more.textContent = pickLabels.more; pickResults.appendChild(more); }
+                            renderPicks();
+                        }).fail(function(xhr, status) { if (sequence === pickSequence && status !== 'abort') pickResults.textContent = errText; });
+                }, 250);
+            }
+            document.getElementById('epg-pick-clear').addEventListener('click', function() { pickedEntries = []; activatePicks(); });
+            pickSearch.addEventListener('input', searchPicks); pickSource.addEventListener('change', searchPicks);
+            renderPicks(); searchPicks(); updateManualEpgState();
+        }
+
         // ---- EPG tab: source → channel → language cascade ----
         var rEPG = <?= json_encode($rEPGJS); ?>;
         if (document.getElementById('epg_id')) {
@@ -619,57 +749,7 @@ LayoutRenderer::renderFooter('admin');
             $('#epg_id').on('change', selectEPGSource);
             $('#channel_id').on('change', selectEPGID);
 
-            // Quick Search — ajax select2 over ./api?action=epglist, auto-fills the XMLTV fields.
-            $('#quick_search').select2({
-                width: '100%',
-                placeholder: <?= json_encode($language::get('search_epg')); ?>,
-                allowClear: true,
-                dropdownParent: $('#epg-quick'),
-                ajax: {
-                    url: './api',
-                    dataType: 'json',
-                    cache: true,
-                    data: function(params) {
-                        return {
-                            search: params.term,
-                            action: 'epglist',
-                            page: params.page
-                        };
-                    },
-                    processResults: function(data, params) {
-                        params.page = params.page || 1;
-                        return {
-                            results: data.items,
-                            pagination: {
-                                more: (params.page * 100) < data.total_count
-                            }
-                        };
-                    }
-                }
-            });
-            $('#quick_search').on('change', function() {
-                if (!$(this).val()) {
-                    return;
-                }
-                var d = ($('#quick_search').select2('data') || [])[0];
-                if (d && d.type == 0) {
-                    $('#epg_id').val(d.epg_id).trigger('change');
-                    $('#channel_id').val(d.id).trigger('change');
-                    $('#epg_lang').val(d.lang).trigger('change');
-                    var xmltvBtn = document.querySelector('[data-bs-target="#epg-xmltv"]');
-                    if (xmltvBtn && window.bootstrap) {
-                        bootstrap.Tab.getOrCreateInstance(xmltvBtn).show();
-                    }
-                    var nm = document.getElementById('stream_display_name');
-                    if (nm && nm.value.length === 0 && d.text) {
-                        nm.value = d.text;
-                    }
-                    if (d.icon) {
-                        window.offerEpgPicon(d.icon);
-                    }
-                }
-                $('#quick_search').val('').trigger('change');
-            });
+
         }
 
         // ---- EPG picon prompt: offer to use the EPG channel icon as the stream logo ----
@@ -825,26 +905,106 @@ LayoutRenderer::renderFooter('admin');
                 window.addStream();
             });
         }
+        var probingBadge = '<span class="badge bg-label-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:.7rem;height:.7rem;vertical-align:-1px"></span>Probing…</span>';
+
+        // Probe through the first selected server, with the stream's own user agent,
+        // proxy, cookies and headers, as the real stream fetches the source.
+        function probeURL(url) {
+            var onlineSrv = $('#server_tree').jstree(true).get_json('source', {
+                flat: true
+            });
+            var server = (onlineSrv[1] !== undefined) ? onlineSrv[1].id : '';
+            return './api?action=probe_stream&url=' + encodeURIComponent(url) + '&user_agent=' + encodeURIComponent($('#user_agent').val()) + '&proxy=' + encodeURIComponent($('#http_proxy').val()) + '&cookies=' + encodeURIComponent($('#cookie').val()) + '&headers=' + encodeURIComponent($('#headers').val()) + '&server=' + server;
+        }
+
         var scanBtn = document.getElementById('scan-sources');
         if (scanBtn) {
             scanBtn.addEventListener('click', function() {
-                var onlineSrv = $('#server_tree').jstree(true).get_json('source', {
-                    flat: true
-                });
-                var server = (onlineSrv[1] !== undefined) ? onlineSrv[1].id : '';
                 list.querySelectorAll('.source-row').forEach(function(row) {
                     var url = row.querySelector('.src-input').value;
                     if (!url) {
                         return;
                     }
                     var info = row.querySelector('.src-info');
-                    info.innerHTML = '<span class="badge bg-label-secondary"><span class="spinner-border spinner-border-sm me-1" style="width:.7rem;height:.7rem;vertical-align:-1px"></span>Probing…</span>';
-                    $.get('./api?action=probe_stream&url=' + encodeURIComponent(url) + '&user_agent=' + encodeURIComponent($('#user_agent').val()) + '&proxy=' + encodeURIComponent($('#http_proxy').val()) + '&cookies=' + encodeURIComponent($('#cookie').val()) + '&headers=' + encodeURIComponent($('#headers').val()) + '&server=' + server, function(data) {
+                    info.innerHTML = probingBadge;
+                    $.get(probeURL(url), function(data) {
                         info.innerHTML = renderProbe(data);
                     });
                 });
             });
         }
+
+        // ---- custom map: scan the source, click a row to toggle its -map ----
+        var mapField = $('#custom_map');
+        var mapResult = $('#map-result');
+
+        function mapPattern(spec) {
+            return new RegExp('(^|\\s)-map\\s+' + spec + '(?=\\s|$)');
+        }
+
+        function markMapRows() {
+            mapResult.find('tr[data-map]').each(function() {
+                $(this).toggleClass('table-primary', mapPattern($(this).attr('data-map')).test(mapField.val()));
+            });
+        }
+
+        function streamDetails(s) {
+            if (s.codec_type === 'video') {
+                var fps = String(s.avg_frame_rate || s.r_frame_rate || '').split('/');
+                var rate = (fps.length === 2 && +fps[1]) ? Math.round(fps[0] / fps[1] * 100) / 100 : 0;
+                return (s.width ? s.width + 'x' + s.height : '') + (rate ? ' @ ' + rate + ' fps' : '');
+            }
+            if (s.codec_type === 'audio') {
+                return (s.sample_rate ? s.sample_rate + ' Hz' : '') + (s.channels ? ', ' + s.channels + ' ch' : '') + (s.channel_layout ? ' (' + s.channel_layout + ')' : '');
+            }
+            return '';
+        }
+
+        $('#scan-map').on('click', function() {
+            var url = $('#sources-list .src-input').filter(function() {
+                return this.value;
+            }).first().val();
+            if (!url) {
+                mapResult.html('<span class="badge bg-label-warning">' + esc(<?= json_encode($language::get('custom_map_no_source')); ?>) + '</span>');
+                return;
+            }
+            mapResult.html(probingBadge);
+            $.getJSON(probeURL(url) + '&map=1').done(function(info) {
+                var streams = (info && Array.isArray(info.streams)) ? info.streams : [];
+                if (!streams.length) {
+                    mapResult.html('<span class="badge bg-label-danger"><i class="icon-base ti tabler-alert-triangle me-1"></i>' + esc(<?= json_encode($language::get('probe_failed')); ?>) + '</span>');
+                    return;
+                }
+                var html = '<div class="table-responsive"><table class="table table-sm table-hover mb-0"><thead><tr>' +
+                    <?= json_encode(array_map(fn($rKey) => $language::get($rKey), ['map', 'type', 'codec', 'details', 'language'])); ?>.map(function(t) {
+                        return '<th>' + esc(t) + '</th>';
+                    }).join('') +
+                    '</tr></thead><tbody>';
+                streams.forEach(function(s, i) {
+                    var spec = '0:' + (parseInt(s.index, 10) >= 0 ? parseInt(s.index, 10) : i);
+                    html += '<tr data-map="' + spec + '" style="cursor:pointer"><td><code>' + spec + '</code></td><td>' + esc(s.codec_type) + '</td><td>' + esc(s.codec_name) +
+                        '</td><td>' + esc(streamDetails(s)) + '</td><td>' + esc((s.tags && s.tags.language) || '') + '</td></tr>';
+                });
+                mapResult.html(html + '</tbody></table></div>');
+                markMapRows();
+            }).fail(function() {
+                mapResult.html('<span class="badge bg-label-danger">' + esc(errText) + '</span>');
+            });
+        });
+
+        mapResult.on('click', 'tr[data-map]', function() {
+            var spec = $(this).attr('data-map');
+            var value = mapField.val();
+            value = mapPattern(spec).test(value) ? value.replace(mapPattern(spec), ' ') : value + ' -map ' + spec;
+            mapField.val(value.replace(/\s+/g, ' ').trim());
+            markMapRows();
+        });
+
+        $('#clear-map').on('click', function() {
+            mapField.val('');
+            markMapRows();
+        });
+        mapField.on('input', markMapRows);
 
         // ---- provider search ----
         var provBtn = document.getElementById('provider-streams');
@@ -860,7 +1020,8 @@ LayoutRenderer::renderFooter('admin');
                 return '<span class="tooltip" title="' + title + '">' + esc(row.provider_name) + '</span>';
             }
             function providerAddButton(row) {
-                return '<button type="button" class="btn btn-light waves-effect waves-light btn-xs prov-add" data-name="' + escAttr(row.name) + '" data-url="' + escAttr(row.stream_url) + '"><i class="mdi mdi-check"></i></button>';
+                return '<button type="button" class="btn btn-light waves-effect waves-light btn-xs prov-add" data-name="' + escAttr(row.name) + '" data-url="' + escAttr(row.stream_url) + '"><i class="mdi mdi-check"></i></button> ' +
+                    '<button type="button" class="btn btn-sm btn-label-info text-wrap prov-check" data-url="' + escAttr(row.stream_url) + '">' + esc(<?= json_encode($language::get('scan_source')); ?>) + '</button>';
             }
             var provTable = $('#datatable-provider-streams').DataTable({
                 serverSide: true,
@@ -903,6 +1064,37 @@ LayoutRenderer::renderFooter('admin');
                         return providerAddButton(row);
                     }
                 }]
+            });
+            var providerProbeRequest = null;
+            var providerProbeSequence = 0;
+            $('#datatable-provider-streams tbody').on('click', '.prov-check', function() {
+                if (providerProbeRequest) { return; }
+                var button = this;
+                var sequence = ++providerProbeSequence;
+                button.textContent = <?= json_encode($language::get('loading')); ?> + '…';
+                button.classList.remove('btn-label-success', 'btn-label-danger');
+                button.classList.add('btn-label-info');
+                button.setAttribute('aria-live', 'polite');
+                button.disabled = true;
+                providerProbeRequest = $.ajax({ url: probeURL(button.dataset.url), dataType: 'html', timeout: 45000 })
+                    .done(function(data) {
+                        if (sequence !== providerProbeSequence) { return; }
+                        var rows = $('<div>').html(data).find('tr');
+                        var online = rows.length > 1;
+                        var details = online ? rows.eq(1).find('td').map(function() { return $(this).text().replace(/\s+/g, ' ').trim(); }).get().slice(0, 4).filter(Boolean).join(' · ') : '';
+                        button.textContent = online ? <?= json_encode($language::get('online')); ?> + (details ? ' · ' + details : '') : <?= json_encode($language::get('probe_failed')); ?>;
+                        button.classList.remove('btn-label-info');
+                        button.classList.add(online ? 'btn-label-success' : 'btn-label-danger');
+                    })
+                    .fail(function() { if (sequence === providerProbeSequence) { button.textContent = <?= json_encode($language::get('probe_failed')); ?>; button.classList.remove('btn-label-info'); button.classList.add('btn-label-danger'); } })
+                    .always(function() {
+                        button.disabled = false;
+                        if (sequence === providerProbeSequence) { providerProbeRequest = null; }
+                    });
+            });
+            document.getElementById('providerModal').addEventListener('hidden.bs.modal', function() {
+                providerProbeSequence++;
+                if (providerProbeRequest) { providerProbeRequest.abort(); providerProbeRequest = null; }
             });
             $('#datatable-provider-streams tbody').on('click', '.prov-add', function() {
                 addStream(this.dataset.url);
@@ -968,7 +1160,7 @@ LayoutRenderer::renderFooter('admin');
             });
 
         // ---- direct source / proxy enable-disable ----
-        var dsFields = ['llod', 'fps_restart', 'fps_threshold', 'adaptive_link', 'custom_sid', 'custom_ffmpeg', 'read_native', 'gen_timestamps', 'stream_all', 'allow_record', 'rtmp_output', 'delay_minutes', 'custom_map', 'probesize_ondemand', 'transcode_profile_id', 'days_to_restart', 'time_to_restart', 'on_demand', 'tv_archive_duration', 'tv_archive_server_id', 'vframes_server_id', 'restart_on_edit'];
+        var dsFields = ['llod', 'fps_restart', 'fps_threshold', 'adaptive_link', 'custom_sid', 'custom_ffmpeg', 'force_ffmpeg', 'read_native', 'gen_timestamps', 'stream_all', 'allow_record', 'rtmp_output', 'delay_minutes', 'custom_map', 'probesize_ondemand', 'transcode_profile_id', 'days_to_restart', 'time_to_restart', 'on_demand', 'tv_archive_duration', 'tv_archive_server_id', 'vframes_server_id', 'restart_on_edit'];
 
         function setDis(id, off) {
             var el = document.getElementById(id);

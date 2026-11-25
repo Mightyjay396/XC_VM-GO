@@ -32,7 +32,10 @@ class CreatedChannelController extends BaseAdminController {
 		if (!RequestManager::has('id')) {
 			$rChannel = null;
 		} else {
-			$rChannel = StreamRepository::getById(RequestManager::get('id'));
+			// The channel as stored: the form escapes what it prints and posts it back,
+			// so text read through the row cleaner ('&lt;' for '<') would be saved escaped.
+			$db->query('SELECT * FROM `streams` WHERE `id` = ?;', intval(RequestManager::get('id')));
+			$rChannel = $db->get_raw_row();
 
 			if (!$rChannel || $rChannel['type'] != 3) {
 				AdminHelpers::goHome();
@@ -70,22 +73,27 @@ class CreatedChannelController extends BaseAdminController {
 
 			foreach ($rServers as $rServer) {
 				if (isset($rChannelSys[intval($rServer['id'])])) {
+					// An on-demand server is one of the channel's servers, chosen in the
+					// on-demand list (StreamController does the same): left off the tree
+					// and off the list, saving the form took it off the channel.
 					$rParent = $rChannelSys[intval($rServer['id'])]['parent_id'] != 0
 						? intval($rChannelSys[intval($rServer['id'])]['parent_id'])
-						: (!$rChannelSys[intval($rServer['id'])]['on_demand'] ? 'source' : null);
+						: 'source';
+
+					if ($rChannelSys[intval($rServer['id'])]['on_demand']) {
+						$rOnDemand[] = intval($rServer['id']);
+					}
 				} else {
 					$rParent = 'offline';
 				}
 
-				if ($rParent !== null) {
-					$rServerTree[] = [
-						'id' => $rServer['id'],
-						'parent' => $rParent,
-						'text' => $rServer['server_name'],
-						'icon' => 'icon-base ti tabler-server',
-						'state' => ['opened' => true]
-					];
-				}
+				$rServerTree[] = [
+					'id' => $rServer['id'],
+					'parent' => $rParent,
+					'text' => $rServer['server_name'],
+					'icon' => 'icon-base ti tabler-server',
+					'state' => ['opened' => true]
+				];
 			}
 		} else {
 			foreach ($rServers as $rServer) {

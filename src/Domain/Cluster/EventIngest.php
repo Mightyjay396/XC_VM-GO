@@ -57,6 +57,17 @@ final class EventIngest {
 	private const LOCK_WAIT = 10.0;
 
 	/**
+	 * How many times a batch's transaction is retried when it loses an InnoDB
+	 * deadlock (SQLSTATE 40001) to another node's batch over the rows they
+	 * share (e.g. lines_divergence). Without the retry the batch fails and the
+	 * node sends it again a poll later; the retry absorbs the transient loser
+	 * in-process, as CommandBus::enqueue does. A non-deadlock failure is not
+	 * retried (the batch fails as before). Re-applying is safe: the per-node
+	 * flock still holds, so the cursor has not moved and the batch is the same.
+	 */
+	private const INGEST_ATTEMPTS = 8;
+
+	/**
 	 * How long a P0 batch's fingerprint outlives the next one (ms): a copy
 	 * signed before the node moved on is refused past the request window
 	 * (90 s). The newest is kept however old: the node resends its batch until
@@ -78,6 +89,7 @@ final class EventIngest {
 		'security.block_ip' => ['p0', NodeRegistry::FLOW_CONFIG],
 		'node.state' => ['p0', NodeRegistry::FLOW_TELEMETRY],
 		'node.inventory' => ['p1', NodeRegistry::FLOW_TELEMETRY],
+		'node.root_result' => ['p0', NodeRegistry::FLOW_COMMANDS],
 		'conn.divergence' => ['p1', NodeRegistry::FLOW_CONNECTIONS],
 		'conn.touch' => ['p2', NodeRegistry::FLOW_CONNECTIONS],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
@@ -168,41 +180,56 @@ final class EventIngest {
 			// a transaction a batch that failed half way would keep its first
 			// half, and the node would send all of it again.
 			$rTx = method_exists($rDb, 'beginTransaction');
-			self::$rAfterCommit = [];
-			if ($rTx && !$rDb->beginTransaction()) {
-				throw new \RuntimeException('cannot start the batch\'s transaction');
-			}
-			try {
-				$rApplied = 0;
-				$rDropped = 0;
-				foreach ($rEvents as $rEvent) {
-					if (self::apply($rNode, $rLane, $rEvent)) {
-						$rApplied++;
-					} else {
-						$rDropped++;
+			$rApplied = 0;
+			$rDropped = 0;
+			for ($rAttempt = 1;; $rAttempt++) {
+				self::$rAfterCommit = [];
+				if ($rTx && !$rDb->beginTransaction()) {
+					throw new \RuntimeException('cannot start the batch\'s transaction');
+				}
+				try {
+					$rApplied = 0;
+					$rDropped = 0;
+					foreach ($rEvents as $rEvent) {
+						if (self::apply($rNode, $rLane, $rEvent)) {
+							$rApplied++;
+						} else {
+							$rDropped++;
+						}
 					}
-				}
-				// The batch counts as applied only with its cursor. One that
-				// was not written (the connection dropped mid-batch, taking
-				// the transaction with it) fails the batch, and the node sends
-				// it again instead of moving on past events MAIN never kept.
-				// So does a commit that failed.
-				if (!$rDb->query('UPDATE `cluster_nodes` SET `' . $rColumn . '` = ? WHERE `server_id` = ? AND `' . $rColumn . '` < ?;', $rLast, $rServerID, $rLast)) {
-					throw new \RuntimeException('cannot advance the node\'s cursor');
-				}
-				if ($rTx && !$rDb->commit()) {
-					throw new \RuntimeException('cannot commit the batch');
-				}
-			} catch (\Throwable $rE) {
-				self::$rAfterCommit = []; // nothing of the batch was kept: nothing follows it
-				if ($rTx) {
-					try {
-						$rDb->rollback();
-					} catch (\Throwable) {
-						// MySQL already rolled it back (a deadlock): the batch's own failure stands.
+					// The batch counts as applied only with its cursor. One that
+					// was not written (the connection dropped mid-batch, taking
+					// the transaction with it) fails the batch, and the node sends
+					// it again instead of moving on past events MAIN never kept.
+					// So does a commit that failed.
+					if (!$rDb->query('UPDATE `cluster_nodes` SET `' . $rColumn . '` = ? WHERE `server_id` = ? AND `' . $rColumn . '` < ?;', $rLast, $rServerID, $rLast)) {
+						throw new \RuntimeException('cannot advance the node\'s cursor');
 					}
+					if ($rTx && !$rDb->commit()) {
+						throw new \RuntimeException('cannot commit the batch');
+					}
+					break;
+				} catch (\Throwable $rE) {
+					// A deadlock (SQLSTATE 40001) already rolled the whole
+					// transaction back; capture that before the rollback below.
+					$rDeadlock = method_exists($rDb, 'wasDeadlock') && $rDb->wasDeadlock();
+					self::$rAfterCommit = []; // nothing of the batch was kept: nothing follows it
+					if ($rTx) {
+						try {
+							$rDb->rollback();
+						} catch (\Throwable) {
+							// MySQL already rolled it back (a deadlock): the batch's own failure stands.
+						}
+					}
+					// Retry only a deadlock, and only so many times: another
+					// node's batch won the shared rows; let it commit, then redo
+					// this one whole rather than fail it for the node to resend.
+					if ($rDeadlock && $rAttempt < self::INGEST_ATTEMPTS) {
+						usleep(random_int(2000, 20000) * $rAttempt);
+						continue;
+					}
+					throw $rE;
 				}
-				throw $rE;
 			}
 			self::afterBatch();
 			return ['ok' => true, 'useq' => $rLast, 'applied' => $rApplied, 'dropped' => $rDropped];
@@ -401,7 +428,7 @@ final class EventIngest {
 			case 'conn.remove':
 				return ConnectionIngest::remove($rServerID, (string) ($rData['uuid'] ?? ''), true);
 			case 'conn.close':
-				return ConnectionIngest::close($rServerID, (string) ($rData['uuid'] ?? ''));
+				return ConnectionIngest::close($rServerID, (string) ($rData['uuid'] ?? ''), self::afterCommit(...));
 			case 'conn.limit':
 				return ConnectionLimits::queue($rServerID, $rData);
 			case 'conn.divergence':
@@ -414,6 +441,18 @@ final class EventIngest {
 			case 'node.inventory':
 				// time_offset as the legacy cron measured it: node clock − MAIN's.
 				return self::nodeRow($rServerID, $rData, NodeStateSink::INVENTORY, ['time_offset' => (int) round(self::clockOffsetMs($rNode) / 1000)]);
+			case 'node.root_result':
+				// Root's own report of a credential action (ClusterRootCommand) whose
+				// ack may have said only "queued": taken as the ack is, once the batch
+				// has committed.
+				$rCmdID = (string) ($rData['cmd_id'] ?? '');
+				if (preg_match('/^[0-9a-f]{32}\z/', $rCmdID) !== 1) {
+					return false;
+				}
+				$rOk = ($rData['ok'] ?? null) === true;
+				$rResult = (string) ($rData['result'] ?? '');
+				self::afterCommit(static fn() => DbCredentials::acked($rServerID, $rCmdID, $rOk, $rResult));
+				return true;
 		}
 		// skip: the node dropped logs past its cap.
 		$rCount = max(0, (int) ($rData['count'] ?? 0));
@@ -513,7 +552,10 @@ final class EventIngest {
 	/**
 	 * A node's own `status` from its node.state (NodeStateSink::status): only
 	 * updating or back (STATUSES), and only over one of them, so an install
-	 * state MAIN set (3, 4) is never the node's to leave.
+	 * state MAIN set (3, 4) is never the node's to leave. MAIN notes when it
+	 * took a 5, in the batch (HeartbeatService::UPDATING): the agent's
+	 * heartbeats go on until the update stops it, and leave the 5 alone for
+	 * HeartbeatService::UPDATING_HOLD_SEC. A 1 drops the note.
 	 *
 	 * @param array<string, mixed> $rData
 	 */
@@ -523,6 +565,13 @@ final class EventIngest {
 			return false;
 		}
 		self::run('UPDATE `servers` SET `status` = ? WHERE `id` = ? AND `status` IN (' . implode(', ', NodeStateSink::STATUSES) . ');', $rStatus, $rServerID);
+		// One statement each: a delete and an insert would take the gap's lock
+		// first, and two nodes reporting at once would deadlock on it.
+		if ($rStatus === 5) {
+			self::run('INSERT INTO `cluster_meta` (`name`, `value`, `updated_at`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `value` = VALUES(`value`), `updated_at` = VALUES(`updated_at`);', HeartbeatService::UPDATING . $rServerID, '5', ClusterClock::now());
+		} else {
+			self::run('DELETE FROM `cluster_meta` WHERE `name` = ?;', HeartbeatService::UPDATING . $rServerID);
+		}
 		return true;
 	}
 
@@ -718,8 +767,8 @@ final class EventIngest {
 
 	/**
 	 * A `log.syslog` row as MAIN keeps it: what root did on the sending node
-	 * (LogSink::syslog), so one of LogSink::SYSLOG_TYPES (never `AUTH`, whose
-	 * addresses cron:root_mysql blocks), as `root` from `localhost` with no
+	 * (LogSink::syslog), so one of LogSink::SYSLOG_TYPES (never `AUTH`, which
+	 * no node writes), as `root` from `localhost` with no
 	 * database, dated no later than MAIN's clock: the newest date is
 	 * cron:root_mysql's watermark for MySQL's own log. Null: refused.
 	 *

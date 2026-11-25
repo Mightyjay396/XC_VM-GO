@@ -7,8 +7,12 @@ use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Events\Vod\VodImportResultEvent;
+use XcVm\Core\Http\ApiClient;
+use XcVm\Core\Util\AdminHelpers;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Core\Process\Multithread;
+use XcVm\Core\Http\CurlClient;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Stream\CategoryService;
 use XcVm\Domain\Stream\StreamProcess;
@@ -37,6 +41,37 @@ class VodItemImporter {
 	private const SERIES_CACHE_TTL_SECONDS = 360;
 
 	/**
+	 * How long a season_*.cache (a TMDb season's episodes, seasonEpisodes())
+	 * is trusted. The watch module's scan clears every *.cache there as it
+	 * starts; a Movies/Series import has this limit only.
+	 */
+	private const SEASON_CACHE_TTL_SECONDS = 3600;
+
+	/** The least similarity (%) an episode title needs to name a file's episode (matchEpisodeByTitle()). */
+	private const EPISODE_TITLE_MIN_SCORE = 65;
+
+	/** By how many points the best episode title must lead the next one: "Part 1" and "Part 2" differ by less. */
+	private const EPISODE_TITLE_MIN_LEAD = 10;
+
+	/** What the importer reads of a TMDb episode, and so all a season_*.cache keeps of it. */
+	private const EPISODE_FIELDS = ['episode_number' => 0, 'name' => 0, 'id' => 0, 'air_date' => 0, 'overview' => 0, 'vote_average' => 0, 'still_path' => 0];
+
+	/** Plain letters => the lowercase Latin letters parseTitle() reads as them. */
+	private const LATIN_FOLD = [
+		'a' => 'àáâãäåāăąǎ', 'c' => 'çćĉċč', 'd' => 'ďđð', 'e' => 'èéêëēĕėęě', 'g' => 'ĝğġģ', 'h' => 'ĥħ',
+		'i' => 'ìíîïĩīĭįıǐ', 'j' => 'ĵ', 'k' => 'ķ', 'l' => 'ĺļľŀł', 'n' => 'ñńņňŉ', 'o' => 'òóôõöøōŏőǒ',
+		'r' => 'ŕŗř', 's' => 'śŝşšș', 't' => 'ţťŧț', 'u' => 'ùúûüũūŭůűųǔ', 'w' => 'ŵ', 'y' => 'ýÿŷ', 'z' => 'źżž',
+		'ae' => 'æ', 'oe' => 'œ', 'ss' => 'ß', 'th' => 'þ',
+	];
+
+	/** Script of a letter, for titleCandidates(): kana and kanji are one Japanese run. */
+	private const TITLE_SCRIPTS = [
+		'Latin' => '\\p{Latin}', 'Arabic' => '\\p{Arabic}', 'Cyrillic' => '\\p{Cyrillic}', 'Greek' => '\\p{Greek}',
+		'Hebrew' => '\\p{Hebrew}', 'Cjk' => '[\\p{Han}\\p{Hiragana}\\p{Katakana}]', 'Hangul' => '\\p{Hangul}',
+		'Thai' => '\\p{Thai}', 'Devanagari' => '\\p{Devanagari}',
+	];
+
+	/**
 	 * Add an item to a bouquet (via the DB when importing, otherwise as a file for checkBouquets()).
 	 *
 	 * @param string $rType
@@ -61,14 +96,11 @@ class VodItemImporter {
 	 * @return array|null
 	 */
 	public static function parserelease($rRelease, $rType = 'guessit') {
-		if ($rType == 'guessit') {
-			$rCommand = MAIN_HOME . 'bin/guess ' . escapeshellarg($rRelease . '.mkv');
-		} else {
-			$rCommand = '/usr/bin/python3 ' . MAIN_HOME . 'bin/python/release.py ' . escapeshellarg(str_replace('-', '_', $rRelease));
-		}
-		// The parser path is MAIN_HOME's; the release name is escapeshellarg()'d.
-		// nosemgrep: php.lang.security.exec-use.exec-use
-		$rResult = json_decode(shell_exec($rCommand), true);
+		// IPTV providers tag names "|FHD| Title", "|FR| Title": never part of
+		// the title, and "|" is \p{Sm}, which parseTitle() keeps, so a tag left
+		// in sinks both the TMDb search and the similarity check (No match).
+		$rRelease = trim(preg_replace('/\|[^\s|][^|]{0,10}\|/u', ' ', (string) $rRelease));
+		$rResult = $rType == 'guessit' ? AdminHelpers::runReleaseParser('guessit', $rRelease . '.mkv') : AdminHelpers::runReleaseParser('ptn', str_replace('-', '_', $rRelease));
 		if (!is_array($rResult)) {
 			$rResult = [];
 		}
@@ -79,21 +111,135 @@ class VodItemImporter {
 		// override.
 		if (preg_match('/^(.+?)[\s._-]+[Ss](\d{1,3})[\s._-]*[Ee](\d{1,4})/', $rRelease, $rMatch)) {
 			$rCleanTitle = trim(preg_replace('/\s+/', ' ', preg_replace('/[._]+/', ' ', $rMatch[1])));
-			// Strip a trailing year from the title ("Boston Blue (2025)" →
-			// "Boston Blue") — it breaks the TMDB search. The year is kept
-			// separately for the search. Guard: don't touch it if the year is
-			// the whole title (e.g. the series "1923").
-			if (preg_match('/^(.*?)[\s._-]*\(?((?:19|20)\d{2})\)?$/', $rCleanTitle, $rYearMatch) && trim($rYearMatch[1]) !== '') {
-				$rResult['year'] = intval($rYearMatch[2]);
-				$rCleanTitle = trim($rYearMatch[1]);
+			[$rCleanTitle, $rTitleYear] = self::splitYear($rCleanTitle);
+			if ($rTitleYear !== null) {
+				$rResult['year'] = $rTitleYear;
 			}
 			if ($rCleanTitle !== '') {
 				$rResult['title'] = $rCleanTitle;
+				// This title came from the SxxExx regex, not the parser's own
+				// tokenisation, so the parser's "excess" belongs to that wrong
+				// parse (for "Judge Judy - S19E01…" PTN leaves "Judge" in excess).
+				// Dropping it stops releaseTitle() stripping a real title word
+				// ("Judge Judy" → "Judy").
+				unset($rResult['excess']);
 				$rResult['season'] = intval($rMatch[2]);
-				$rResult['episode'] = intval($rMatch[3]);
+				// A range the parser read from this very episode on (S01E02E03 as
+				// [2, 3]) is kept: written over, a double episode was named as one.
+				$rRange = $rResult['episode'] ?? null;
+				if (!(is_array($rRange) && count($rRange) == 2 && intval($rRange[0]) === intval($rMatch[3]))) {
+					$rResult['episode'] = intval($rMatch[3]);
+				}
 			}
 		}
 		return $rResult;
+	}
+
+	/**
+	 * A title without the year it names, and that year: it breaks the TMDb
+	 * search, which takes the year on its own. The year may end the title
+	 * ("Boston Blue (2025)") or stand in brackets inside it, as in a provider's
+	 * two-language name ("Sumud (2026) صمود"). A title that is only a year (the
+	 * series "1923") keeps it.
+	 *
+	 * @return array{0: string, 1: int|null}
+	 */
+	public static function splitYear(string $rTitle): array {
+		if (preg_match('/^(.*?)[\s._-]*\(?((?:19|20)\d{2})\)?$/', $rTitle, $rMatch) && trim($rMatch[1]) !== '') {
+			return [trim($rMatch[1]), intval($rMatch[2])];
+		}
+		if (preg_match('/^(.+?)\s*\(((?:19|20)\d{2})\)\s*(.+)$/u', $rTitle, $rMatch)) {
+			return [trim($rMatch[1] . ' ' . $rMatch[3]), intval($rMatch[2])];
+		}
+		return [$rTitle, null];
+	}
+
+	/**
+	 * The titles to search TMDb with, best first: the title itself, then each
+	 * run of one script in it, as a provider names a show in two languages
+	 * ("Sumud صمود") and TMDb knows neither half joined to the other. With
+	 * $rWithParts, each " - " part of a run comes after ("Mother - Anne"): a
+	 * part alone is as often a common word as a title, so the caller searches
+	 * those only with a year. Without it, a run of one word is left out for the
+	 * same reason: "Mother - Anne - أمي" searched by "أمي" alone matched a
+	 * Saudi series of that name, not the Turkish "Anne".
+	 *
+	 * @return list<string>
+	 */
+	public static function titleCandidates(string $rTitle, bool $rWithParts): array {
+		$rRuns = [];
+		$rScript = null;
+		foreach (preg_split('/\s+/u', trim($rTitle), -1, PREG_SPLIT_NO_EMPTY) ?: [] as $rWord) {
+			$rWordScript = preg_match('/\p{L}/u', $rWord, $rLetter) ? self::scriptOf($rLetter[0]) : null;
+			if ($rRuns === [] || ($rWordScript !== null && $rScript !== null && $rWordScript !== $rScript)) {
+				$rRuns[] = [];
+			}
+			$rRuns[count($rRuns) - 1][] = $rWord;
+			$rScript = $rWordScript ?? $rScript;
+		}
+		$rRuns = array_map(fn(array $rWords): string => trim(implode(' ', $rWords), " \t-–—:|,"), $rRuns);
+		$rSearchRuns = $rWithParts ? $rRuns : array_filter($rRuns, fn(string $rRun): bool => preg_match_all('/[\p{L}\p{N}]+/u', $rRun) >= 2);
+		$rCandidates = array_merge([trim($rTitle)], count($rRuns) > 1 ? $rSearchRuns : []);
+		if ($rWithParts) {
+			foreach ($rRuns as $rRun) {
+				$rParts = preg_split('/\s+[-–—|]\s+/u', $rRun) ?: [];
+				if (count($rParts) > 1) {
+					$rCandidates = array_merge($rCandidates, $rParts);
+				}
+			}
+		}
+		return array_values(array_unique(array_filter(array_map('trim', $rCandidates), fn(string $rCandidate): bool => mb_strlen($rCandidate, 'UTF-8') >= 3)));
+	}
+
+	/** The script of a letter (TITLE_SCRIPTS), 'Other' when none of them. */
+	private static function scriptOf(string $rLetter): string {
+		foreach (self::TITLE_SCRIPTS as $rName => $rClass) {
+			if (preg_match('/' . $rClass . '/u', $rLetter)) {
+				return $rName;
+			}
+		}
+		return 'Other';
+	}
+
+	/**
+	 * A parsed release's title, without its "excess" word (a tag such as
+	 * MULTI). The word is taken out whole, never by trim($title, $excess): its
+	 * second argument is a list of characters, and trim('Marshals', 'MULTI')
+	 * eats the leading 'M'.
+	 *
+	 * @param array<string, mixed> $rRelease parserelease()'s answer
+	 */
+	public static function releaseTitle(array $rRelease): ?string {
+		$rTitle = $rRelease['title'] ?? null;
+		if ($rTitle === null || !isset($rRelease['excess'])) {
+			return $rTitle;
+		}
+		$rExcess = is_array($rRelease['excess']) ? ($rRelease['excess'][0] ?? '') : $rRelease['excess'];
+		if ((string) $rExcess === '') {
+			return $rTitle;
+		}
+		$rTitle = preg_replace('/\\b' . preg_quote((string) $rExcess, '/') . '\\b/u', ' ', (string) $rTitle);
+		return trim((string) preg_replace('/\\s+/u', ' ', (string) $rTitle));
+	}
+
+	/**
+	 * The folder name to try as a title fallback for a file. Normally the
+	 * file's own folder, but a series episode sits in a season folder
+	 * ("Show/Season 19/episode.mkv") that names no show — so when the folder is
+	 * a season folder, the series folder above it is used instead.
+	 *
+	 * @param string $rFile Absolute or relative path to the media file.
+	 */
+	public static function fallbackFolderName(string $rFile): string {
+		$rDir = pathinfo($rFile)['dirname'] ?? '';
+		$rFolder = basename($rDir);
+		if (preg_match('/^(?:season|saison|staffel|stagione|temporada|s)[\s._-]*\d{1,3}$/iu', $rFolder)) {
+			$rParent = basename(dirname($rDir));
+			if ($rParent !== '' && $rParent !== '.' && $rParent !== DIRECTORY_SEPARATOR && $rParent !== $rFolder) {
+				return $rParent;
+			}
+		}
+		return $rFolder;
 	}
 
 	/**
@@ -128,6 +274,26 @@ class VodItemImporter {
 	}
 
 	/**
+	 * Lowercase Latin letters with an accent or a stroke, mapped to their plain
+	 * letters, for parseTitle(). A table of its own, not intl's Transliterator,
+	 * so a title compares the same whether PHP has intl or not.
+	 *
+	 * @return array<string, string>
+	 */
+	private static function latinFold(): array {
+		static $rMap = null;
+		if ($rMap === null) {
+			$rMap = [];
+			foreach (self::LATIN_FOLD as $rPlain => $rLetters) {
+				foreach (mb_str_split($rLetters, 1, 'UTF-8') as $rLetter) {
+					$rMap[$rLetter] = $rPlain;
+				}
+			}
+		}
+		return $rMap;
+	}
+
+	/**
 	 * Normalize a title for comparison.
 	 *
 	 * @param string $rTitle
@@ -141,9 +307,14 @@ class VodItemImporter {
 		// ~53% and got filtered out by the threshold. The dot is also
 		// removed from the keep-set of the regex below. The comparison is
 		// symmetric on both sides — it doesn't break existing matches.
-		$rTitle = str_replace(['-', '_', '.'], ' ', $rTitle);
-		$rTitle = strtolower(preg_replace("/(?![=\$'€%-])\\p{P}/u", '', $rTitle));
-		return trim(preg_replace('/\\s+/u', ' ', $rTitle));
+		$rTitle = str_replace(['-', '_', '.'], ' ', (string) $rTitle);
+		$rTitle = mb_strtolower((string) preg_replace("/(?![=\$'€%-])\\p{P}/u", '', $rTitle), 'UTF-8');
+		// Letters are compared without their accents: providers write "Altı Üstü
+		// İstanbul" as "Alti Ustu Istanbul", which scored 70% against TMDb's name,
+		// under the match threshold. mb_strtolower() makes "İ" an "i" plus U+0307,
+		// a combining mark, which goes with the others.
+		$rTitle = (string) preg_replace('/\\p{Mn}/u', '', strtr($rTitle, self::latinFold()));
+		return trim((string) preg_replace('/\\s+/u', ' ', $rTitle));
 	}
 
 	/**
@@ -179,6 +350,86 @@ class VodItemImporter {
 	}
 
 	/**
+	 * The panel's own series that one of $rTitles names, for an episode TMDb
+	 * has no show for: a series created by hand (one TMDb does not list yet)
+	 * is how such episodes get imported. Only a series without a TMDb id: one
+	 * with an id is TMDb's to match, and a search that missed it (TMDb down)
+	 * must not hang episodes on it without their metadata. Each title's candidates
+	 * (titleCandidates()) are compared with every series title as
+	 * parseTitle() leaves them, years cut (splitYear()); a year both sides
+	 * give must agree within one. Two series answering is no match.
+	 *
+	 * @param list<string> $rTitles
+	 * @return array{id: int|string, title: string, year: mixed}|null
+	 */
+	public static function findLocalSeries(array $rTitles, ?int $rYear): ?array {
+		$rWanted = [];
+		foreach ($rTitles as $rTitle) {
+			foreach (self::titleCandidates((string) $rTitle, true) as $rCandidate) {
+				$rWanted[self::parseTitle(self::splitYear($rCandidate)[0])] = true;
+			}
+		}
+		unset($rWanted['']);
+		if ($rWanted === []) {
+			return null;
+		}
+		// ponytail: reads every series per episode; filter in SQL on a stored normalized title if the table grows large.
+		$db = self::db();
+		$db->query('SELECT `id`, `title`, `year` FROM `streams_series` WHERE COALESCE(`tmdb_id`, 0) = 0;');
+		$rFound = [];
+		foreach ($db->get_rows() as $rRow) {
+			[$rName, $rNameYear] = self::splitYear((string) $rRow['title']);
+			$rRowYear = intval($rRow['year']) ?: $rNameYear;
+			if (isset($rWanted[self::parseTitle($rName)]) && !($rYear && $rRowYear && abs($rRowYear - $rYear) > 1)) {
+				$rFound[$rRow['id']] = $rRow;
+			}
+		}
+		return count($rFound) === 1 ? reset($rFound) : null;
+	}
+
+	/**
+	 * The hand-made series (findLocalSeries()) an episode belongs to when TMDb
+	 * found no show for it; null for a movie, a TMDb match or a name without
+	 * both a season and an episode number.
+	 *
+	 * @param object|null $rMatch
+	 * @param list<string> $rTitles The titles the episode was searched by.
+	 */
+	private static function localSeriesFor($rMatch, array $rThreadData, array $rTitles, $rYear, $rSeason, $rEpisode): ?array {
+		if ($rMatch || $rThreadData['type'] !== 'series' || $rSeason === null || $rEpisode === null) {
+			return null;
+		}
+		$rSeries = self::findLocalSeries($rTitles, $rYear ? intval($rYear) : null);
+		if ($rSeries) {
+			echo 'Series in the panel: ' . $rSeries['title'] . "\n";
+		}
+		return $rSeries;
+	}
+
+	/**
+	 * An episode of a hand-made series that the series already has under its
+	 * number is a duplicate, unless the import allows duplicates as it does for
+	 * TMDb ones. A TMDb match is checked by applyUpgrade() instead, through the
+	 * series cache, which a series without TMDb has none of.
+	 *
+	 * @param object|null $rMatch
+	 * @param array $rSeries
+	 * @throws VodItemImportHalt
+	 */
+	private static function haltOnDuplicateEpisode($rThreadData, $rThreadType, $rFile, $rMatch, array $rSeries, $rSeason, $rEpisode): void {
+		if ($rMatch || !empty($rThreadData['duplicate_tmdb'])) {
+			return;
+		}
+		$db = self::db();
+		$db->query('SELECT `stream_id` FROM `streams_episodes` WHERE `series_id` = ? AND `season_num` = ? AND `episode_num` = ? LIMIT 1;', $rSeries['id'], $rSeason, $rEpisode);
+		if ($db->num_rows() > 0) {
+			echo 'Episode already in the series.' . "\n";
+			self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_DUPLICATE, (int) $db->get_row()['stream_id']);
+			throw new VodItemImportHalt();
+		}
+	}
+
+	/**
 	 * Get a series' trailer URL from TMDB.
 	 *
 	 * @param int $rTMDBID
@@ -194,8 +445,8 @@ class VodItemImporter {
 				$rURL .= '&language=' . urlencode(SettingsManager::getAll()['tmdb_language']);
 			}
 		}
-		$rJSON = json_decode(file_get_contents($rURL), true);
-		foreach ($rJSON['results'] as $rVideo) {
+		$rJSON = json_decode((string) CurlClient::getURL($rURL), true);
+		foreach (($rJSON['results'] ?? []) as $rVideo) {
 			if (strtolower($rVideo['type']) == 'trailer' && strtolower($rVideo['site']) == 'youtube') {
 				return $rVideo['key'];
 			}
@@ -235,13 +486,14 @@ class VodItemImporter {
 	/**
 	 * Report a file's processing outcome.
 	 *
+	 * @param array $rThreadData Its `title` (an M3U import's entry name) goes in the event.
 	 * @param int $rThreadType
 	 * @param string $rFile
 	 * @param int $rStatus VodImportResultEvent::STATUS_*
 	 * @param int $rStreamID
 	 */
-	private static function reportResult($rThreadType, $rFile, $rStatus, $rStreamID = 0) {
-		EventDispatcher::dispatch(new VodImportResultEvent((int) $rThreadType, (int) SERVER_ID, (string) $rFile, (int) $rStatus, (int) $rStreamID));
+	private static function reportResult($rThreadData, $rThreadType, $rFile, $rStatus, $rStreamID = 0) {
+		EventDispatcher::dispatch(new VodImportResultEvent((int) $rThreadType, (int) SERVER_ID, (string) $rFile, (int) $rStatus, (int) $rStreamID, (string) ($rThreadData['title'] ?? '')));
 	}
 
 	/**
@@ -264,26 +516,66 @@ class VodItemImporter {
 			echo 'Upgrade disabled' . "\n";
 			throw new VodItemImportHalt();
 		}
-		if (substr($rUpgradeData['source'], 0, 3 + strlen(strval(SERVER_ID))) != 's:' . SERVER_ID . ':') {
-			echo "Old file path doesn't match this server, don't upgrade." . "\n";
-			throw new VodItemImportHalt();
-		}
-		list(, $rActualPath) = explode('s:' . SERVER_ID . ':', $rUpgradeData['source']);
-		if (file_exists($rActualPath) && filesize($rActualPath) >= filesize($rFile)) {
-			echo "File isn't a better source, don't upgrade." . "\n";
+		// The new copy's source, as run() stores it: a file of this server, or
+		// what an import names (another server's file is `s:<server>:<path>`).
+		$rNewSource = !empty($rThreadData['import']) ? (string) $rFile : 's:' . SERVER_ID . ':' . $rFile;
+		$rNew = self::located($rNewSource);
+		$rOld = self::located((string) $rUpgradeData['source']);
+		// The two copies are compared where they are: on the server that holds
+		// them both. It was this server's disk whatever the file's server, so a
+		// load balancer's folder scanned from MAIN was never upgraded, and said nothing.
+		$rBetter = $rNew !== null && $rOld !== null && $rNew[0] === $rOld[0] ? self::betterCopy($rNew[0], $rOld[1], $rNew[1]) : false;
+		if ($rBetter !== true) {
+			echo ($rNew === null || $rOld === null || $rNew[0] !== $rOld[0]
+				? "Old file is not on the new file's server, don't upgrade."
+				: ($rBetter === null ? "The two files could not be compared on server {$rNew[0]}, don't upgrade." : "File isn't a better source, don't upgrade.")) . "\n";
+			self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_DUPLICATE, (int) $rUpgradeData['id']);
 			throw new VodItemImportHalt();
 		}
 		echo 'Upgrade ' . $rLabel . '!' . "\n";
 		$db = self::db();
 		$db->query('UPDATE `streams` SET `stream_source` = ?, `target_container` = ? WHERE `id` = ?;', $rImportArray['stream_source'], $rImportArray['target_container'], $rUpgradeData['id']);
-		$db->query('UPDATE `streams_servers` SET `bitrate` = NULL, `current_source` = NULL, `to_analyze` = 0, `pid` = NULL, `stream_started` = NULL, `stream_info` = NULL, `compatible` = 0, `video_codec` = NULL, `audio_codec` = NULL, `resolution` = NULL, `stream_status` = 0 WHERE `stream_id` = ? AND `server_id` = ?', $rUpgradeData['id'], SERVER_ID);
+		// The server that holds the file, where the copies were compared: its row
+		// starts over and it encodes the new file. It was this server's, so an
+		// upgrade MAIN made for a load balancer changed the source and left the
+		// node serving the old file.
+		$rServerID = $rNew[0];
+		$db->query('UPDATE `streams_servers` SET `bitrate` = NULL, `current_source` = NULL, `to_analyze` = 0, `pid` = NULL, `stream_started` = NULL, `stream_info` = NULL, `compatible` = 0, `video_codec` = NULL, `audio_codec` = NULL, `resolution` = NULL, `stream_status` = 0 WHERE `stream_id` = ? AND `server_id` = ?', $rUpgradeData['id'], $rServerID);
 		EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rUpgradeData['id']]));
 		if ($rThreadData['auto_encode']) {
-			StreamProcess::queueMovie($rUpgradeData['id']);
+			StreamProcess::queueMovie((int) $rUpgradeData['id'], $rServerID);
 		}
-		self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_UPGRADED);
-		$rWriteCache($rUpgradeData);
+		self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_UPGRADED);
+		$rWriteCache($rUpgradeData, $rNewSource);
 		throw new VodItemImportHalt();
+	}
+
+	/**
+	 * Where a server's file is: [server id, path] of `s:<server>:<path>`. Null
+	 * for any other source (a URL): it is no file of a server.
+	 *
+	 * @return array{0: int, 1: string}|null
+	 */
+	private static function located(string $rSource): ?array {
+		return preg_match('/^s:(\d+):(.+)$/s', $rSource, $rParts) ? [(int) $rParts[1], $rParts[2]] : null;
+	}
+
+	/**
+	 * Whether the file at $rNewPath is a better copy than the one at
+	 * $rOldPath, both on $rServerID: a bigger one, or the old one is gone.
+	 * Another server is asked for the sizes (ApiClient::fileSizes()). Null
+	 * when it cannot be told: the server did not answer, refused a path (it
+	 * lists only under its Scan Roots), or predates the size of a file.
+	 */
+	private static function betterCopy(int $rServerID, string $rOldPath, string $rNewPath): ?bool {
+		if ($rServerID === (int) SERVER_ID) {
+			return !(file_exists($rOldPath) && filesize($rOldPath) >= filesize($rNewPath));
+		}
+		$rSizes = ApiClient::fileSizes($rServerID, [$rOldPath, $rNewPath]);
+		if ($rSizes === null || $rSizes[$rNewPath] === null) {
+			return null;
+		}
+		return $rSizes[$rOldPath] === null || $rSizes[$rOldPath] < $rSizes[$rNewPath];
 	}
 
 	/**
@@ -401,7 +693,7 @@ class VodItemImporter {
 		$rImportArray['movie_symlink'] = $rThreadData['movie_symlink'];
 		$rImportArray['remove_subtitles'] = $rThreadData['remove_subtitles'];
 		$rImportArray['transcode_profile_id'] = $rThreadData['transcode_profile_id'];
-		if ($rSetEnableTranscode && $rThreadData['transcode_profile_id'] > 0) {
+		if (($rSetEnableTranscode || !empty($rThreadData['download'])) && $rThreadData['transcode_profile_id'] > 0) {
 			$rImportArray['enable_transcode'] = 1;
 		}
 		if ($rThreadData['import']) {
@@ -409,6 +701,73 @@ class VodItemImporter {
 			$rImportArray['direct_proxy'] = $rThreadData['direct_proxy'];
 		}
 		$rImportArray['order'] = self::getNextOrder();
+	}
+
+	/**
+	 * findBestTmdbMatch() over a title's candidates (titleCandidates()), first
+	 * match wins. With a year, any candidate but the title itself is searched
+	 * only with it, never again without; " - " parts are tried only then.
+	 *
+	 * @param object $rTMDB TMDB client.
+	 * @param int|null $rYear
+	 * @return object|null
+	 */
+	/**
+	 * Radarr/Sonarr/Plex/Jellyfin naming carries the provider id in the folder or file name:
+	 * "[tmdbid-603]", "{tmdb-603}", "tmdb-603", "[tvdbid-81189]", "{tvdb-81189}".
+	 * Resolves it on TMDB (TVDB ids through /find) and returns a Movie/TVShow object
+	 * (same shape as the search results), or null when no id is present / resolvable.
+	 */
+	public static function matchByExternalID($rTMDB, $rPath, $rType) {
+		$rHaystack = str_replace(['\\', '%20'], ['/', ' '], (string) $rPath);
+		$rTMDBID = $rTVDBID = null;
+		if (preg_match_all('/tmdb(?:id)?\s*[-=:_ ]\s*(\d{1,9})/i', $rHaystack, $rM) && !empty($rM[1])) {
+			$rTMDBID = intval(end($rM[1]));
+		}
+		if (preg_match_all('/tvdb(?:id)?\s*[-=:_ ]\s*(\d{1,9})/i', $rHaystack, $rM) && !empty($rM[1])) {
+			$rTVDBID = intval(end($rM[1]));
+		}
+		if (!$rTMDBID && !$rTVDBID) {
+			return null;
+		}
+		try {
+			if ($rTMDBID) {
+				echo 'ID match: tmdb-' . $rTMDBID . "\n";
+				$rObj = ($rType == 'movie') ? $rTMDB->getMovie($rTMDBID, []) : $rTMDB->getTVShow($rTMDBID, []);
+				if ($rObj && intval($rObj->get('id')) === $rTMDBID) {
+					return $rObj;
+				}
+				echo 'ID match: tmdb-' . $rTMDBID . " not found on TMDB\n";
+			}
+			if ($rTVDBID) {
+				echo 'ID match: tvdb-' . $rTVDBID . "\n";
+				$rFound = $rTMDB->find($rTVDBID, 'tvdb_id');
+				$rList = ($rType == 'movie') ? ($rFound['movies'] ?? []) : ($rFound['tvshows'] ?? []);
+				if (!empty($rList) && $rList[0]->get('id')) {
+					return $rList[0];
+				}
+				echo 'ID match: tvdb-' . $rTVDBID . " not found on TMDB\n";
+			}
+		} catch (\Throwable $e) {
+			echo 'ID match error: ' . $e->getMessage() . "\n";
+		}
+		return null;
+	}
+
+	public static function findTmdbMatch($rTMDB, array $rThreadData, array $rSettings, $rTitle, $rAltTitle, $rYear) {
+		// A provider id in the path (Radarr/Sonarr naming) beats any title search.
+		$rIDMatch = self::matchByExternalID($rTMDB, (string) ($rThreadData['file'] ?? ''), (string) ($rThreadData['type'] ?? ''));
+		if ($rIDMatch) {
+			return $rIDMatch;
+		}
+		$rYear = $rYear ? intval($rYear) : null;
+		foreach (self::titleCandidates((string) $rTitle, $rYear !== null) as $rIndex => $rCandidate) {
+			$rMatch = self::findBestTmdbMatch($rTMDB, $rThreadData, $rSettings, $rCandidate, $rIndex === 0 ? $rAltTitle : null, $rYear, $rIndex > 0);
+			if ($rMatch) {
+				return $rMatch;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -426,14 +785,15 @@ class VodItemImporter {
 	 * @param string $rTitle
 	 * @param string|null $rAltTitle
 	 * @param int|null $rYear
+	 * @param bool $rYearRequired No retry without the year.
 	 * @return object|null The Movie/TVShow object with the highest similarity percentage, or null.
 	 */
-	public static function findBestTmdbMatch($rTMDB, array $rThreadData, array $rSettings, $rTitle, $rAltTitle, $rYear) {
+	public static function findBestTmdbMatch($rTMDB, array $rThreadData, array $rSettings, $rTitle, $rAltTitle, $rYear, bool $rYearRequired = false) {
 		$rMatches = [];
 		$rSearchYear = $rYear;
 		foreach (range(0, 1) as $rIgnoreYear) {
 			if ($rIgnoreYear) {
-				if ($rSearchYear) {
+				if ($rSearchYear && !$rYearRequired) {
 					$rSearchYear = null;
 				} else {
 					break;
@@ -547,6 +907,112 @@ class VodItemImporter {
 	}
 
 	/**
+	 * The episode title a release name carries, for a name with a season and
+	 * no episode number ("Show - S02 - The Long Night"): the parser's reading
+	 * (guessit's `episode_title`, which leaves the quality and release tags
+	 * out), else what follows that season in the name. Null when the name has
+	 * neither.
+	 *
+	 * @param array<string, mixed> $rRelease parserelease()'s answer for $rName.
+	 * @param string $rName
+	 * @param int $rSeason The season parsed from $rName.
+	 */
+	public static function releaseEpisodeTitle(array $rRelease, $rName, $rSeason): ?string {
+		if (is_string($rRelease['episode_title'] ?? null) && $rRelease['episode_title'] !== '') {
+			return $rRelease['episode_title'];
+		}
+		// ponytail: what follows the season is taken whole, release tags
+		// included ("… 1080p WEB-DL"): only guessit's reading leaves them out,
+		// so such a name scores too low under PTN and stays No match. Cut it
+		// at the parser's resolution/codec fields if PTN names need it.
+		if (preg_match('/(?<![a-z0-9])(?:s|season[\s._-]*)0*' . intval($rSeason) . '(?!\d)[\s._-]+(.+)$/iu', (string) $rName, $rAfter)) {
+			return $rAfter[1];
+		}
+		return null;
+	}
+
+	/**
+	 * The episode a file is named after, found by its title among a TMDb
+	 * season's. Both sides are compared as parseTitle() leaves them, by
+	 * similar_text(). The best title is taken only when it scores at least
+	 * EPISODE_TITLE_MIN_SCORE and leads the next one by EPISODE_TITLE_MIN_LEAD:
+	 * a title the season has twice ties with itself, and "… (Part 1)" is too
+	 * close to "… (Part 2)", so neither is ever matched. Nor is a file that
+	 * names a second episode as well ("A and B"). An untitled episode is
+	 * skipped. No match is null: a wrongly linked episode is worse than a
+	 * file reported as not matched.
+	 *
+	 * @param string $rFileTitle The file's episode title (releaseEpisodeTitle()).
+	 * @param array<int, string|null> $rTitles Episode number => TMDb title.
+	 * @param float|null $rScore Set to the accepted title's similarity (%).
+	 * @return int|null The episode number.
+	 */
+	public static function matchEpisodeByTitle($rFileTitle, array $rTitles, &$rScore = null) {
+		$rFileTitle = self::parseTitle((string) $rFileTitle);
+		$rNames = $rScores = [];
+		foreach ($rTitles as $rNumber => $rName) {
+			$rName = self::parseTitle((string) $rName);
+			if ($rFileTitle !== '' && $rName !== '') {
+				similar_text($rFileTitle, $rName, $rPercent);
+				$rNames[$rNumber] = $rName;
+				$rScores[$rNumber] = $rPercent;
+			}
+		}
+		arsort($rScores);
+		$rBest = array_key_first($rScores);
+		$rRanked = array_values($rScores);
+		if ($rBest === null || $rRanked[0] < self::EPISODE_TITLE_MIN_SCORE || $rRanked[0] - ($rRanked[1] ?? 0) < self::EPISODE_TITLE_MIN_LEAD) {
+			return null;
+		}
+		// Two episodes in one file: another title stands in the name as well,
+		// whole, and is no part of the matched one ("Home" in "Coming Home").
+		foreach ($rNames as $rNumber => $rName) {
+			if ($rNumber !== $rBest && str_contains(' ' . $rFileTitle . ' ', ' ' . $rName . ' ') && !str_contains(' ' . $rNames[$rBest] . ' ', ' ' . $rName . ' ')) {
+				return null;
+			}
+		}
+		$rScore = $rRanked[0];
+		return (int) $rBest;
+	}
+
+	/**
+	 * A TMDb season's episodes (EPISODE_FIELDS of each), fetched once per
+	 * show, season and language and kept as a season_*.cache under
+	 * WATCH_TMP_PATH for SEASON_CACHE_TTL_SECONDS: every file of a season is
+	 * imported by a process of its own. A season TMDb gave no episodes of (or
+	 * a failed call) is not kept.
+	 *
+	 * @param object $rTMDB TMDB client (getSeason).
+	 * @param int $rShowID TMDb show id.
+	 * @param int $rSeason
+	 * @param string|null $rLanguage The import's language; the TMDb language setting when empty, as the client is built.
+	 * @return array<int, array<string, mixed>>
+	 */
+	public static function seasonEpisodes($rTMDB, $rShowID, $rSeason, $rLanguage) {
+		$rLanguage = (string) ($rLanguage ?: (SettingsManager::getAll()['tmdb_language'] ?? ''));
+		$rPath = WATCH_TMP_PATH . 'season_' . intval($rShowID) . '_' . intval($rSeason) . '_' . preg_replace('/[^A-Za-z0-9-]/', '', $rLanguage) . '.cache';
+		if (is_file($rPath) && time() - filemtime($rPath) < self::SEASON_CACHE_TTL_SECONDS) {
+			$rEpisodes = json_decode((string) file_get_contents($rPath), true);
+			if (is_array($rEpisodes)) {
+				return $rEpisodes;
+			}
+		}
+		// ponytail: no lock around the fetch, so the files of a season that
+		// start together (thread_count) each ask TMDb once, as every file did
+		// before; hold the show's lock_<id> here if that ever matters.
+		$rEpisodes = [];
+		foreach ((json_decode($rTMDB->getSeason($rShowID, intval($rSeason))->getJSON(), true)['episodes'] ?? []) as $rEpisode) {
+			if (isset($rEpisode['episode_number'])) {
+				$rEpisodes[] = array_intersect_key($rEpisode, self::EPISODE_FIELDS);
+			}
+		}
+		if ($rEpisodes) {
+			AtomicFile::write($rPath, (string) json_encode($rEpisodes, JSON_UNESCAPED_UNICODE));
+		}
+		return $rEpisodes;
+	}
+
+	/**
 	 * Build $rImportArray for a movie once a TMDB match was found: checks whether
 	 * an already-imported copy should be upgraded (may stop processing via
 	 * applyUpgrade(), which throws VodItemImportHalt), then fills in
@@ -573,8 +1039,8 @@ class VodItemImporter {
 		}
 
 		if ($rUpgradeData) {
-			self::applyUpgrade($rUpgradeData, $rThreadData, $rFile, $rImportArray, $rThreadType, 'movie', function ($rUpgradeData) use ($rMatch, $rFile) {
-				file_put_contents(WATCH_TMP_PATH . 'movie_' . $rMatch->get('id') . '.cache', json_encode(['id' => $rUpgradeData['id'], 'source' => 's:' . SERVER_ID . ':' . $rFile]));
+			self::applyUpgrade($rUpgradeData, $rThreadData, $rFile, $rImportArray, $rThreadType, 'movie', function ($rUpgradeData, $rNewSource) use ($rMatch) {
+				file_put_contents(WATCH_TMP_PATH . 'movie_' . $rMatch->get('id') . '.cache', json_encode(['id' => $rUpgradeData['id'], 'source' => $rNewSource]));
 			});
 		}
 		$rMovie = $rTMDB->getMovie($rMatch->get('id'));
@@ -603,7 +1069,7 @@ class VodItemImporter {
 		$rImportArray['rating'] = ($rImportArray['movie_properties']['rating'] ?: 0);
 		self::applyCommonStreamSettings($rImportArray, $rThreadData);
 		$rImportArray['tmdb_language'] = $rLanguage;
-		if (count($rCategoryIDs) == 0 && !empty($rMovieData['genres']) && is_array($rMovieData['genres'])) {
+		if (!empty($rMovieData['genres']) && is_array($rMovieData['genres'])) {
 			$rCategoryIDs = self::resolveGenreCategoryIDs($rMovieData['genres'], $rWatchCategories[1], $rThreadData['max_genres'], $rCategoryIDs);
 		}
 		if (count($rBouquetIDs) == 0) {
@@ -623,7 +1089,7 @@ class VodItemImporter {
 	 *
 	 * @param object $rTMDB
 	 * @param object $rMatch The matched TMDB TVShow.
-	 * @param array|null $rRelease The parserelease() result for the current file.
+	 * @param array|null $rRelease The parserelease() result $rReleaseEpisode was read from: its `episode` says whether it is a range.
 	 * @param array $rThreadData
 	 * @param array $rSettings
 	 * @param array $rWatchCategories watch_categories for both types, keyed by type.
@@ -652,9 +1118,9 @@ class VodItemImporter {
 			$rUpgradeData = self::getEpisode($rMatch->get('id'), $rReleaseSeason, $rReleaseEpisode);
 		}
 		if ($rUpgradeData) {
-			self::applyUpgrade($rUpgradeData, $rThreadData, $rFile, $rImportArray, $rThreadType, 'episode', function ($rUpgradeData) use ($rMatch, $rReleaseSeason, $rReleaseEpisode, $rFile) {
+			self::applyUpgrade($rUpgradeData, $rThreadData, $rFile, $rImportArray, $rThreadType, 'episode', function ($rUpgradeData, $rNewSource) use ($rMatch, $rReleaseSeason, $rReleaseEpisode) {
 				$rCacheData = json_decode(file_get_contents(WATCH_TMP_PATH . 'series_' . $rMatch->get('id') . '.cache'), true);
-				$rCacheData[$rReleaseSeason . '_' . $rReleaseEpisode] = ['id' => $rUpgradeData['id'], 'source' => 's:' . SERVER_ID . ':' . $rFile];
+				$rCacheData[$rReleaseSeason . '_' . $rReleaseEpisode] = ['id' => $rUpgradeData['id'], 'source' => $rNewSource];
 				file_put_contents(WATCH_TMP_PATH . 'series_' . $rMatch->get('id') . '.cache', json_encode($rCacheData));
 			});
 		}
@@ -662,17 +1128,17 @@ class VodItemImporter {
 		$rSeries = null;
 		if ($rShowData['id']) {
 			$db = self::db();
-			while (file_exists(WATCH_TMP_PATH . 'lock_' . intval($rShowData['id']))) {
-				if ($rTimeout < time() - filemtime(WATCH_TMP_PATH . 'lock_' . intval($rShowData['id']))) {
-					unlink(WATCH_TMP_PATH . 'lock_' . intval($rShowData['id']));
-				}
-				usleep(100000);
-			}
-			$rFileLock = fopen(WATCH_TMP_PATH . 'lock_' . intval($rShowData['id']), 'w');
+			// Serialize workers importing the same show on an advisory lock. flock
+			// alone is the mutex: the kernel releases it when the holder exits or is
+			// killed, so there is no stale lock to time out and clear — and no unlink
+			// of a file another worker is still holding (which would let two workers
+			// update one series at once). 'c' opens without truncating an in-use lock;
+			// the empty lock file is kept and reused, never removed. ($rTimeout is no
+			// longer consulted: a crashed holder's lock is freed by the kernel.)
+			$rFileLock = fopen(WATCH_TMP_PATH . 'lock_' . intval($rShowData['id']), 'c');
 			while (!flock($rFileLock, LOCK_EX)) {
 				usleep(100000);
 			}
-			fwrite($rFileLock, (string) time());
 			$rSeasonData = [];
 			foreach ($rShowData['seasons'] as $rSeason) {
 				$rSeason['cover'] = 'https://image.tmdb.org/t/p/w600_and_h900_bestv2' . $rSeason['poster_path'];
@@ -704,9 +1170,7 @@ class VodItemImporter {
 				}
 				$rSeriesArray['genre'] = implode(', ', $rGenres);
 				$rSeriesArray['episode_run_time'] = intval($rShowData['episode_run_time'][0] ?? 0);
-				if (count($rCategoryIDs) == 0) {
-					$rCategoryIDs = self::resolveGenreCategoryIDs($rShowData['genres'], $rWatchCategories[2], $rThreadData['max_genres'], $rCategoryIDs);
-				}
+				$rCategoryIDs = self::resolveGenreCategoryIDs($rShowData['genres'], $rWatchCategories[2], $rThreadData['max_genres'], $rCategoryIDs);
 				if (count($rCategoryIDs) == 0 && !empty($rThreadData['fb_category_id'])) {
 					if (is_array($rThreadData['fb_category_id'])) {
 						$rCategoryIDs = array_map('intval', $rThreadData['fb_category_id']);
@@ -741,8 +1205,8 @@ class VodItemImporter {
 					}
 				} else {
 					flock($rFileLock, LOCK_UN);
-					unlink(WATCH_TMP_PATH . 'lock_' . intval($rShowData['id']));
-					self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_NO_CATEGORY);
+					fclose($rFileLock);
+					self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_NO_CATEGORY);
 					throw new VodItemImportHalt();
 				}
 			} else {
@@ -752,16 +1216,20 @@ class VodItemImporter {
 				}
 			}
 			flock($rFileLock, LOCK_UN);
-			unlink(WATCH_TMP_PATH . 'lock_' . intval($rShowData['id']));
+			fclose($rFileLock);
 			self::applyCommonStreamSettings($rImportArray, $rThreadData, false);
 			if ($rReleaseSeason !== null && $rReleaseEpisode !== null) {
-				if (is_array($rRelease['episode']) && count($rRelease['episode']) == 2) {
+				if (is_array($rRelease['episode'] ?? null) && count($rRelease['episode']) == 2) {
 					$rImportArray['stream_display_name'] = $rShowData['name'] . ' - S' . sprintf('%02d', intval($rReleaseSeason)) . 'E' . sprintf('%02d', $rRelease['episode'][0]) . '-' . sprintf('%02d', $rRelease['episode'][1]);
 				} else {
 					$rImportArray['stream_display_name'] = $rShowData['name'] . ' - S' . sprintf('%02d', intval($rReleaseSeason)) . 'E' . sprintf('%02d', $rReleaseEpisode);
 				}
-				$rEpisodes = json_decode($rTMDB->getSeason($rShowData['id'], intval($rReleaseSeason))->getJSON(), true);
-				foreach (($rEpisodes['episodes'] ?? []) as $rEpisode) {
+				// With the match by episode title on, the season is read through
+				// its cache: the match fetched it, and so did the season's other files.
+				$rEpisodes = !empty($rSettings['tmdb_episode_by_title'])
+					? self::seasonEpisodes($rTMDB, $rShowData['id'], $rReleaseSeason, $rLanguage)
+					: (json_decode($rTMDB->getSeason($rShowData['id'], intval($rReleaseSeason))->getJSON(), true)['episodes'] ?? []);
+				foreach ($rEpisodes as $rEpisode) {
 					if (intval($rEpisode['episode_number']) == $rReleaseEpisode) {
 						$rImage = '';
 						if (strlen($rEpisode['still_path'] ?? '') > 0) {
@@ -826,14 +1294,15 @@ class VodItemImporter {
 			}
 			$rImportArray['category_id'] = '[' . implode(',', array_map('intval', $rCategoryIDs)) . ']';
 			if (count($rCategoryIDs) == 0) {
-				self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_NO_CATEGORY);
+				self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_NO_CATEGORY);
 				throw new VodItemImportHalt();
 			}
 		} else {
 			if ($rSeries) {
+				self::haltOnDuplicateEpisode($rThreadData, $rThreadType, $rFile, $rMatch, $rSeries, $rReleaseSeason, $rReleaseEpisode);
 				$rImportArray['series_no'] = $rSeries['id'];
 			} else {
-				self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_NO_MATCH);
+				self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_NO_MATCH);
 				throw new VodItemImportHalt();
 			}
 		}
@@ -841,9 +1310,20 @@ class VodItemImporter {
 			$rImportArray['movie_subtitles'] = $rThreadData['subtitles'];
 		}
 		$rImportArray['added'] = time();
+		if (!empty($rThreadData['source_hash'])) {
+			$rImportArray['import_source_hash'] = $rThreadData['source_hash'];
+		}
 		$rPrepare = QueryHelper::prepareArray($rImportArray);
 		$rQuery = 'INSERT INTO `streams`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-		if ($db->query($rQuery, ...$rPrepare['data'])) {
+		try {
+			$rInserted = $db->query($rQuery, ...$rPrepare['data']);
+		} catch (\Throwable $rError) {
+			if (empty($rThreadData['source_hash']) || self::sourceStream($rThreadData) === 0) {
+				throw $rError;
+			}
+			$rInserted = false;
+		}
+		if ($rInserted) {
 			$rInsertID = $db->last_insert_id();
 			if ($rThreadData['import']) {
 				foreach ($rThreadData['servers'] as $rServerID) {
@@ -873,13 +1353,26 @@ class VodItemImporter {
 				}
 			}
 			echo 'Success!' . "\n";
-			self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_IMPORTED, $rInsertID);
+			self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_IMPORTED, $rInsertID);
 			throw new VodItemImportHalt();
 		} else {
+			if (!empty($rThreadData['source_hash']) && ($rExisting = self::sourceStream($rThreadData)) > 0) {
+				self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_DUPLICATE, $rExisting);
+				throw new VodItemImportHalt();
+			}
 			echo 'Insert failed!' . "\n";
-			self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_INSERT_FAILED);
+			self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_INSERT_FAILED);
 			throw new VodItemImportHalt();
 		}
+	}
+
+	private static function sourceStream(array $rData): int {
+		if (!preg_match('/^[a-f0-9]{64}$/D', (string) ($rData['source_hash'] ?? ''))) {
+			throw new \InvalidArgumentException('Invalid source identity');
+		}
+		$db = self::db();
+		$db->query('SELECT `id` FROM `streams` WHERE `type` = ? AND `import_source_hash` = ? LIMIT 1;', $rData['type'] === 'movie' ? 2 : 5, $rData['source_hash']);
+		return (int) $db->get_col();
 	}
 
 	/**
@@ -952,7 +1445,9 @@ class VodItemImporter {
 		while (($rLine = fgets($rHandle)) !== false) {
 			$rLine = trim($rLine);
 			if ($rLine !== '') {
-				yield '/usr/bin/timeout ' . $rItemTimeout . ' ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php vod_import_item ' . escapeshellarg(base64_encode($rLine));
+				$rItem = json_decode($rLine, true);
+				$rTimeout = !empty($rItem['download']) ? max($rItemTimeout, VodDownload::TIMEOUT + 180) : $rItemTimeout;
+				yield '/usr/bin/timeout ' . $rTimeout . ' ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php vod_import_item ' . escapeshellarg(base64_encode($rLine));
 			}
 		}
 		fclose($rHandle);
@@ -1001,6 +1496,22 @@ class VodItemImporter {
 		$rThreadData['ignore_no_match'] = !empty($rThreadData['ignore_no_match']);
 		$rThreadData['alternative_titles'] = !empty($rThreadData['alternative_titles']);
 
+		if (!empty($rThreadData['source_hash'])) {
+			$rExisting = self::sourceStream($rThreadData);
+			if ($rExisting > 0) {
+				self::reportResult($rThreadData, $rThreadData['type'] === 'movie' ? 1 : 2, $rThreadData['file'], VodImportResultEvent::STATUS_DUPLICATE, $rExisting);
+				return;
+			}
+		}
+		if ($rThreadData['import'] && !empty($rThreadData['download'])) {
+			$rLocalSource = VodDownload::receive($rThreadData);
+			if ($rLocalSource === null) {
+				self::reportResult($rThreadData, $rThreadData['type'] === 'movie' ? 1 : 2, $rThreadData['file'], VodImportResultEvent::STATUS_BROKEN_FILE);
+				return;
+			}
+			$rThreadData['file'] = $rLocalSource;
+			set_time_limit($rTimeout);
+		}
 		$rSettings = SettingsManager::getAll();
 
 		if (($rThreadData['file'] === '') || (!$rThreadData['import'] && $rThreadData['directory'] === '')) {
@@ -1027,6 +1538,7 @@ class VodItemImporter {
 			$rLanguage = !empty($rThreadData['language']) ? (string) $rThreadData['language'] : null;
 			$rReleaseSeason = null;
 			$rReleaseEpisode = null;
+			$rEpisodeRelease = null;
 			$rYear = null;
 
 			$rTMDB ??= TmdbApiService::createClient((string) ($rSettings['tmdb_api_key'] ?? ''), $rLanguage);
@@ -1061,6 +1573,7 @@ class VodItemImporter {
 			if (!$rThreadData['ffprobe_input'] || isset($rSourceData['streams'])) {
 				$rMatch = $rPaths = null;
 				$rMetaMatch = false;
+				$rTriedTitles = [];
 				if ($rThreadData['extract_metadata'] && isset($rSourceData['format']) && !empty($rSourceData['tags']['title'])) {
 					if (!empty($rSourceData['tags']['date'])) {
 						$rYear = (intval(explode('-', $rSourceData['tags']['date'])[0]));
@@ -1070,19 +1583,21 @@ class VodItemImporter {
 				}
 				if (!$rPaths) {
 					if ($rThreadData['fallback_title']) {
-						$rPaths = [pathinfo($rFile)['filename'], basename(pathinfo($rFile)['dirname'])];
+						$rPaths = [pathinfo($rFile)['filename'], self::fallbackFolderName($rFile)];
 					} else {
 						$rPaths = [pathinfo($rFile)['filename']];
 					}
 					$rMetaMatch = false;
 				}
-				foreach ($rPaths as $rFilename) {
+				foreach ($rPaths as $rIndex => $rFilename) {
+					// An import is matched on its title (an M3U entry's: its URL names
+					// nothing). The fallback, its folder's name, is tried as it is.
+					if ($rThreadData['import'] && $rIndex === 0) {
+						$rFilename = $rThreadData['title'];
+					}
 					echo 'Scanning: ' . $rFilename . "\n";
 					$rTitle = null;
 					$rAltTitle = null;
-					if ($rThreadData['import']) {
-						$rFilename = $rThreadData['title'];
-					}
 					if ($rThreadData['fallback_parser'] && !$rThreadData['disable_tmdb'] && !$rMetaMatch) {
 						$rParseTypes = [$rSettings['parse_type'], ($rSettings['parse_type'] == 'guessit' ? 'ptn' : 'guessit')];
 					} else {
@@ -1092,18 +1607,7 @@ class VodItemImporter {
 						if ($rThreadData['disable_tmdb'] || $rMetaMatch) {
 						} else {
 							$rRelease = self::parserelease($rFilename, $rParseType);
-							$rTitle = $rRelease['title'];
-							if (isset($rRelease['excess'])) {
-								// Strip the excess token as a WHOLE WORD — never
-								// trim($title, $excess): its 2nd arg is a char-mask,
-								// so trim('Marshals…', 'MULTI') eats the leading 'M'
-								// and yields 'arshals…', breaking the TMDb search.
-								$rExcess = is_array($rRelease['excess']) ? ($rRelease['excess'][0] ?? '') : $rRelease['excess'];
-								if ($rExcess !== '') {
-									$rTitle = preg_replace('/\b' . preg_quote((string) $rExcess, '/') . '\b/u', ' ', $rTitle);
-									$rTitle = trim(preg_replace('/\s+/u', ' ', $rTitle));
-								}
-							}
+							$rTitle = self::releaseTitle($rRelease);
 							if (isset($rRelease['group'])) {
 								$rAltTitle = $rTitle . '-' . $rRelease['group'];
 							} else {
@@ -1122,6 +1626,9 @@ class VodItemImporter {
 									$rReleaseSeason = $rRelease['season'];
 								}
 								if ($rReleaseEpisode == null && isset($rRelease['episode'])) {
+									// The name the episode is read from says whether it is a
+									// range too: not a name parsed after it (the folder's).
+									$rEpisodeRelease = $rRelease;
 									if (is_array($rRelease['episode'])) {
 										$rReleaseEpisode = $rRelease['episode'][0];
 									} else {
@@ -1135,8 +1642,9 @@ class VodItemImporter {
 								$rTitle = $rFilename;
 							}
 							echo 'Title: ' . $rTitle . "\n";
+							$rTriedTitles[] = $rTitle;
 							if (!$rThreadData['disable_tmdb']) {
-								$rFoundMatch = self::findBestTmdbMatch($rTMDB, $rThreadData, $rSettings, $rTitle, $rAltTitle, $rYear);
+								$rFoundMatch = self::findTmdbMatch($rTMDB, $rThreadData, $rSettings, $rTitle, $rAltTitle, $rYear);
 								if ($rFoundMatch) {
 									$rMatch = $rFoundMatch;
 								}
@@ -1145,14 +1653,39 @@ class VodItemImporter {
 								break 2;
 							}
 						} else {
-							self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_NO_MATCH);
+							// No episode number in the name. With its season known, the
+							// episode may be found by its title among that TMDb season's
+							// (Settings → VOD Import, off by default); never among the
+							// specials (season 0). The season is the name's own: one the
+							// name does not give is not guessed.
+							if (!empty($rSettings['tmdb_episode_by_title']) && !$rThreadData['disable_tmdb'] && isset($rRelease) && $rTitle && is_int($rReleaseSeason) && $rReleaseSeason > 0 && $rReleaseEpisode === null) {
+								$rEpisodeTitle = self::releaseEpisodeTitle($rRelease, $rFilename, $rReleaseSeason);
+								$rShow = $rEpisodeTitle !== null ? self::findTmdbMatch($rTMDB, $rThreadData, $rSettings, $rTitle, $rAltTitle, $rYear) : null;
+								if ($rShow) {
+									$rEpisodeTitles = array_column(self::seasonEpisodes($rTMDB, $rShow->get('id'), $rReleaseSeason, $rLanguage), 'name', 'episode_number');
+									$rReleaseEpisode = self::matchEpisodeByTitle($rEpisodeTitle, $rEpisodeTitles, $rScore);
+									if ($rReleaseEpisode !== null) {
+										// The import's output is discarded and its result has no field
+										// for this, so the episode itself says how it was numbered (Notes).
+										$rImportArray['notes'] = sprintf('Episode number matched by TMDb title: "%s" (%d%%)', $rEpisodeTitles[$rReleaseEpisode], $rScore);
+										echo 'Matched by title: ' . $rFile . ' => S' . sprintf('%02d', $rReleaseSeason) . 'E' . sprintf('%02d', $rReleaseEpisode) . ' "' . $rEpisodeTitles[$rReleaseEpisode] . '" (' . intval($rScore) . '%)' . "\n";
+										// A number found by title adds an episode, it never replaces the
+										// file of one already imported: that takes a number the name gives.
+										$rThreadData['auto_upgrade'] = false;
+										$rMatch = $rShow;
+										break 2;
+									}
+								}
+							}
+							self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_NO_MATCH);
 							return;
 						}
 					}
 				}
-				if (!$rMatch && !$rThreadData['ignore_no_match']) {
+				$rSeries = self::localSeriesFor($rMatch, $rThreadData, $rTriedTitles, $rYear, $rReleaseSeason, $rReleaseEpisode);
+				if (!$rMatch && !$rSeries && !$rThreadData['ignore_no_match']) {
 					echo 'No match!' . "\n";
-					self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_NO_MATCH);
+					self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_NO_MATCH);
 					return;
 				}
 				$rBouquetIDs = [];
@@ -1179,7 +1712,7 @@ class VodItemImporter {
 							$rCategoryIDs = $rBuilt['categoryIDs'];
 							$rBouquetIDs = $rBuilt['bouquetIDs'];
 						} else {
-							$rBuilt = self::buildSeriesImportArray($rTMDB, $rMatch, $rRelease ?? null, $rThreadData, $rSettings, $rWatchCategories, $rFile, $rThreadType, $rTimeout, $rReleaseSeason, $rReleaseEpisode, $rImportArray, $rCategoryIDs, $rBouquetIDs, $rLanguage);
+							$rBuilt = self::buildSeriesImportArray($rTMDB, $rMatch, $rEpisodeRelease ?? $rRelease ?? null, $rThreadData, $rSettings, $rWatchCategories, $rFile, $rThreadType, $rTimeout, $rReleaseSeason, $rReleaseEpisode, $rImportArray, $rCategoryIDs, $rBouquetIDs, $rLanguage);
 							$rImportArray = $rBuilt['importArray'];
 							$rCategoryIDs = $rBuilt['categoryIDs'];
 							$rBouquetIDs = $rBuilt['bouquetIDs'];
@@ -1193,7 +1726,7 @@ class VodItemImporter {
 							}
 						} else {
 							if ($rReleaseSeason !== null && $rReleaseEpisode !== null) {
-								$rImportArray['stream_display_name'] = $rTitle . ' - S' . sprintf('%02d', intval($rReleaseSeason)) . 'E' . sprintf('%02d', $rReleaseEpisode) . ' - ';
+								$rImportArray['stream_display_name'] = ($rSeries['title'] ?? $rTitle) . ' - S' . sprintf('%02d', intval($rReleaseSeason)) . 'E' . sprintf('%02d', $rReleaseEpisode);
 							}
 						}
 						self::applyCommonStreamSettings($rImportArray, $rThreadData);
@@ -1209,7 +1742,7 @@ class VodItemImporter {
 				}
 			} else {
 				echo 'File is broken!' . "\n";
-				self::reportResult($rThreadType, $rFile, VodImportResultEvent::STATUS_BROKEN_FILE);
+				self::reportResult($rThreadData, $rThreadType, $rFile, VodImportResultEvent::STATUS_BROKEN_FILE);
 				return;
 			}
 		} else {

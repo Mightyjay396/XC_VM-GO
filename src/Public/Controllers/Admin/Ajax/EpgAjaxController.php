@@ -2,12 +2,15 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
+use XcVm\Domain\Epg\EpgBindingSelection;
+use XcVm\Domain\Epg\EpgMerge;
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Domain\Epg\EpgService;
+use XcVm\Domain\Epg\EpgReload;
 use XcVm\Domain\Stream\CategoryService;
 
 /**
@@ -35,12 +38,16 @@ class EpgAjaxController extends BaseAjaxController {
 		$rSub = RequestManager::get('sub');
 
 		if ($rSub == 'delete') {
-			EpgService::deleteEpgById(RequestManager::get('epg_id'));
+			if (!EpgService::deleteEpgById((int) RequestManager::get('epg_id'))) {
+				$this->fail();
+			}
 			$this->ok();
 		}
 
 		if ($rSub == 'reload') {
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:epg "' . intval(RequestManager::get('epg_id')) . '" > /dev/null 2>/dev/null &');
+			if (!EpgReload::start(intval(RequestManager::get('epg_id')))) {
+				$this->fail();
+			}
 			$this->ok();
 		}
 
@@ -57,9 +64,13 @@ class EpgAjaxController extends BaseAjaxController {
 
 		if (RequestManager::has('search')) {
 			$rEPGNames = $rEPGMap = [];
-			$db->query('SELECT `epg_channels`.`epg_id`, `epg_channels`.`channel_id`, `epg_channels`.`name`, `epg_channels`.`langs`, `epg`.`epg_name` FROM `epg_channels` LEFT JOIN `epg` ON `epg_channels`.`epg_id` = `epg`.`id` WHERE (LOWER(`epg_channels`.`channel_id`) LIKE ? OR LOWER(`epg_channels`.`name`) LIKE ?) ORDER BY `epg_channels`.`name` ASC LIMIT 50;', strtolower(RequestManager::get('search')) . '%', strtolower(RequestManager::get('search')) . '%');
+			$rPublicGuides = "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`epg`.`merge_config`, '$.selection')), '') NOT IN ('true', '1') AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`epg`.`merge_config`, '$.automatic')), '') NOT IN ('true', '1')";
+			$db->query('SELECT `epg_channels`.`epg_id`, `epg_channels`.`channel_id`, `epg_channels`.`name`, `epg_channels`.`langs`, `epg`.`epg_name`, `epg`.`merge_config` FROM `epg_channels` LEFT JOIN `epg` ON `epg_channels`.`epg_id` = `epg`.`id` WHERE ' . $rPublicGuides . ' AND (LOWER(`epg_channels`.`channel_id`) LIKE ? OR LOWER(`epg_channels`.`name`) LIKE ?) ORDER BY `epg_channels`.`name` ASC LIMIT 50;', strtolower(RequestManager::get('search')) . '%', strtolower(RequestManager::get('search')) . '%');
 
 			foreach ($db->get_rows() as $rRow) {
+				if (!empty(EpgMerge::config($rRow)['selection'])) {
+					continue;
+				}
 				if (!isset($rEPGNames[$rRow['epg_id']])) {
 					$rEPGNames[$rRow['epg_id']] = $rRow['epg_name'];
 				}
@@ -82,9 +93,21 @@ class EpgAjaxController extends BaseAjaxController {
 		$this->requireXhr();
 		$this->gate('adv', 'epg');
 
-		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:epg > /dev/null 2>/dev/null &');
+		if (!EpgReload::start()) {
+			$this->fail();
+		}
 
 		$this->ok();
+	}
+
+	/** Search individual EPG entries for ordered per-channel selection. */
+	public function epgSearch(): never {
+		$this->requireXhr();
+		$this->gateAny([['adv', 'edit_stream'], ['adv', 'add_stream']]);
+		global $db;
+		$db->query('SELECT * FROM `epg`;');
+		$sources = array_column($db->get_raw_rows(), null, 'id');
+		$this->ok(EpgBindingSelection::search((string) RequestManager::get('search'), $sources, (int) RequestManager::get('source')));
 	}
 
 	/** action=epg_auto_assign — fuzzy-match streams to EPG channels in batches. */
@@ -118,11 +141,14 @@ class EpgAjaxController extends BaseAjaxController {
 		$rTotal = intval($db->get_row()['cnt']);
 
 		// --- Lookup 1: EPG channels by name ---
-		$db->query('SELECT `epg_id`, `channel_id`, `name`, `langs` FROM `epg_channels`;');
+		$db->query('SELECT c.`epg_id`, c.`channel_id`, c.`name`, c.`langs`, e.`merge_config` FROM `epg_channels` c JOIN `epg` e ON e.id = c.epg_id;');
 		$rEpgLookup = [];
 		// Also build channel_id -> epg info map for provider cross-reference
 		$rEpgByChannelId = [];
 		foreach ($db->get_rows() as $rEpgCh) {
+			if (!empty(EpgMerge::config($rEpgCh)['selection'])) {
+				continue;
+			}
 			$rNorm = $fnNormalize($rEpgCh['name']);
 			$rLang = json_decode($rEpgCh['langs'] ?? '[]', true)[0] ?? '';
 			if ($rNorm !== '') {
@@ -264,7 +290,7 @@ class EpgAjaxController extends BaseAjaxController {
 	public function providerImportEpg(): never {
 		$this->requireXhr();
 
-		if (!Authorization::check('adv', 'providers')) {
+		if (!Authorization::check('adv', 'streams')) {
 			$this->json(['status' => STATUS_FAILURE]);
 		}
 
@@ -306,7 +332,7 @@ class EpgAjaxController extends BaseAjaxController {
 	/** action=get_epg — TV-guide grid (channels + timed listings) for the given streams. */
 	public function getEpg(): never {
 		$this->requireXhr();
-		$this->gate('adv', 'manage_streams');
+		$this->gate('adv', 'streams');
 
 		global $db;
 		$rTimezone = (RequestManager::get('timezone') ?: 'Europe/London');
@@ -395,7 +421,7 @@ class EpgAjaxController extends BaseAjaxController {
 	/** action=get_programme — single programme details + live/archive availability. */
 	public function getProgramme(): never {
 		$this->requireXhr();
-		$this->gate('adv', 'manage_streams');
+		$this->gate('adv', 'streams');
 
 		global $db;
 		$rTimezone = (RequestManager::get('timezone') ?: 'Europe/London');

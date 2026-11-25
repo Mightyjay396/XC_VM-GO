@@ -42,6 +42,7 @@ class Topbar {
 	private const EXPORT_PAGES = [
 		'panel_logs',
 		'login_logs',
+		'admin_actions',
 		'mysql_syslog',
 		'client_logs',
 		'credit_logs',
@@ -86,20 +87,20 @@ class Topbar {
 			'series' => ['Add Series' => ['serie', 'add_series'], 'Episodes' => ['episodes', 'episodes'], 'Categories' => ['stream_categories', 'categories'], 'Channel Order' => ($rMobile ? [] : ['channel_order', 'channel_order']), 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['series_mass', 'mass_sedits'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
 			'episodes' => ['Add Episode' => [null, 'add_episode', 'id="add-episode-btn"'], 'TV Series' => ['series', 'series'], 'Categories' => ['stream_categories', 'categories'], 'Channel Order' => ($rMobile ? [] : ['channel_order', 'channel_order']), 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['episodes_mass', 'mass_sedits'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
 			'radios' => ['Add Station' => ['radio', 'add_radio'], 'Categories' => ['stream_categories', 'categories'], 'Channel Order' => ($rMobile ? [] : ['channel_order', 'channel_order']), 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['radio_mass', 'mass_edit_radio'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
-			'lines' => ['Add Line' => ['line', 'add_user'], "Blocked ASN's" => ['asns', 'block_isps'], "Blocked IP's" => ['ips', 'block_ips'], "Blocked ISP's" => ['isps', 'block_isps'], 'Blocked User-Agents' => ['useragents', 'block_uas'], 'Live Connections' => ['live_connections', 'live_connections'], 'Activity Logs' => ['line_activity', 'connection_logs'], "IP's per Line" => ['line_ips', 'connection_logs'], 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['line_mass', 'mass_edit_users'], 'Quick Tools' => ['quick_tools', 'quick_tools'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
+			'lines' => ['Add Line' => ['line', 'add_user'], "Blocked ASN's" => ['asns', 'block_isps'], "Blocked IP's" => ['ips', 'block_ips'], "Blocked ISP's" => ['isps', 'block_isps'], 'Blocked User-Agents' => ['useragents', 'block_uas'], 'Live Connections' => ['live_connections', 'live_connections'], 'Activity Logs' => ['line_activity', 'connection_logs'], "IP's per Line" => ['line_ips', 'connection_logs'], 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['line_mass', 'mass_edit_lines'], 'Quick Tools' => ['quick_tools', 'quick_tools'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
 			'live_connections' => ['Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"'], 'Activity Logs' => ['line_activity', 'connection_logs'], "IP's per Line" => ['line_ips', 'connection_logs']],
 			'mags' => ['Add Device' => ['mag', 'add_mag'], "Blocked IP's" => ['ips', 'block_ips'], "Blocked ISP's" => ['isps', 'block_isps'], 'Live Connections' => ['live_connections', 'connection_logs'], 'Activity Logs' => ['line_activity', 'connection_logs'], 'MAG Event Logs' => ['mag_events', 'manage_events'], 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['mag_mass', 'mass_edit_mags'], 'Quick Tools' => ['quick_tools', 'quick_tools'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
 			'enigmas' => ['Add Device' => ['enigma', 'add_e2'], "Blocked IP's" => ['ips', 'block_ips'], "Blocked ISP's" => ['isps', 'block_isps'], 'Live Connections' => ['live_connections', 'connection_logs'], 'Activity Logs' => ['line_activity', 'connection_logs'], 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['enigma_mass', 'mass_edit_enigmas'], 'Quick Tools' => ['quick_tools', 'quick_tools'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
-			'users' => ['Add User' => ['user', 'add_reguser'], 'Groups' => ['groups', 'mng_groups'], 'Packages' => ['packages', 'mng_packages'], 'Subresellers' => ['subresellers', 'subreseller'], 'Client Logs' => ['client_logs', 'client_request_log'], 'Credit Logs' => ['credit_logs', 'credits_log'], 'Reseller Logs' => ['user_logs', 'reg_userlog'], 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['user_mass', 'mass_edit_reguser'], 'Quick Tools' => ['quick_tools', 'quick_tools'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
+			'users' => ['Add User' => ['user', 'add_reguser'], 'Groups' => ['groups', 'mng_groups'], 'Packages' => ['packages', 'mng_packages'], 'Subresellers' => ['subresellers', 'subreseller'], 'Client Logs' => ['client_logs', 'client_request_log'], 'Credit Logs' => ['credit_logs', 'credits_log'], 'Reseller Logs' => ['user_logs', 'reg_userlog'], 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Mass Edit' => ['user_mass', 'mass_edit_users'], 'Quick Tools' => ['quick_tools', 'quick_tools'], 'Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
 			'bouquet' => ['Manage Bouquets' => ['bouquets', 'bouquets'], 'Sort Bouquet' => ['bouquet_sort?id=' . $rID, 'edit_bouquet']],
 			'bouquet_sort' => ['Manage Bouquets' => ['bouquets', 'bouquets'], 'Edit Bouquet' => ['bouquet?id=' . $rID, 'edit_bouquet']],
 			'bouquet_order' => ['Manage Bouquets' => ['bouquets', 'bouquets'], 'Add Bouquet' => ['bouquet', 'add_bouquet']],
 			'archive' => ['View Stream' => ['stream_view?id=' . $rID, 'streams'], 'Edit Stream' => ['stream?id=' . $rID, 'edit_stream'], 'Create Recording' => ['record', 'add_movie'], 'Manage Streams' => ['streams', 'streams']],
 			'asns' => ['Quick Tools' => ['quick_tools', 'quick_tools']],
-			'backups' => ['General Settings' => ['settings', 'settings'], 'Cache Settings' => ['cache', 'backups'], 'Modules' => ['modules', 'settings']],
+			'backups' => ['General Settings' => ['settings', 'settings'], 'Cache Settings' => ['cache', 'database'], 'Modules' => ['modules', 'settings']],
 			'cache' => ['General Settings' => ['settings', 'settings'], 'Backup Settings' => ['backups', 'database'], 'Modules' => ['modules', 'settings']],
-			'settings' => ['Backup Settings' => ['backups', 'database'], 'Cache Settings' => ['cache', 'backups'], 'Modules' => ['modules', 'settings']],
-			'modules' => ['General Settings' => ['settings', 'settings'], 'Backup Settings' => ['backups', 'database'], 'Cache Settings' => ['cache', 'backups']],
+			'settings' => ['Backup Settings' => ['backups', 'database'], 'Cache Settings' => ['cache', 'database'], 'Modules' => ['modules', 'settings']],
+			'modules' => ['General Settings' => ['settings', 'settings'], 'Backup Settings' => ['backups', 'database'], 'Cache Settings' => ['cache', 'database']],
 			'channel_order' => ['Categories' => ['stream_categories', 'categories'], 'Bouquets' => ['bouquets', 'bouquets']],
 			'bouquets' => ['Add Bouquet' => ['bouquet', 'add_bouquet'], 'Order Bouquets' => ($rMobile ? [] : ['bouquet_order', 'edit_bouquet']), 'Channel Order' => ($rMobile ? [] : ['channel_order', 'channel_order']), 'Categories' => ['stream_categories', 'categories']],
 			'stream_categories' => ['Add Category' => ['stream_category', 'add_cat'], 'Channel Order' => ($rMobile ? [] : ['channel_order', 'channel_order']), 'Bouquets' => ['bouquets', 'bouquets']],
@@ -121,7 +122,7 @@ class Topbar {
 			'serie' => ['Import' => ['serie?import', 'import_streams'], 'Add Single' => ['serie', 'add_series'], 'Manage Series' => ['series', 'series'], 'View Episodes' => ['episodes?series=' . $rID, 'episodes']],
 			'created_channel' => ['View Channel' => ['stream_view?id=' . $rID, 'streams'], 'Manage Channels' => ['created_channels', 'streams']],
 			'epg' => ["Manage EPG's" => ['epgs', 'epg']],
-			'epgs' => ['Add EPG' => ['epg', 'add_epg'], 'Force Reload' => [null, 'add_epg', 'onClick="forceUpdate();" id="force_update"']],
+			'epgs' => ['Add EPG' => ['epg', 'add_epg'], 'Force Reload' => [null, 'epg', 'onClick="forceUpdate();" id="force_update"']],
 			'fingerprint' => ['Manage Streams' => ['streams', 'streams']],
 			'group' => ['Manage Groups' => ['groups', 'mng_groups']],
 			'groups' => ['Add Group' => ['group', 'add_group']],
@@ -150,6 +151,7 @@ class Topbar {
 			'episodes_mass' => ['Manage Episodes' => ['episodes', 'episodes'], 'Manage Series' => ['series', 'series'], 'Mass Delete' => ['mass_delete', 'mass_delete'], 'Quick Tools' => ['quick_tools', 'quick_tools'], 'Stream Tools' => ['stream_tools', 'stream_tools']],
 			'mag_events' => ['Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"'], 'MAG Devices' => ['mags', 'manage_mag']],
 			'login_logs' => ['Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
+			'admin_actions' => ['Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
 			'mysql_syslog' => ['Export as CSV' => [null, null, 'id="btn-export-csv"'], 'Export as JSON' => [null, null, 'id="btn-export-json"']],
 			'mass_delete' => ['Manage Streams' => ['streams', 'streams'], 'Manage Channels' => ['created_channels', 'streams'], 'Manage Series' => ['series', 'series'], 'Manage Episodes' => ['episodes', 'episodes'], 'Manage Stations' => ['radios', 'radio'], 'Manage Lines' => ['lines', 'users'], 'Manage Users' => ['users', 'mng_regusers'], 'Manage MAGs' => ['mags', 'manage_mag'], 'Manage Enigmas' => ['enigmas', 'manage_e2']],
 			'quick_tools' => ['Stream Tools' => ['stream_tools', 'stream_tools']],
@@ -205,10 +207,11 @@ class Topbar {
 				continue;
 			}
 			// Export actions: only on log/report pages (core list OR a page a
-			// module marked via TopbarRegistry), and only with backups perm.
+			// module marked via TopbarRegistry), and only with the permission the
+			// export itself asks for (BackupAjaxController::report).
 			if (in_array($rLabel, ['Export as CSV', 'Export as JSON'], true)) {
 				$rIsExportPage = in_array($page, self::EXPORT_PAGES, true) || TopbarRegistry::isExportPage($page);
-				if (!$rIsExportPage || !Authorization::check('adv', 'backups')) {
+				if (!$rIsExportPage || !Authorization::check('adv', 'database')) {
 					continue;
 				}
 			}

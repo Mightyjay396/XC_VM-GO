@@ -3,7 +3,6 @@
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Device\EnigmaService;
 use XcVm\Domain\Device\MagService;
@@ -13,6 +12,7 @@ use XcVm\Domain\Line\LineService;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\Stream\StreamRepository;
+use XcVm\Domain\User\GroupService;
 use XcVm\Domain\User\UserService;
 use XcVm\Domain\Vod\SeriesService;
 
@@ -74,7 +74,7 @@ class MultiAjaxController extends BaseAjaxController {
 
 	/** Bulk operations on lines. */
 	private function handleLine(array $rRequestIDs, string $rSub): never {
-		$this->gate('adv', 'edit_line');
+		$this->gate('adv', 'edit_user');
 
 		global $db;
 
@@ -155,10 +155,15 @@ class MultiAjaxController extends BaseAjaxController {
 
 		global $db;
 
+		// An administrator's account is switched off or on by a full
+		// administrator (GroupService::reservedGroups): the others are left as they are.
+		$rReserved = GroupService::reservedGroups();
+		$rOthers = (0 < count($rReserved) ? ' AND COALESCE(`member_group_id`, 0) NOT IN (' . implode(',', $rReserved) . ')' : '');
+
 		if ($rSub == 'enable') {
-			$db->query('UPDATE `users` SET `status` = 1 WHERE `id` IN (' . $this->inList($rRequestIDs) . ');');
+			$db->query('UPDATE `users` SET `status` = 1 WHERE `id` IN (' . $this->inList($rRequestIDs) . ')' . $rOthers . ';');
 		} elseif ($rSub == 'disable') {
-			$db->query('UPDATE `users` SET `status` = 0 WHERE `id` IN (' . $this->inList($rRequestIDs) . ');');
+			$db->query('UPDATE `users` SET `status` = 0 WHERE `id` IN (' . $this->inList($rRequestIDs) . ')' . $rOthers . ';');
 		} elseif ($rSub == 'delete') {
 			UserService::deleteRegisteredUsers($rRequestIDs);
 		}
@@ -187,10 +192,12 @@ class MultiAjaxController extends BaseAjaxController {
 				}
 			}
 
+			$rControls = [];
 			foreach ($rStreamMap as $rServerID => $rStreamIDs) {
 				$rStreamSub = ($rSub == 'stop') ? 'stop' : 'start';
-				ApiClient::request(['action' => 'stream', 'sub' => $rStreamSub, 'stream_ids' => $rStreamIDs, 'servers' => [$rServerID]]);
+				$rControls[] = ['action' => 'stream', 'sub' => $rStreamSub, 'stream_ids' => $rStreamIDs, 'servers' => [$rServerID]];
 			}
+			$this->controlResponses($rControls);
 		} elseif ($rSub == 'purge') {
 			foreach ($rRequestIDs as $rServerID) {
 				$this->purgeServerConnections($rType, $rServerID);
@@ -203,12 +210,16 @@ class MultiAjaxController extends BaseAjaxController {
 			$db->query('UPDATE `servers` SET `enable_proxy` = 1 WHERE `id` IN (' . $this->inList($rRequestIDs) . ');');
 		} elseif ($rSub == 'disable_proxy' && $rType == 'server') {
 			$db->query('UPDATE `servers` SET `enable_proxy` = 0 WHERE `id` IN (' . $this->inList($rRequestIDs) . ');');
-		} else {
+		} elseif ($rSub == 'delete') {
 			foreach ($rRequestIDs as $rServerID) {
-				if ($rServers[$rServerID]['is_main'] == 0) {
+				if (!empty($rServers[$rServerID]) && $rServers[$rServerID]['is_main'] == 0) {
 					ServerRepository::deleteById($rServerID);
 				}
 			}
+		} else {
+			// Deleting was the answer to every action not named above (`kill`, or
+			// `restart` for proxies): an action this does not know does nothing.
+			$this->fail();
 		}
 
 		$this->ok();
@@ -216,6 +227,8 @@ class MultiAjaxController extends BaseAjaxController {
 
 	/** Bulk delete of series. */
 	private function handleSeries(array $rRequestIDs, string $rSub): never {
+		$this->gate('adv', 'edit_series');
+
 		if ($rSub == 'delete') {
 			SeriesService::deleteSeriesByIds($rRequestIDs);
 		}
@@ -223,11 +236,20 @@ class MultiAjaxController extends BaseAjaxController {
 		$this->ok();
 	}
 
+	/** streams.type of each bulk type (streams_types). */
+	private const STREAM_TYPES = ['stream' => 1, 'movie' => 2, 'cchannel' => 3, 'radio' => 4, 'episode' => 5];
+
 	/** Bulk operations on streams / movies / episodes / created channels / radios. */
 	private function handleStreams(string $rType, array $rRequestIDs, string $rSub): never {
 		$this->gate('adv', 'edit_' . $rType);
 
 		global $db;
+		// The permission just checked is this type's, and the type is the
+		// request's: it reaches the streams of that type only. A group allowed
+		// to edit radios deleted movies by naming their ids under type=radio.
+		$db->query('SELECT `id` FROM `streams` WHERE `type` = ? AND `id` IN (' . $this->inList($rRequestIDs) . ');', self::STREAM_TYPES[$rType]);
+		$rOfType = array_flip(array_map('intval', array_column($db->get_rows() ?: [], 'id')));
+		$rRequestIDs = array_values(array_filter($rRequestIDs, static fn($rID): bool => isset($rOfType[intval($rID)])));
 		$rNoServer = $rStreamMap = [];
 
 		foreach ($rRequestIDs as $rStream) {
@@ -269,13 +291,25 @@ class MultiAjaxController extends BaseAjaxController {
 					$rSub = 'start';
 				}
 
+				$rControls = [];
 				foreach ($rStreamMap as $rServerID => $rStreamIDs) {
 					$rAction = in_array($rType, ['stream', 'radio', 'cchannel']) ? 'stream' : 'vod';
-					ApiClient::request(['action' => $rAction, 'sub' => $rSub, 'stream_ids' => $rStreamIDs, 'servers' => [$rServerID]]);
+					$rControls[] = ['action' => $rAction, 'sub' => $rSub, 'stream_ids' => $rStreamIDs, 'servers' => [$rServerID]];
 				}
+				$this->controlResponses($rControls);
 			} elseif ($rSub == 'delete') {
+				$rDetached = [];
 				foreach ($rStreamMap as $rServerID => $rStreamIDs) {
 					StreamRepository::deleteStreamsByServer($rStreamIDs, $rServerID, true);
+					$rDetached = array_merge($rDetached, $rStreamIDs);
+				}
+
+				// A stream taken off its last server is deleted, as the row's own
+				// delete does (StreamRepository::deleteStream()): it stayed, on no
+				// server, until it was deleted a second time.
+				if (0 < count($rDetached)) {
+					$db->query('SELECT `id` FROM `streams` WHERE `id` IN (' . $this->inList($rDetached) . ') AND `id` NOT IN (SELECT `stream_id` FROM `streams_servers`);');
+					$rUnallocated = array_merge($rUnallocated, array_column($db->get_rows() ?: [], 'id'));
 				}
 
 				if (0 < count($rUnallocated)) {
@@ -300,6 +334,9 @@ class MultiAjaxController extends BaseAjaxController {
 			}
 		}
 
+		if (in_array($rSub, ['start', 'stop', 'restart'], true)) {
+			$this->fail(['error' => 'STREAM_NOT_ASSIGNED_TO_TARGET']);
+		}
 		$this->ok();
 	}
 
@@ -358,7 +395,10 @@ class MultiAjaxController extends BaseAjaxController {
 		return implode(',', array_map('intval', $rIDs));
 	}
 
+	/** Bulk operations on activation codes: the code list's row actions and Mass Edit Active Codes. */
 	private function handleActiveCode(array $rRequestIDs, string $rSub): never {
+		$this->gateAny([['adv', 'edit_user'], ['adv', 'mass_edit_lines']]);
+
 		$extra = [
 			'days' => intval(RequestManager::get('days') ?? 30),
 			'package_id' => intval(RequestManager::get('package_id') ?? 0),

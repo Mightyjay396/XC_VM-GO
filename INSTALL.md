@@ -1,192 +1,85 @@
-# XC_VM-GO Installation Guide
+# XC_VM-GO — XC_VM 2.7.4 with the QC Go delivery engine
 
-This fork adds a high-performance Go delivery server (`xc_ts_server`) to XC_VM.
-Go handles live TS/HLS streams natively (auth + delivery), with automatic
-PHP fallback when Go is not running. VOD uses PHP auth with Go file serving.
+This fork ships official **XC_VM 2.7.4** plus the QC fixes, modules and the Go delivery engine, released as
+**2.7.4-p1** (an XC_VM patch release). It installs, adds load balancers and updates exactly like the original
+XC_VM — every download points to this repository's Releases, so new servers always get this version.
+No server data is included: no channels, source URLs, EPG, database, proxy list, keys or IP addresses.
 
-## Quick Start
+## Install
 
-### Upgrade an existing XC_VM installation
-
-One command to add Go delivery to your current XC_VM panel:
-
-```bash
-wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/upgrade_go.sh | sudo bash
-```
-
-This script will:
-- Install Go 1.22 toolchain (if not present)
-- Clone the repository and build the Go binary
-- Create a dedicated Go DB user (random password per install)
-- Write `go_db.conf` with the DB connection string
-- Stop any existing Go server safely
-- Deploy the binary, PHP patches, and nginx config
-- Back up your existing `live.php` and `vod.php` before replacing
-- Clean any old inline Go nginx blocks
-- Test nginx config before reloading
-- Start the Go server and verify health
-
-Go auto-configures at startup: DSN from `go_db.conf`, OPENSSL\_EXTRA from
-`config/openssl_extra`, server\_id via PHP, and settings from the DB.
-
-### Fresh install (new server)
-
-Full XC_VM panel + Go delivery on a clean server:
+**Fresh Main** (same as the original installer):
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/install_fresh.sh | sudo bash
+wget https://github.com/Mightyjay396/XC_VM-GO/releases/latest/download/XC_VM.zip && unzip XC_VM.zip && sudo python3 install
 ```
 
-This script will:
-- Install system packages and Go toolchain
-- Clone the repository and build the Go binary
-- Launch the XC_VM interactive installer (asks for DB credentials, ports, etc.)
-- Go delivery is configured automatically during installation
+**Load balancers**: add them from the panel (*Servers → Install Load Balancer*). The Main downloads this
+release's `loadbalancer.tar.gz`, checks it against `hashes.md5`, installs it and starts the Go engine.
 
-## Requirements
+**Updates**: the panel's update button and *Auto-update load balancers* use this repository's Releases.
+Each node is pinned to the Main's version, as in the original XC_VM.
 
-- Ubuntu 20/22/24 or Debian 11/12 (x86_64 or arm64)
-- Root access
-- 2+ GB RAM
-- Go 1.22+ (installed automatically by the scripts above)
-
-## Alternative Installation Methods
-
-### Method 1: Build + Install (for separate build/deploy workflows)
-
-Build the archive on a build machine, then install on the target server.
-
-**On the build machine:**
-```bash
-git clone https://github.com/Mightyjay396/XC_VM-GO.git
-cd XC_VM-GO
-
-# For a MAIN server:
-make main
-# Creates: XC_VM.zip (includes Go binary, PHP, nginx, everything)
-
-# For a Load Balancer:
-make lb
-# Creates: loadbalancer.tar.gz
-```
-
-**On the target server:**
-```bash
-# Copy the archive to the server, then:
-python3 install
-# The installer handles everything: MariaDB, nginx, PHP, Go, config
-```
-
-### Method 2: Direct Install (clone on target server)
-
-Clone and install directly on the target server.
+**Existing XC_VM 2.7.2 / 2.7.4 panels** (keep your install, add the patches): download
+`qc_xcvm_updater.tgz` from the Release and run on the Main:
 
 ```bash
-git clone https://github.com/Mightyjay396/XC_VM-GO.git
-cd XC_VM-GO
-
-# For a MAIN server:
-sudo make install-local TYPE=main
-
-# For a Load Balancer:
-sudo make install-local TYPE=lb
+cd /root && rm -rf qc_xcvm_pkg && tar xzf qc_xcvm_updater.tgz && python3 qc_xcvm_pkg/qc_xcvm_updater.py --restart --all-lbs
 ```
 
-### Method 3: Manual upgrade (step-by-step)
+`--all-lbs` also updates every enabled load balancer over SSH (a dedicated key is installed on first run,
+the root password is asked once), one at a time, stopping at the first failure. Other options:
+`--dry-run`, `--no-deps`, `--rollback <dir>`, `--force`.
 
-If you prefer to run each step yourself instead of using `upgrade_go.sh`:
+## Go delivery engine (installed and started on every load balancer)
 
-```bash
-# 1. Install Go
-wget https://go.dev/dl/go1.22.10.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.22.10.linux-amd64.tar.gz
+| Program | Local port | Role |
+|---|---|---|
+| `odrelay` | 8147 | Fast start for on-demand channels: the viewer gets video immediately while FFmpeg starts (TS and HLS) |
+| `livehold` | 8150 | Keeps viewers connected through FFmpeg restarts and source drops (offline slate instead of a disconnect), TS + HLS |
+| `ckts` | 8160 | ClearKey DASH → MPEG-TS engine, with 15 `mpdproxy-ads` relays (8115-8129) for ad breaks |
+| `mpdproxy` | 8098-8113 | DASH/ClearKey proxy (manifests + segments, cache), 16 socket-activated instances |
+| FFmpeg 8.1-dash | — | FFmpeg build used for DASH/ClearKey sources (`bin/ffmpeg_bin/8.1-dash`) |
 
-# 2. Clone the Go source
-git clone https://github.com/Mightyjay396/XC_VM-GO.git /tmp/xc_vm_go
-cd /tmp/xc_vm_go
+This is not XC_VM's fanout (left as is). `config/odrelay_streams.txt`, `config/livehold_streams.txt` and
+`/etc/qc_ckts_ids` contain `*` (all channels); replace with stream IDs to limit. The Main dashboard shows a
+**Go delivery** line in *Service Status* listing the servers running the engine.
+The binaries ship in the release archives (`bin/qc/`), installed by `bin/qc/qc_deps.sh` (run as root by the
+installer and by every update).
 
-# 3. Build the binary
-cd src/bin/xc_ts_server
-/usr/local/go/bin/go build -trimpath -ldflags="-s -w" -o xc_ts_server .
+Sources in `qc_patches/go/`: `odrelay` (same as the shipped binary), `livehold` and `mpdproxy` (earlier
+sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc_patches/go/<prog> && CGO_ENABLED=0 go build`.
 
-# 4. Deploy to your XC_VM installation
-sudo mkdir -p /home/xc_vm/bin/xc_ts_server
-sudo cp xc_ts_server run.sh xc_ts_server.sh /home/xc_vm/bin/xc_ts_server/
-sudo chown -R xc_vm:xc_vm /home/xc_vm/bin/xc_ts_server
-sudo chmod +x /home/xc_vm/bin/xc_ts_server/xc_ts_server
-sudo chmod +x /home/xc_vm/bin/xc_ts_server/run.sh
+## XC_VM fixes
 
-# 5. Deploy PHP patches
-sudo cp src/Public/stream/live.php /home/xc_vm/Public/stream/live.php
-sudo cp src/Public/stream/vod.php /home/xc_vm/Public/stream/vod.php
-sudo chown xc_vm:xc_vm /home/xc_vm/Public/stream/live.php /home/xc_vm/Public/stream/vod.php
+- **Active TS/VOD viewers disconnected (XC_VM 2.7.2 and 2.7.4 bug)** — `Domain/Cluster/ConnectionIngest.php`:
+  on nodes that reap their own HLS viewers, TS worker check-ins (every 300 s) only reached the cluster bus,
+  while `cron:users` reads the connection store; after 900 s it took the viewer for gone and closed it
+  (sessions cut at exactly 10, 15, 20 min). TS/VOD check-ins now reach the store too. HLS is unchanged.
+- Ghost connections: records whose worker died are cleaned (`Core/Cluster/QcGhostReaper.php`), and only
+  really active connections count toward the connection limit.
+- On-demand fast start (short FFprobe, stream re-arm), HLS continuity, DASH/ClearKey playback
+  (FFmpeg 8.1-dash, mpdproxy, ckts), source reconnect options.
+- Movies and series: repair and import (TMDB, TVDB fallback), batch import.
+- EPG: per-channel time shift.
+- Source proxies: management page + per-channel "Proxy (list)" option (`source_proxies` table, empty).
+- Tickets: unread indicator.
+- Ubuntu 26 support in the load balancer installer.
 
-# 6. Deploy nginx config
-sudo cp lb_configs/go_ts_server.conf /home/xc_vm/bin/nginx/conf/go_ts_server.conf
+## Modules and pages (Main)
 
-# 7. Comment out the /auth/ rewrite in nginx.conf
-sudo sed -i 's|rewrite ^/auth/|# rewrite ^/auth/|' /home/xc_vm/bin/nginx/conf/nginx.conf
+- **Reseller credit refunds** (`refundcredit`, `refund_history` table) + admin line extension.
+- **Trial API** (`trialapi`, nginx route `/trial_api`) and **Line API** (`/line_api`).
+- **Provider import** (`providerimport`).
+- **XAccel-compatible API** (`/xaapi/`), configured in `config/xaccel_compat_api.json`.
+- New tables come from migration `migrations/database/up/106_qc_tables.sql`.
 
-# 8. Add include (if not already present)
-grep -q 'go_ts_server.conf' /home/xc_vm/bin/nginx/conf/nginx.conf || \
-  sudo sed -i '/include custom.conf/a\        include go_ts_server.conf;' /home/xc_vm/bin/nginx/conf/nginx.conf
-
-# 9. Test and reload nginx
-sudo -u xc_vm /home/xc_vm/bin/nginx/sbin/nginx -t
-sudo -u xc_vm /home/xc_vm/bin/nginx/sbin/nginx -s reload
-
-# 10. Start Go server
-sudo -u xc_vm bash /home/xc_vm/bin/xc_ts_server/run.sh &
-
-# 11. Verify
-curl -s http://127.0.0.1:8089/health | python3 -m json.tool
-```
-
-## Verification
-
-After installation, verify Go is running:
-
-```bash
-# Check health
-curl -s http://127.0.0.1:8089/health | python3 -m json.tool
-
-# Expected output includes:
-# "ok": true, "auth_native": true, "hls_native": true, "vod_native": true
-
-# Check logs
-tail -f /home/xc_vm/bin/xc_ts_server/xc_ts_server.log
-```
-
-## Disabling Go (emergency rollback)
-
-If you need to disable Go and fall back to PHP:
-
-```bash
-# Option 1: Stop Go (PHP fallback activates automatically via nginx)
-touch /home/xc_vm/bin/xc_ts_server/disabled
-pkill -u xc_vm xc_ts_server
-
-# Option 2: Re-enable PHP rewrite (bypasses Go entirely)
-sudo sed -i 's|# rewrite ^/auth/|rewrite ^/auth/|' /home/xc_vm/bin/nginx/conf/nginx.conf
-sudo -u xc_vm /home/xc_vm/bin/nginx/sbin/nginx -s reload
-```
-
-To re-enable Go:
-```bash
-rm /home/xc_vm/bin/xc_ts_server/disabled
-sudo -u xc_vm bash /home/xc_vm/bin/xc_ts_server/run.sh &
-```
-
-## Architecture
+## Repository layout
 
 ```
-Go running (default):
-  /auth/<token> → Go (full pipeline: auth + delivery)
-  /vauth/<token> → PHP vod.php → X-Accel → Go (file serving)
-
-Go stopped (automatic fallback):
-  /auth/<token> → Go (502) → @go_auth_fallback → PHP live.php
-  /vauth/<token> → PHP vod.php (serves file itself)
+src/                 XC_VM 2.7.4-p1 (Main tree; release archives add bin/qc/ with the Go binaries)
+qc_patches/updater/  qc_xcvm_updater.py + patched files for 2.7.2 and 2.7.4 (existing panels)
+qc_patches/go/       Go sources (odrelay, livehold, mpdproxy)
+qc_patches/build_dist.py + qc_deps.sh   how the release assets are built (binaries: release archives, bin/qc/)
 ```
 
-See `src/bin/xc_ts_server/README.md` for detailed documentation.
+The previous content of this repository is kept in the `pre-qc-backup` branch.

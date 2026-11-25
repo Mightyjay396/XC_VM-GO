@@ -5,6 +5,7 @@ namespace XcVm\Domain\Cluster;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -27,6 +28,18 @@ final class ClusterAdmin {
 		'connections' => NodeRegistry::FLOW_CONNECTIONS,
 		'dataplane' => NodeRegistry::FLOW_DATAPLANE,
 	];
+
+	/**
+	 * Flows the admin may not switch off on an LB node: MAIN's control plane
+	 * (commands), its observability (telemetry, logs) and the data-sovereignty
+	 * flows (config, connections, dataplane). Once on they stay on, so a node
+	 * cannot be partially detached from MAIN's control. streams and content are
+	 * kept on with them anyway by the connections/dataplane dependencies in
+	 * NodeRegistry::validFlows(). An `_off` for one is refused in act(), in any
+	 * mode (mode 2 already refuses every flow), and the page shows them locked.
+	 */
+	public const MANDATORY_FLOWS = NodeRegistry::FLOW_TELEMETRY | NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_LOGS
+		| NodeRegistry::FLOW_CONFIG | NodeRegistry::FLOW_CONNECTIONS | NodeRegistry::FLOW_DATAPLANE;
 
 	/**
 	 * What an agent says in hello's `features` once it runs the loopback relay
@@ -67,6 +80,17 @@ final class ClusterAdmin {
 	public const MODE2_AT = 'mode2_at.';
 
 	/**
+	 * cluster_meta: the node's `gen` when the page moved it to mode 2
+	 * (`mode2_gen.<server id>`). A node of that gen still holds the
+	 * credentials it had in mode 1; a re-enrolment since (a reinstall in mode
+	 * 2) gave it none, which MAIN cannot tell otherwise.
+	 */
+	public const MODE2_GEN = 'mode2_gen.';
+
+	/** cluster_meta: when MAIN first heard a node in mode 2 say it no longer reads its streams on itself (autoModeDown()). */
+	public const STREAMS_LOST_AT = 'streams_lost_at.';
+
+	/**
 	 * May this node move to $rMode? Pure, so the gate is tested without a request.
 	 *
 	 * Going down is always allowed: it is the way back when a node misbehaves.
@@ -76,8 +100,8 @@ final class ClusterAdmin {
 	 * root actions then reach it only as node.root commands), and a node that
 	 * can run that way now: active (a quarantined node takes no command), heard
 	 * by MAIN a moment ago, and saying by itself that it boots and reads its
-	 * streams from its own copy ($rStreamsLocal). In mode 2 it can neither seed
-	 * that store nor read them from MAIN.
+	 * streams from its own copy ($rStreamsLocal). In mode 2 it can seed that
+	 * store only from what it kept itself, and cannot read them from MAIN.
 	 *
 	 * The node's connect audit is not asked. A node in mode 1 reads MAIN's
 	 * database by design (its crons, its signals daemon, viewer authentication),
@@ -125,16 +149,16 @@ final class ClusterAdmin {
 	}
 
 	/**
-	 * Is a node in mode 2? While one is, the Redis connection handler stays
-	 * off (the Cache page asks): that node may not open MAIN's Redis, which
-	 * its stream entry does for every viewer with the handler on. The other
-	 * order is act()'s: no move to mode 2 while the handler is on.
+	 * Whether the cluster schema exists yet. The `cluster_api_enabled` flag can
+	 * be on before cluster:init has created the tables; Manage Servers checks
+	 * this to show no section rather than iterate a failed query (#400 review).
 	 */
-	public static function anyInModeTwo(): bool {
+	public static function tablesReady(): bool {
 		try {
-			return self::db()->query("SELECT 1 FROM `cluster_nodes` WHERE `mode` = 2 AND `state` IN ('active', 'quarantined') LIMIT 1;") && self::db()->num_rows() > 0;
+			self::db()->query("SHOW TABLES LIKE 'cluster_nodes';");
+			return !empty(self::db()->get_rows());
 		} catch (\Throwable) {
-			return false; // no cluster tables: no nodes
+			return false;
 		}
 	}
 
@@ -178,6 +202,7 @@ final class ClusterAdmin {
 			$rRow['settings_misses'] = $rReports[(int) $rRow['server_id']]['settings_misses'] ?? null;
 			$rRow['connects'] = NodeAudit::connectsOf($rReports[(int) $rRow['server_id']] ?? null);
 			$rRow['streams_local'] = NodeAudit::streamsLocal($rReports[(int) $rRow['server_id']] ?? null);
+			$rRow['gateway'] = NodeAudit::gatewayOf($rReports[(int) $rRow['server_id']] ?? null);
 			$rRow['relay'] = self::relayAdvertised($rRow);
 			$rOut[] = $rRow;
 		}
@@ -222,6 +247,94 @@ final class ClusterAdmin {
 	}
 
 	/**
+	 * MAIN's data-plane client on or off from the page: the
+	 * `cluster:main-dataplane` the CLI runs, as the panel's own user (xc_vm),
+	 * so the key, the files and the audit are the command's. A refusal is
+	 * the command's own reason (no agent binary yet, no panel key, ...).
+	 *
+	 * @return array{type: string, message: string, vars?: array<string, string>}
+	 */
+	private static function mainDataPlane(bool $rOn, ?int $rUserID): array {
+		[$rCode, $rOut] = ProcessRunner::capture([PHP_BIN, MAIN_HOME . 'console.php', 'cluster:main-dataplane', $rOn ? 'on' : 'off']);
+		ClusterAudit::log('cluster.main_dataplane_asked', null, ['on' => $rOn, 'exit' => $rCode], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+		if ($rCode === 0) {
+			return ['type' => 'success', 'message' => $rOn ? 'cluster_main_dataplane_on_done' : 'cluster_main_dataplane_off_done'];
+		}
+		$rWhy = preg_match('/^Refused: (.+)$/m', $rOut, $rMatch) === 1 ? $rMatch[1] : trim($rOut);
+		return ['type' => 'warning', 'message' => 'cluster_main_dataplane_refused', 'vars' => ['{WHY}' => mb_strimwidth($rWhy !== '' ? $rWhy : 'exit ' . $rCode, 0, 300, '…')]];
+	}
+
+	/**
+	 * Move a node to $rWanted, as the page's mode buttons do, with what the
+	 * step needs around it.
+	 *
+	 * @param array<string, mixed> $rNode Its cluster_nodes row.
+	 * @param array<string, mixed> $rDetail More for the `node.mode` audit entry.
+	 */
+	private static function moveMode(array $rNode, int $rWanted, string $rActor, array $rDetail = []): void {
+		$rServerID = (int) $rNode['server_id'];
+		NodeRegistry::update($rServerID, ['mode' => $rWanted]);
+		if ($rWanted === 2) {
+			ClusterMeta::set(self::MODE2_AT . $rServerID, (string) ClusterClock::now());
+			ClusterMeta::set(self::MODE2_GEN . $rServerID, (string) (int) $rNode['gen']);
+		} elseif ((int) $rNode['mode'] === 2) {
+			ClusterMeta::delete(self::MODE2_AT . $rServerID);
+			ClusterMeta::delete(self::MODE2_GEN . $rServerID);
+			ClusterMeta::delete(self::STREAMS_LOST_AT . $rServerID);
+			// Below mode 2 the node needs its credentials: a strip it was not handed yet no longer goes out.
+			DbCredentials::cancelStrip($rServerID);
+		}
+		// What it said of its streams, it said in the mode it leaves: it says it again.
+		NodeAudit::forgetStreamsLocal($rServerID);
+		ClusterAudit::log('node.mode', $rServerID, ['mode' => $rWanted, 'was' => (int) $rNode['mode']] + $rDetail, $rActor);
+	}
+
+	/**
+	 * A node in mode 2 that has said for `cluster_auto_mode_down_min` minutes
+	 * that it no longer reads its streams on itself goes back to mode 1, as
+	 * the page's Mode down would take it (cron:cluster, every minute; 0, the
+	 * default, is off). Only a node that can run there: active, heard within
+	 * NodeHealth::SUSPECT_AFTER_MS (the move reaches it), moved to mode 2 by
+	 * the page at the gen it has now (MODE2_GEN: it holds the credentials it
+	 * had in mode 1), its grant not revoked, and MAIN not locked down.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @return list<int> The nodes moved down.
+	 */
+	public static function autoModeDown(array $rSettings): array {
+		$rMinutes = ClusterSettings::int('cluster_auto_mode_down_min', $rSettings['cluster_auto_mode_down_min'] ?? null);
+		$rReports = NodeAudit::reports();
+		$rNowMs = ClusterClock::nowMs();
+		$rMoved = [];
+		foreach (NodeRegistry::enrolled() as $rServerID => $rNode) {
+			$rSince = ClusterMeta::get(self::STREAMS_LOST_AT . $rServerID);
+			if ($rMinutes <= 0 || (int) $rNode['mode'] !== 2 || NodeAudit::streamsLocal($rReports[$rServerID] ?? null) !== false) {
+				if ($rSince !== null) {
+					ClusterMeta::delete(self::STREAMS_LOST_AT . $rServerID);
+				}
+				continue;
+			}
+			if ($rSince === null) {
+				ClusterMeta::set(self::STREAMS_LOST_AT . $rServerID, (string) intdiv($rNowMs, 1000));
+				continue;
+			}
+			$rLastSeen = HeartbeatService::freshest($rNode['last_seen_at'] ?? null, HeartbeatService::lastSeen()[$rServerID] ?? null);
+			if (intdiv($rNowMs, 1000) - (int) $rSince < $rMinutes * 60
+				|| $rNode['state'] !== 'active'
+				|| $rLastSeen === null || $rNowMs - $rLastSeen > NodeHealth::SUSPECT_AFTER_MS
+				|| ClusterMeta::get(self::MODE2_GEN . $rServerID) !== (string) (int) $rNode['gen']
+				|| DbCredentials::revokedAt($rServerID) !== null
+				|| DbAllowlist::lockedDown()
+			) {
+				continue;
+			}
+			self::moveMode($rNode, 1, 'auto', ['streams_lost_at' => (int) $rSince]);
+			$rMoved[] = $rServerID;
+		}
+		return $rMoved;
+	}
+
+	/**
 	 * Perform one action from the page.
 	 *
 	 * @param array<string, mixed> $rInput cluster_action, server_id, sas, url
@@ -239,6 +352,9 @@ final class ClusterAdmin {
 				'message' => 'cluster_rotate_all_done',
 				'vars' => ['{QUEUED}' => (string) $rDone['queued'], '{SKIPPED}' => (string) $rDone['no_commands'], '{FAILED}' => (string) $rDone['failed']],
 			];
+		}
+		if ($rAction === 'main_dataplane_on' || $rAction === 'main_dataplane_off') {
+			return self::mainDataPlane($rAction === 'main_dataplane_on', $rUserID);
 		}
 		$rServerID = (int) ($rInput['server_id'] ?? 0);
 		$rMain = $rServers[$rMainID] ?? [];
@@ -273,6 +389,28 @@ final class ClusterAdmin {
 						? ['type' => 'warning', 'message' => 'cluster_enrol_rejected']
 						: ['type' => 'info', 'message' => 'cluster_nothing_pending'];
 
+				case 'cutover_start':
+					// The guided cutover (ClusterCutover): every flow, watched, up to
+					// mode 1 — or on to mode 2 when the operator opts in (to_mode_2).
+					$rNode = NodeRegistry::byServer($rServerID);
+					if ($rNode === null || $rNode['state'] !== 'active') {
+						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
+					}
+					if ((int) $rNode['mode'] === 2) {
+						return ['type' => 'info', 'message' => 'cluster_cutover_mode_two'];
+					}
+					$rToMode2 = (string) ($rInput['to_mode_2'] ?? '') === '1';
+					if (!ClusterCutover::start($rServerID, $rUserID, $rToMode2)) {
+						return ['type' => 'warning', 'message' => 'cluster_cutover_busy'];
+					}
+					ClusterAudit::log('node.cutover', $rServerID, ['flows' => (int) $rNode['flows'], 'target_mode' => $rToMode2 ? 2 : 1], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return ['type' => 'success', 'message' => $rToMode2 ? 'cluster_cutover_started_mode2' : 'cluster_cutover_started'];
+
+				case 'cutover_cancel':
+					ClusterCutover::cancel($rServerID);
+					ClusterAudit::log('node.cutover_cancel', $rServerID, [], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return ['type' => 'info', 'message' => 'cluster_cutover_cancel_done'];
+
 				case 'telemetry_on':
 				case 'telemetry_off':
 				case 'commands_on':
@@ -294,6 +432,16 @@ final class ClusterAdmin {
 						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
 					}
 					[$rName, $rSwitch] = explode('_', $rAction);
+					if ($rSwitch === 'off' && (self::MANDATORY_FLOWS & self::FLOW_BITS[$rName]) === self::FLOW_BITS[$rName]) {
+						// telemetry/commands/logs/config/connections/dataplane stay on:
+						// a node is never partially detached from MAIN. See MANDATORY_FLOWS.
+						return ['type' => 'warning', 'message' => 'cluster_flow_mandatory'];
+					}
+					if ($rSwitch === 'off' && (int) $rNode['mode'] === 2) {
+						// Mode 2 runs on every flow (modeGate()): without one the node has
+						// only MAIN's database for that work, which it may not reach.
+						return ['type' => 'warning', 'message' => 'cluster_flow_mode_two'];
+					}
 					if ($rAction === 'dataplane_on' && !self::relayAdvertised($rNode)) {
 						return ['type' => 'warning', 'message' => 'cluster_dataplane_needs_relay'];
 					}
@@ -325,12 +473,6 @@ final class ClusterAdmin {
 					if ($rShown !== null && $rShown !== '' ? (int) $rShown !== (int) $rNode['mode'] : $rWanted === 2) {
 						return ['type' => 'info', 'message' => 'cluster_mode_moved'];
 					}
-					if ($rWanted === 2 && $rAction === 'mode_up' && !empty($rSettings['redis_handler'])) {
-						// With the Redis connection handler the node's stream entry opens
-						// MAIN's Redis at every viewer (live.php, vod.php, timeshift.php),
-						// which mode 2 refuses: every one of them would be turned away.
-						return ['type' => 'warning', 'message' => 'cluster_mode_redis_handler'];
-					}
 					// As nodes() reads it: MySQL's copy may be a flush behind the bus's.
 					$rLastSeen = HeartbeatService::freshest($rNode['last_seen_at'] ?? null, HeartbeatService::lastSeen()[$rServerID] ?? null);
 					$rHeard = $rLastSeen !== null && ClusterClock::nowMs() - $rLastSeen <= NodeHealth::SUSPECT_AFTER_MS;
@@ -338,15 +480,7 @@ final class ClusterAdmin {
 					if (!$rAllowed) {
 						return ['type' => 'warning', 'message' => $rWhy];
 					}
-					NodeRegistry::update($rServerID, ['mode' => $rWanted]);
-					if ($rWanted === 2) {
-						ClusterMeta::set(self::MODE2_AT . $rServerID, (string) ClusterClock::now());
-					} elseif ((int) $rNode['mode'] === 2) {
-						ClusterMeta::delete(self::MODE2_AT . $rServerID);
-					}
-					// What it said of its streams, it said in the mode it leaves: it says it again.
-					NodeAudit::forgetStreamsLocal($rServerID);
-					ClusterAudit::log('node.mode', $rServerID, ['mode' => $rWanted, 'was' => (int) $rNode['mode']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					self::moveMode($rNode, $rWanted, $rUserID === null ? 'admin' : 'admin:' . $rUserID);
 					return ['type' => 'success', 'message' => 'cluster_mode_done'];
 
 				case 'rotate_now':
@@ -369,16 +503,21 @@ final class ClusterAdmin {
 					// its lifting, a quarantine and a resync all go to a node that
 					// takes commands, and none of them stops it.
 					$rActor = $rUserID === null ? 'admin' : 'admin:' . $rUserID;
+					$rEnded = [];
 					[$rRouted, $rQueued] = match ($rAction) {
 						'fence' => ClusterRoute::fence($rServerID, 'admin', ClusterSettings::int('lb_fence_drain_min', $rSettings['lb_fence_drain_min'] ?? null)),
 						'unfence' => ClusterRoute::unfence($rServerID),
-						'quarantine' => ClusterRoute::quarantine($rServerID, 'admin'),
+						'quarantine' => ClusterRoute::quarantine($rServerID, 'admin', $rEnded),
 						default => ClusterRoute::resync($rServerID),
 					};
 					if (!$rRouted) {
 						return ['type' => 'info', 'message' => 'cluster_rotate_no_commands'];
 					}
-					ClusterAudit::log('node.' . $rAction, $rServerID, ['queued' => $rQueued], $rActor);
+					// A quarantine names the granting commands it ended; the operator sends again what is still wanted.
+					ClusterAudit::log('node.' . $rAction, $rServerID, ['queued' => $rQueued] + $rEnded, $rActor);
+					if ($rQueued && !empty($rEnded['ended'])) {
+						return ['type' => 'success', 'message' => 'cluster_quarantine_ended', 'vars' => ['{ENDED}' => (string) $rEnded['ended']]];
+					}
 					return $rQueued
 						? ['type' => 'success', 'message' => 'cluster_' . $rAction . '_done']
 						: ['type' => 'danger', 'message' => 'cluster_command_failed'];

@@ -87,14 +87,9 @@ class EnigmaService {
 			}
 
 			if (isset($rData['c_exp_date'])) {
-				if (isset($rData['no_expire'])) {
-					$rUserArray['exp_date'] = null;
-				} else {
-					try {
-						$rDate = new \DateTime($rData['exp_date']);
-						$rUserArray['exp_date'] = $rDate->format('U');
-					} catch (\Exception $e) {
-					}
+				$rExpiry = LineService::massExpiry($rData);
+				if ($rExpiry !== false) {
+					$rUserArray['exp_date'] = $rExpiry;
 				}
 			}
 
@@ -175,8 +170,12 @@ class EnigmaService {
 		if (InputValidator::validate('processEnigma', $rData)) {
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'edit_e2')) {
-					$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
-					$rUser = UserRepository::getLineById($rArray['user_id']);
+					// The edit starts from the device and its line as stored: the row
+					// cleaner's escaping would be written back into every field not sent.
+					$db->query('SELECT * FROM `enigma2_devices` WHERE `device_id` = ?;', intval($rData['edit']));
+					$rArray = AdminHelpers::overwriteData($db->get_raw_row() ?? [], $rData);
+					$db->query('SELECT * FROM `lines` WHERE `id` = ?;', intval($rArray['user_id']));
+					$rUser = $db->get_raw_row();
 
 					if ($rUser) {
 						$rUserArray = AdminHelpers::overwriteData($rUser, $rData);
@@ -205,6 +204,16 @@ class EnigmaService {
 
 			if (strlen($rUserArray['password']) == 0) {
 				$rUserArray['password'] = AdminHelpers::generateString(32);
+			}
+
+			// Neither holds the separator of the line's playback addresses; the
+			// device's line keeps the value it has until it is changed.
+			if (!LineService::credentialAllowed($rUserArray['username'], $rUser['username'] ?? null)) {
+				return ['status' => STATUS_INVALID_USERNAME, 'data' => $rData];
+			}
+
+			if (!LineService::credentialAllowed($rUserArray['password'], $rUser['password'] ?? null)) {
+				return ['status' => STATUS_INVALID_PASSWORD, 'data' => $rData];
 			}
 
 			if (strlen($rData['isp_clear']) == 0) {
@@ -291,6 +300,7 @@ class EnigmaService {
 
 				if (0 >= $db->num_rows()) {
 					$rUserArray = CategoryTemplateService::applyCustomData($rData, $rUserArray);
+					$rUserArray = \XcVm\Domain\Bouquet\ResellerBouquetPolicy::constrainOwner($rUserArray, $db);
 					$rPrepare = QueryHelper::prepareArray($rUserArray);
 
 					$rQuery = 'REPLACE INTO `lines`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
@@ -299,6 +309,7 @@ class EnigmaService {
 						$rInsertID = $db->last_insert_id();
 						$rArray['user_id'] = $rInsertID;
 						LineService::updateLineSignal($rArray['user_id']);
+						unset($rArray['user'], $rArray['paired']);
 						if (!isset($rData['edit'])) {
 							$rArray['token'] = '';
 							$rArray['lversion'] = $rArray['token'];

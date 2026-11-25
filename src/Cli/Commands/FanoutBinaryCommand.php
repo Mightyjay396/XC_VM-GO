@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\SettingsAudit;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
@@ -41,6 +42,9 @@ use XcVm\Core\Updates\UpdateChannels;
  *
  * Usage: `console.php fanout_binary [fanout|agent] [force]` (neither: both;
  * `force` reinstalls the same version and retries one that did not stay).
+ * An install hands a node MAIN keeps credential-free MAIN's channel and
+ * canary as options (MAIN_OPTIONS), with `--replica` to boot without MAIN's
+ * database: no replica holds them before its enrolment.
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -55,6 +59,9 @@ class FanoutBinaryCommand implements CommandInterface {
 	/** Beside the agent: the last version this command installed or tried to. */
 	public const AGENT_TRIED = 'xc_agent.tried';
 
+	/** MAIN's settings an install passes on the command line (mainOptions()): option => setting. */
+	public const MAIN_OPTIONS = ['--channel' => 'update_channel_fanout', '--canary' => 'lb_binary_canary_server', '--pin' => 'lb_release_pin'];
+
 	public function getName(): string {
 		return 'fanout_binary';
 	}
@@ -67,6 +74,10 @@ class FanoutBinaryCommand implements CommandInterface {
 		if (posix_getpwuid(posix_geteuid())['name'] !== 'root') {
 			echo "Please run as root!\n";
 			return 1;
+		}
+		$rMain = self::mainSettings($rArgs);
+		if ($rMain !== []) {
+			SettingsManager::set($rMain + SettingsManager::getAll());
 		}
 		$rForce = in_array('force', $rArgs, true);
 		$rTools = array_values(array_intersect(['fanout', 'agent'], $rArgs)) ?: ['fanout', 'agent'];
@@ -96,19 +107,108 @@ class FanoutBinaryCommand implements CommandInterface {
 			echo "Failed to resolve the latest xc_fanout release.\n";
 			return 1;
 		}
-		$rTag = trim($rReleases[0]);
+		// The fleet canary (ReleaseCanary on MAIN): what this server may take.
+		$rSettings = SettingsManager::getAll();
+		$rTag = self::releaseFor($rReleases, $rSettings, (int) SERVER_ID);
+		if ($rTag === null) {
+			echo "Held for the fleet's canary: no release is pinned yet.\n";
+			return 0;
+		}
+		$rHeld = self::held($rSettings, (int) SERVER_ID);
+		$rTag = trim($rTag);
 		$rLatest = ltrim($rTag, 'vV');
 		$rBase = ReleaseAsset::baseUrl(GIT_OWNER, GIT_REPO_FANOUT, $rTag);
 
+		// 2.8.0: one merged binary (xc_node) serves both tools, dispatched by the
+		// name it is installed under (see cmd/xc_node). Prefer it when the release
+		// ships it; fall back to the standalone xc_fanout/xc_agent assets for older
+		// releases (a canary/pin held to one), so a half-updated fleet still works.
+		$rUseNode = ReleaseAsset::exists($rBase . 'xc_node-linux-' . $rArch);
+
 		$rOk = true;
 		foreach ($rTools as $rTool) {
-			$rOk = ($rTool === 'fanout' ? $this->fanout($rBase, $rArch, $rLatest, $rForce) : self::agent($rBase, $rArch, $rLatest, $rForce)) && $rOk;
+			$rAsset = self::assetFor($rTool, $rArch, $rUseNode);
+			$rOk = ($rTool === 'fanout' ? $this->fanout($rBase, $rAsset, $rLatest, $rForce, $rHeld) : self::agent($rBase, $rAsset, $rLatest, $rForce, $rHeld)) && $rOk;
 		}
 		return $rOk ? 0 : 1;
 	}
 
-	/** The daemon at $rLatest, from the release at $rBase. */
-	private function fanout(string $rBase, string $rArch, string $rLatest, bool $rForce): bool {
+	/**
+	 * The options that hand MAIN's $rSettings to a node's `fanout_binary`.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function mainOptions(array $rSettings): string {
+		$rOut = '';
+		foreach (self::MAIN_OPTIONS as $rOption => $rKey) {
+			$rOut .= ' ' . escapeshellarg($rOption . '=' . (string) ($rSettings[$rKey] ?? '')); // lb-settings: update_channel_fanout, lb_binary_canary_server, lb_release_pin
+		}
+		return $rOut;
+	}
+
+	/**
+	 * MAIN's settings in $rArgs (mainOptions()), which override the node's.
+	 *
+	 * @param list<string> $rArgs
+	 * @return array<string, string>
+	 */
+	public static function mainSettings(array $rArgs): array {
+		$rOut = [];
+		foreach ($rArgs as $rArg) {
+			[$rOption, $rValue] = explode('=', (string) $rArg, 2) + [1 => null];
+			if ($rValue !== null && isset(self::MAIN_OPTIONS[$rOption])) {
+				$rOut[self::MAIN_OPTIONS[$rOption]] = $rValue;
+			}
+		}
+		return $rOut;
+	}
+
+	/** Is this server held to MAIN's pin (a canary is set, and it is not this server)? */
+	private static function held(array $rSettings, int $rServerID): bool {
+		$rCanary = (int) ($rSettings['lb_binary_canary_server'] ?? 0);
+		return $rCanary > 0 && $rCanary !== $rServerID;
+	}
+
+	/**
+	 * The release this server installs: the newest, unless MAIN holds the
+	 * fleet to what its canary has run long enough (`lb_binary_canary_server`,
+	 * `lb_release_pin`: ReleaseCanary). Then the newest at or below the pin,
+	 * and none while no release is pinned. The canary takes the newest.
+	 *
+	 * @param list<string> $rTags Release tags, newest first.
+	 * @param array<string, mixed> $rSettings
+	 * @return string|null The tag, or null: nothing to install now.
+	 */
+	public static function releaseFor(array $rTags, array $rSettings, int $rServerID): ?string {
+		if (!self::held($rSettings, $rServerID)) {
+			return $rTags[0] ?? null;
+		}
+		$rPin = ltrim(trim((string) ($rSettings['lb_release_pin'] ?? '')), 'vV');
+		if ($rPin === '') {
+			return null;
+		}
+		foreach ($rTags as $rTag) {
+			if (version_compare(ltrim(trim((string) $rTag), 'vV'), $rPin, '<=')) {
+				return (string) $rTag;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The release asset a tool takes: the merged xc_node binary when the release
+	 * ships it for this arch (it dispatches by the name it is installed under),
+	 * else the tool's own standalone binary.
+	 */
+	public static function assetFor(string $rTool, string $rArch, bool $rUseNode): string {
+		if ($rUseNode) {
+			return 'xc_node-linux-' . $rArch;
+		}
+		return ($rTool === 'fanout' ? 'xc_fanout-linux-' : 'xc_agent-linux-') . $rArch;
+	}
+
+	/** The daemon at $rLatest, from the release at $rBase, as release asset $rAsset. */
+	private function fanout(string $rBase, string $rAsset, string $rLatest, bool $rForce, bool $rHeld = false): bool {
 		$rDir = BIN_PATH . 'xc_fanout/';
 		$rBinary = $rDir . 'xc_fanout';
 		$rVerFile = $rDir . self::VERSION_FILE;
@@ -134,12 +234,14 @@ class FanoutBinaryCommand implements CommandInterface {
 			echo "xc_fanout is up to date ({$rInstalled}).\n";
 			return true;
 		}
+		if ($rHeld && $rHealthy && $rInstalled !== null && version_compare($rInstalled, $rLatest, '>')) {
+			echo "xc_fanout {$rInstalled} is past the fleet's pin ({$rLatest}): kept.\n";
+			return true;
+		}
 		$rReason = !$rHealthy
 			? 'binary not responding (missing/corrupt)'
 			: 'installed=' . ($rInstalled ?? 'none') . ', latest=' . $rLatest;
 		echo 'xc_fanout: ' . $rReason . " → updating\n";
-
-		$rAsset = 'xc_fanout-linux-' . $rArch;
 
 		if (!is_dir($rDir) && !@mkdir($rDir, 0755, true)) {
 			echo "Failed to create {$rDir}\n";
@@ -180,12 +282,16 @@ class FanoutBinaryCommand implements CommandInterface {
 	 * only where an agent runs to judge it: a trial nobody runs would be
 	 * judged at the node's enrolment, long past, and roll the binary back.
 	 */
-	public static function agent(string $rBase, string $rArch, string $rLatest, bool $rForce): bool {
+	public static function agent(string $rBase, string $rAsset, string $rLatest, bool $rForce, bool $rHeld = false): bool {
 		$rTarget = ArtefactStage::agentBinary();
 		$rDir = dirname($rTarget) . '/';
 		$rInstalled = ArtefactStage::agentVersion();
 		if (!$rForce && $rInstalled === $rLatest) {
 			echo "xc_agent is up to date ({$rInstalled}).\n";
+			return true;
+		}
+		if ($rHeld && $rInstalled !== null && version_compare($rInstalled, $rLatest, '>')) {
+			echo "xc_agent {$rInstalled} is past the fleet's pin ({$rLatest}): kept.\n";
 			return true;
 		}
 		if (!$rForce && ltrim(trim((string) @file_get_contents($rDir . self::AGENT_TRIED)), 'vV') === $rLatest) {
@@ -197,7 +303,6 @@ class FanoutBinaryCommand implements CommandInterface {
 			echo "Failed to create {$rDir}\n";
 			return false;
 		}
-		$rAsset = 'xc_agent-linux-' . $rArch;
 		// Root's own temp file: installAgent copies it in as the agent's user.
 		$rTmp = (string) tempnam(sys_get_temp_dir(), 'xc_agent');
 		try {

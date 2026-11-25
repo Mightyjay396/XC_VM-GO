@@ -1,14 +1,19 @@
 <?php
 
+use XcVm\Core\Audit\AdminAudit;
+use XcVm\Core\Auth\ApiTokens;
+use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Auth\SessionManager;
+use XcVm\Core\Auth\TwoFactor;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
+use XcVm\Core\Error\ErrorResponder;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\ApiClient;
@@ -21,6 +26,7 @@ use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Device\EnigmaService;
 use XcVm\Domain\Device\MagService;
 use XcVm\Domain\Epg\EpgService;
+use XcVm\Domain\Line\LineRepository;
 use XcVm\Domain\Line\LineService;
 use XcVm\Domain\Line\PackageService;
 use XcVm\Domain\Security\BlocklistService;
@@ -40,6 +46,7 @@ use XcVm\Domain\User\GroupService;
 use XcVm\Domain\User\UserService;
 use XcVm\Domain\Vod\EpisodeService;
 use XcVm\Domain\Vod\MovieService;
+use XcVm\Domain\Vod\VodM3uImport;
 use XcVm\Domain\Vod\SeriesService;
 use XcVm\Domain\Vod\TMDbService;
 use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
@@ -419,6 +426,10 @@ if (1 < $rICount) { ?>
 	if (PageAuthorization::checkPostAction((string) RequestManager::get('action'), RequestManager::has('edit'))) {
 		// FIX CSRF: acoes que alteram dados so vem por POST (bloqueia ataques via <img src>, que sao GET)
 		if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+			// The address opened in a browser: the error page. A script keeps its JSON.
+			if (ErrorResponder::wantsHtml()) {
+				ErrorResponder::emit(ErrorResponder::respondPage(405, '', 'dashboard'));
+			}
 			http_response_code(405);
 			header('Content-Type: application/json');
 			echo json_encode(array('result' => false, 'status' => 0, 'error' => 'Method Not Allowed'));
@@ -450,9 +461,21 @@ if (1 < $rICount) { ?>
 			exit();
 		}
 
+		// The admin action trail: who saved what, and whether it was saved.
+		AdminAudit::start('panel', (string) $rAction, $GLOBALS['rAdminUserInfo'] ?? [], $rData);
+
 		switch ($rAction) {
 			case 'quick_tools':
 				set_time_limit(0);
+
+				foreach ([\XcVm\Domain\Stream\LiveStreamQuickTools::PROGRESS, \XcVm\Domain\Stream\LiveStreamQuickTools::CODECS, \XcVm\Domain\Stream\LiveStreamQuickTools::MEMORY, \XcVm\Domain\Stream\LiveStreamQuickTools::ONLINE, \XcVm\Domain\Stream\LiveStreamQuickTools::DOWN] as $rTool) {
+					if (isset($rData[$rTool])) {
+						$rResult = \XcVm\Domain\Stream\LiveStreamQuickTools::restart($db, $rTool);
+						$rResult['status'] = $rResult['result'] ? STATUS_SUCCESS : STATUS_FAILURE;
+						echo json_encode($rResult);
+						exit();
+					}
+				}
 
 				if (isset($rData['cleanup_streams'])) {
 					$db->query('DELETE FROM `streams_servers` WHERE (`server_id` NOT IN (SELECT `id` FROM `servers`)) OR (`stream_id` NOT IN (SELECT `id` FROM `streams`));');
@@ -461,82 +484,111 @@ if (1 < $rICount) { ?>
 				}
 
 				if (isset($rData['remove_null_lines'])) {
-					$db->query('DELETE FROM `lines` WHERE `username` IS NULL AND `password` IS NULL;');
+					// Removed here, a line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `username` IS NULL AND `password` IS NULL;');
+					LineRepository::deleteMany(array_column($db->get_rows() ?: [], 'id'));
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['remove_expired'])) {
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 0 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					// Removed here, a line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 0 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					LineRepository::deleteMany(array_column($db->get_rows() ?: [], 'id'));
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['remove_trial'])) {
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 0 AND `is_trial` = 1;');
+					// Removed here, a line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 0 AND `is_trial` = 1;');
+					LineRepository::deleteMany(array_column($db->get_rows() ?: [], 'id'));
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['remove_expired_trial'])) {
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 0 AND `is_trial` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					// Removed here, a line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 0 AND `is_trial` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					LineRepository::deleteMany(array_column($db->get_rows() ?: [], 'id'));
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['flush_isp'])) {
 					$db->query("UPDATE `lines` SET `isp_desc` = '', `as_number` = NULL WHERE `is_mag` = 0 AND `is_e2` = 0;");
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['enable_isp'])) {
 					$db->query('UPDATE `lines` SET `is_isplock` = 1 WHERE `is_mag` = 0 AND `is_e2` = 0;');
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['disable_isp'])) {
 					$db->query('UPDATE `lines` SET `is_isplock` = 0 WHERE `is_mag` = 0 AND `is_e2` = 0;');
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['remove_expired_mag'])) {
-					$db->query('DELETE FROM `mag_devices` WHERE `user_id` IN (SELECT `id` FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP()));');
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					// Removed here, a device's line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					$rLineIDs = array_map('intval', array_column($db->get_rows() ?: [], 'id'));
+					if (0 < count($rLineIDs)) {
+						$db->query('DELETE FROM `mag_devices` WHERE `user_id` IN (' . implode(',', $rLineIDs) . ');');
+					}
+					LineRepository::deleteMany($rLineIDs);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['remove_trial_mag'])) {
-					$db->query('DELETE FROM `mag_devices` WHERE `user_id` IN (SELECT `id` FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND `is_trial` = 1);');
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND `is_trial` = 1;');
+					// Removed here, a device's line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND `is_trial` = 1;');
+					$rLineIDs = array_map('intval', array_column($db->get_rows() ?: [], 'id'));
+					if (0 < count($rLineIDs)) {
+						$db->query('DELETE FROM `mag_devices` WHERE `user_id` IN (' . implode(',', $rLineIDs) . ');');
+					}
+					LineRepository::deleteMany($rLineIDs);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['remove_expired_trial_mag'])) {
-					$db->query('DELETE FROM `mag_devices` WHERE `user_id` IN (SELECT `id` FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND `is_trial` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP()));');
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND `is_trial` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					// Removed here, a device's line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 1 AND `is_e2` = 0 AND `is_trial` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					$rLineIDs = array_map('intval', array_column($db->get_rows() ?: [], 'id'));
+					if (0 < count($rLineIDs)) {
+						$db->query('DELETE FROM `mag_devices` WHERE `user_id` IN (' . implode(',', $rLineIDs) . ');');
+					}
+					LineRepository::deleteMany($rLineIDs);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['flush_isp_mag'])) {
 					$db->query("UPDATE `lines` SET `isp_desc` = '', `as_number` = NULL WHERE `is_mag` = 1 AND `is_e2` = 0;");
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['enable_isp_mag'])) {
 					$db->query('UPDATE `lines` SET `is_isplock` = 1 WHERE `is_mag` = 1 AND `is_e2` = 0;');
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['disable_isp_mag'])) {
 					$db->query('UPDATE `lines` SET `is_isplock` = 0 WHERE `is_mag` = 1 AND `is_e2` = 0;');
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
@@ -560,40 +612,58 @@ if (1 < $rICount) { ?>
 				}
 
 				if (isset($rData['remove_expired_e2'])) {
-					$db->query('DELETE FROM `enigma2_devices` WHERE `user_id` IN (SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP()));');
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					// Removed here, a device's line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					$rLineIDs = array_map('intval', array_column($db->get_rows() ?: [], 'id'));
+					if (0 < count($rLineIDs)) {
+						$db->query('DELETE FROM `enigma2_devices` WHERE `user_id` IN (' . implode(',', $rLineIDs) . ');');
+					}
+					LineRepository::deleteMany($rLineIDs);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['remove_trial_e2'])) {
-					$db->query('DELETE FROM `enigma2_devices` WHERE `user_id` IN (SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND `is_trial` = 1);');
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND `is_trial` = 1;');
+					// Removed here, a device's line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND `is_trial` = 1;');
+					$rLineIDs = array_map('intval', array_column($db->get_rows() ?: [], 'id'));
+					if (0 < count($rLineIDs)) {
+						$db->query('DELETE FROM `enigma2_devices` WHERE `user_id` IN (' . implode(',', $rLineIDs) . ');');
+					}
+					LineRepository::deleteMany($rLineIDs);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['remove_expired_trial_e2'])) {
-					$db->query('DELETE FROM `enigma2_devices` WHERE `user_id` IN (SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND `is_trial` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP()));');
-					$db->query('DELETE FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND `is_trial` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					// Removed here, a device's line leaves as one deleted from the list does: its sessions are closed.
+					$db->query('SELECT `id` FROM `lines` WHERE `is_mag` = 0 AND `is_e2` = 1 AND `is_trial` = 1 AND (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP());');
+					$rLineIDs = array_map('intval', array_column($db->get_rows() ?: [], 'id'));
+					if (0 < count($rLineIDs)) {
+						$db->query('DELETE FROM `enigma2_devices` WHERE `user_id` IN (' . implode(',', $rLineIDs) . ');');
+					}
+					LineRepository::deleteMany($rLineIDs);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['flush_isp_e2'])) {
 					$db->query("UPDATE `lines` SET `isp_desc` = '', `as_number` = NULL WHERE `is_mag` = 0 AND `is_e2` = 1;");
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['enable_isp_e2'])) {
 					$db->query('UPDATE `lines` SET `is_isplock` = 1 WHERE `is_mag` = 0 AND `is_e2` = 1;');
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['disable_isp_e2'])) {
 					$db->query('UPDATE `lines` SET `is_isplock` = 0 WHERE `is_mag` = 0 AND `is_e2` = 1;');
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
@@ -660,12 +730,14 @@ if (1 < $rICount) { ?>
 
 				if (isset($rData['block_trial_lines'])) {
 					$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `is_trial` = 1;');
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['unblock_trial_lines'])) {
 					$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `is_trial` = 1;');
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
@@ -697,6 +769,7 @@ if (1 < $rICount) { ?>
 
 				if (isset($rData['flush_country_lock'])) {
 					$db->query("UPDATE `lines` SET `forced_country` = '';");
+					LineService::invalidateCachedLines();
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
@@ -756,48 +829,6 @@ if (1 < $rICount) { ?>
 						$rStreamIDs[] = intval($rRow['stream_id']);
 					}
 					$db->query('SELECT DISTINCT(`server_id`) FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `streams`.`type` = 1;');
-
-					foreach ($db->get_rows() as $rRow) {
-						$rServerIDs[] = intval($rRow['server_id']);
-					}
-
-					if (count($rStreamIDs) > 0) {
-						$rRet = ApiClient::request(array('action' => 'stream', 'sub' => 'start', 'stream_ids' => $rStreamIDs, 'servers' => $rServerIDs), 120);
-					}
-
-					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
-					exit();
-				}
-
-				if (isset($rData['restart_online_streams'])) {
-					$rServerIDs = $rStreamIDs = array();
-					$db->query('SELECT DISTINCT(`stream_id`) FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `streams`.`type` = 1 AND `streams_servers`.`pid` IS NOT NULL AND `streams_servers`.`pid` > 0 AND `streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0;');
-
-					foreach ($db->get_rows() as $rRow) {
-						$rStreamIDs[] = intval($rRow['stream_id']);
-					}
-					$db->query('SELECT DISTINCT(`server_id`) FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `streams`.`type` = 1 AND `streams_servers`.`pid` IS NOT NULL AND `streams_servers`.`pid` > 0 AND `streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0;');
-
-					foreach ($db->get_rows() as $rRow) {
-						$rServerIDs[] = intval($rRow['server_id']);
-					}
-
-					if (count($rStreamIDs) > 0) {
-						$rRet = ApiClient::request(array('action' => 'stream', 'sub' => 'start', 'stream_ids' => $rStreamIDs, 'servers' => $rServerIDs), 120);
-					}
-
-					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
-					exit();
-				}
-
-				if (isset($rData['restart_down_streams'])) {
-					$rServerIDs = $rStreamIDs = array();
-					$db->query('SELECT DISTINCT(`stream_id`) FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `streams`.`type` = 1 AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` <> 0 AND `streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0;');
-
-					foreach ($db->get_rows() as $rRow) {
-						$rStreamIDs[] = intval($rRow['stream_id']);
-					}
-					$db->query('SELECT DISTINCT(`server_id`) FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `streams`.`type` = 1 AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` <> 0 AND `streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0;');
 
 					foreach ($db->get_rows() as $rRow) {
 						$rServerIDs[] = intval($rRow['server_id']);
@@ -938,10 +969,8 @@ if (1 < $rICount) { ?>
 						$rIDs[] = $rRow['id'];
 					}
 
-					if (0 >= count($rIDs)) {
-					} else {
-						$db->query('DELETE FROM `lines` WHERE `id` IN (' . implode(',', array_map('intval', $rIDs)) . ');');
-					}
+					// Removed here, a line leaves as one deleted from the list does: its sessions are closed.
+					LineRepository::deleteMany($rIDs);
 
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
@@ -955,10 +984,8 @@ if (1 < $rICount) { ?>
 						$rIDs[] = $rRow['id'];
 					}
 
-					if (0 >= count($rIDs)) {
-					} else {
-						$db->query('DELETE FROM `lines` WHERE `id` IN (' . implode(',', array_map('intval', $rIDs)) . ');');
-					}
+					// Removed here, a line leaves as one deleted from the list does: its sessions are closed.
+					LineRepository::deleteMany($rIDs);
 
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
@@ -1270,10 +1297,23 @@ if (1 < $rICount) { ?>
 				echo json_encode(array('result' => false, 'data' => ($rReturn['data'] ?? array()), 'status' => $rReturn['status'], 'message' => $rReturn['data']['message'] ?? (isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null)));
 				exit();
 
+			case 'vod_playlist_preview':
+				if (!Authorization::check('adv', 'import_movies')) {
+					echo json_encode(['result' => false]);
+					exit();
+				}
+				try {
+					$rEntries = VodM3uImport::entries($rData, false);
+					echo json_encode(['result' => true, 'fingerprint' => VodM3uImport::fingerprint($rEntries), 'entries' => array_map(static fn($rEntry) => ['id' => hash('sha256', $rEntry['url']), 'title' => $rEntry['title']], $rEntries)]);
+				} catch (\Throwable $rError) {
+					echo json_encode(['result' => false, 'message' => $language::get('vod_m3u_invalid')]);
+				}
+				exit();
+
 			case 'movie':
-				if (!empty($rData['import_folder']) || !empty($_FILES['m3u_file']['tmp_name'])) {
+				if (!empty($rData['import_folder']) || VodM3uImport::hasPlaylist($rData)) {
 					$rReturn = MovieService::import($rData);
-					echo json_encode(array('result' => true, 'location' => 'movies?status=2', 'status' => $rReturn['status']));
+					echo json_encode(array('result' => $rReturn['status'] == STATUS_SUCCESS, 'queued' => $rReturn['status'] == STATUS_SUCCESS, 'status' => $rReturn['status'], 'message' => $rReturn['status'] == STATUS_SUCCESS ? $language::get('vod_import_queued') : (isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null)));
 					exit();
 				}
 
@@ -1415,6 +1455,16 @@ if (1 < $rICount) { ?>
 				echo json_encode(array('result' => false, 'data' => $rReturn['data'], 'status' => $rReturn['status']));
 				exit();
 
+			case 'api_tokens':
+				// The signed-in admin's own API tokens (Views/layouts/profile_api_tokens.php).
+				echo json_encode(ApiTokens::manage((int) $GLOBALS['rAdminUserInfo']['id'], $rData, true));
+				exit();
+
+			case 'twofactor':
+				// The signed-in admin's own second factor (Views/layouts/profile_2fa.php).
+				echo json_encode(TwoFactor::manage((int) $GLOBALS['rAdminUserInfo']['id'], $rData));
+				exit();
+
 			case 'edit_profile':
 				global $allowedLangs;
 				$rReturn = UserService::editAdminProfile($rData, $GLOBALS['rAdminUserInfo'], $allowedLangs);
@@ -1545,7 +1595,7 @@ if (1 < $rICount) { ?>
 					exit();
 				}
 
-				echo json_encode(array('result' => false, 'data' => $rReturn['data'], 'status' => $rReturn['status'], 'message' => isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null));
+				echo json_encode(array('result' => false, 'data' => $rReturn['data'], 'status' => $rReturn['status'], 'message' => $rReturn['status'] == STATUS_SUCCESS ? $language::get('vod_import_queued') : (isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null)));
 				exit();
 
 			case 'created_channel_mass':
@@ -1826,9 +1876,9 @@ if (1 < $rICount) { ?>
 				exit();
 
 			case 'serie':
-				if (!empty($rData['import_folder']) || !empty($_FILES['m3u_file']['tmp_name'])) {
+				if (!empty($rData['import_folder']) || VodM3uImport::hasPlaylist($rData)) {
 					$rReturn = SeriesService::import($rData);
-					echo json_encode(array('result' => true, 'location' => 'series?status=2', 'status' => $rReturn['status']));
+					echo json_encode(array('result' => $rReturn['status'] == STATUS_SUCCESS, 'queued' => $rReturn['status'] == STATUS_SUCCESS, 'status' => $rReturn['status'], 'message' => $rReturn['status'] == STATUS_SUCCESS ? $language::get('vod_import_queued') : (isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null)));
 					exit();
 				}
 
@@ -1910,7 +1960,8 @@ if (1 < $rICount) { ?>
 					exit();
 				}
 
-				echo json_encode(array('result' => false, 'data' => $rReturn['data'], 'status' => $rReturn['status']));
+				// A refused install says why (ServerService::install).
+				echo json_encode(array('result' => false, 'data' => $rReturn['data'], 'status' => $rReturn['status'], 'message' => isset($rReturn['message']) ? $language::get($rReturn['message']) : null));
 				exit();
 
 			case 'settings':

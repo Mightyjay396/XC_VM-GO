@@ -4,12 +4,16 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\StreamRecords;
+use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Proxy\ProxyArchiveUpdater;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
+use XcVm\Domain\Cluster\XcvtTargets;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
 
@@ -28,6 +32,13 @@ use XcVm\Domain\Server\ServerRepository;
  */
 
 class ServerInstallCommand implements CommandInterface {
+	/**
+	 * The OpenSSL 3 package an Ubuntu 20 node is given, and the SHA-256 Ubuntu's
+	 * signed index lists for it (jammy, main/binary-amd64/Packages).
+	 */
+	private const LIBSSL3_URL = 'http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl3_3.0.2-0ubuntu1_amd64.deb';
+	private const LIBSSL3_SHA256 = '11a83260542e05aebbbafce9164d594287d2584be80972e08708528fe06f80d3';
+
 	public function getName(): string {
 		return 'server:install';
 	}
@@ -110,7 +121,8 @@ class ServerInstallCommand implements CommandInterface {
 			}
 		} elseif ($rType == 2) {
 			// Load-balancer nodes are a licensed capability — an unlicensed
-			// white-label panel stays usable locally but cannot add LB nodes.
+			// panel (no valid key, or attribution removed) stays usable locally
+			// but cannot add LB nodes.
 			// This is a first-line stopgap (removable PHP); the tamper-proof gate
 			// is XC_VM::db_grant() in the compiled core, which refuses the LB node
 			// DB access unless the panel is licensed.
@@ -120,7 +132,6 @@ class ServerInstallCommand implements CommandInterface {
 				echo "Verify the panel (dashboard banner → Get a key), then retry.\n";
 				return 1;
 			}
-
 			$rUpdateData = LbInstallFlow::resolveUpdateData($gitRelease);
 			$rInstallFiles = $rUpdateData['url'];
 			$rHash = $rUpdateData['md5'];
@@ -180,6 +191,9 @@ class ServerInstallCommand implements CommandInterface {
 		if ($rHostKey !== $rStoredHostKey) {
 			$db->query('UPDATE `servers` SET `ssh_hostkey_sha1` = ? WHERE `id` = ?;', $rHostKey, $rServerID);
 		}
+		// A key the admin confirmed (--expect-hostkey) is what server:xcvt-pin
+		// trusts without asking again; one taken on first use is not (ADR-005).
+		XcvtTargets::noteHostKey($rServerID, (string) $rHostKey, $rExpectedHostKey !== null);
 
 		// Every step below runs through sudo, and so does the node's own service
 		// script. A Debian installed with a root password has no sudo: root
@@ -221,6 +235,18 @@ class ServerInstallCommand implements CommandInterface {
 
 		$this->updateSystemAndInstallPackages($rConn, $rRunSSH, $rPackages, $rType);
 		$this->installUbuntu20Compatibility($rConn, $rRunSSH, $rVersion);
+
+		// A reinstall must keep an LB node's tuned fanout config, its certbot config
+		// (the real certificate) and the front's server.{crt,key}: prepareInstallRoot
+		// wipes BIN_PATH and installArchive re-extracts the archive's defaults over it
+		// (XC_VM #477). Stash them first — before anything is destroyed — so a failed
+		// stash stops the install with nothing lost; a fresh node has none (no-op).
+		if ($rType == 2 && !LbInstallFlow::stashNodeConfig($rConn, $rRunSSH)) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Could not preserve the node's configuration before reinstall! Exiting\n";
+			return 1;
+		}
+
 		$this->prepareInstallRoot($rConn, $rRunSSH, $rType);
 
 		if ($rType == 1) {
@@ -231,12 +257,40 @@ class ServerInstallCommand implements CommandInterface {
 			if (!LbInstallFlow::installArchive($rConn, $rRunSSH, $rInstallFiles, $rHash, $rServerID, $db)) {
 				return 1;
 			}
+			// Restore the stashed config over the archive's defaults (no-op on a fresh node).
+			LbInstallFlow::restoreNodeConfig($rConn, $rRunSSH);
 		}
 
 		// An LB in API mode — a new one under lb_new_node_mode=api, or one MAIN
 		// keeps free of its credentials — gets no grant and a credential-free
 		// config.enc. Decided once, before the enrolment replaces the node's row.
-		$rApiMode = $rType == 2 && LbInstallFlow::installsInApiMode(SettingsManager::getAll(), $rServerID);
+		// The row's serve_only, persisted by ServerService before this worker was
+		// launched, is the request's captured decision: honour it even if the
+		// global mode changed between queue and start, so a serve-only install the
+		// admin asked for is not rejected by the guard below (which re-reads the
+		// live setting). A serve-only node is credential-free/API-mode by construction.
+		$rApiMode = $rType == 2 && (LbInstallFlow::installsInApiMode(SettingsManager::getAll(), $rServerID) || !empty($rServers[$rServerID]['serve_only']));
+
+		// A single-binary serve-only LB (server:install --serve-only): MAIN directs
+		// its streams and it runs xc_node with no nginx/php-fpm. Only an LB can be one.
+		// --serve-only is a valueless flag, so it stays in the positional list
+		// (splitOptions only lifts --name=value into $rOptions) and is matched
+		// there, as cluster:reenrol does with --all/--dry-run/--pending. Match only
+		// the tail (index >= 5, after type/id/port/username/password) so a root
+		// password that happens to equal "--serve-only" can never arm it.
+		$rServeOnly = $rType == 2 && in_array('--serve-only', array_slice($rArgs, 5), true);
+
+		// A serve-only node is credential-free by definition: it holds no DB, mints
+		// no tokens, and runs no php-fpm — so it MUST install in API mode. Refuse
+		// --serve-only on a node that would take MAIN's credentials (a mode-1 LB),
+		// since the serve-only provisioning gate skips its nginx + php-fpm and would
+		// leave that node with no HTTP stack. installsInApiMode() is asked before the
+		// enrolment, so this is decided up front.
+		if ($rServeOnly && !$rApiMode) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "--serve-only requires an API-mode (credential-free) node, but this install is not in API mode (enable lb_new_node_mode=api or cluster mode 2). A serve-only LB holds no database and runs only the Go binary. Exiting\n";
+			return 1;
+		}
 
 		if ($rType == 2 && !LbInstallFlow::runPostExtractSteps($rConn, $rRunSSH, $rSendFileSSH, $rDistID, $rVersion, $rUpdateSysctl, $rSysCtl, $rServerID)) {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
@@ -250,7 +304,7 @@ class ServerInstallCommand implements CommandInterface {
 			$this->sendFileSSH($rConn, TMP_PATH . 'config_' . $rServerID, CONFIG_PATH . 'config.ini');
 		} else {
 			// LB: secure provisioning — DB password never enters PHP (see LbInstallFlow::provisionConfig).
-			if (!LbInstallFlow::provisionConfig($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, $rApiMode)) {
+			if (!LbInstallFlow::provisionConfig($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, $rApiMode, $rServeOnly)) {
 				return 1;
 			}
 		}
@@ -262,27 +316,144 @@ class ServerInstallCommand implements CommandInterface {
 			ProxyInstallFlow::provisionKey($rConn, $rSendFileSSH, $rRunSSH, $rServerID, $db);
 			$rServices = ProxyInstallFlow::configureRuntime($rConn, $rSendFileSSH, $rRunSSH, $rServers, $rParentIDs, $rPrivateIP, $rHTTPPort, $rHTTPSPort, $rServerID);
 		} else {
-			$rServices = LbInstallFlow::configureRuntime($rConn, $rSendFileSSH, $rRunSSH, $rServers, $rServerID);
+			$rServices = LbInstallFlow::configureRuntime($rConn, $rSendFileSSH, $rRunSSH, $rServers, $rServerID, $rServeOnly);
 		}
 
 		$this->finalizeHostAfterRuntime($rConn, $rRunSSH, $rHost, !$rApiMode);
 
+		if ($rType == 2 && $rServeOnly) {
+			// The agent runs as xc_vm and reaches root for node.root + viewer bans via
+			// `sudo -n` (XC_VM_Fanout privCmd/privWriteFile). Grant its scoped NOPASSWD
+			// helper BEFORE serve_only is exposed (DB row + cluster/serve_only marker):
+			// an agent that comes up the moment the node is serve-only must find the grant
+			// already in place, and a node that cannot get it is never marked serve-only.
+			// Neither target (/usr/local/sbin, /etc/sudoers.d) is under MAIN_HOME, so the
+			// blanket chown above leaves them alone.
+			$rHelperOK = LbInstallFlow::provisionNodeRootHelper($rConn, $rRunSSH, $rSendFileSSH);
+			$rSudoersOK = $rHelperOK && LbInstallFlow::provisionNodeRootSudoers($rConn, $rRunSSH);
+			if (!$rSudoersOK) {
+				$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+				echo "The node.root helper / sudoers grant could not be installed on the node. Exiting\n";
+				return 1;
+			}
+		}
+
 		if ($rType == 2) {
-			LbInstallFlow::runStartup($rConn, $rRunSSH);
+			// An API-mode node boots from its replica, which only its enrolment brings.
+			LbInstallFlow::runStartup($rConn, $rRunSSH, !$rApiMode);
+			// As FPM sees it, before it is marked installed (ADR-005, Decision 7).
+			$rReadback = LbInstallFlow::readback($rConn, $rRunSSH, $rServerID);
+			if ($rReadback !== null) {
+				$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+				echo 'The installed node does not read back as provisioned: ' . $rReadback . ". Exiting\n";
+				return 1;
+			}
 			$rGenBefore = LbInstallFlow::nodeGen($rServerID);
-			if (!LbInstallFlow::provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, null, true, $rApiMode)) {
+			if (!LbInstallFlow::provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, null, true, $rApiMode, $rServeOnly)) {
 				return 1;
 			}
 			$rFlows = LbInstallFlow::flowsOn($rServerID, $rGenBefore);
 			if ($rFlows !== '') {
 				echo $rFlows . "\n";
 			}
+			if ($rApiMode) {
+				echo LbInstallFlow::startOnReplica($rConn, $rRunSSH) . "\n";
+			}
 		} else {
+			// finalizeHostAfterRuntime() handed the whole tree to xc_vm: the key is root's again (ProxyInstallFlow::provisionKey).
+			call_user_func($rRunSSH, $rConn, 'sudo chown root:root ' . MAIN_HOME . 'config/proxy.key && sudo chmod 0600 ' . MAIN_HOME . 'config/proxy.key');
 			ProxyInstallFlow::runStartup($rConn, $rRunSSH);
 		}
 
 		if (in_array($rType, [1, 2])) {
-			$db->query('UPDATE `servers` SET `status` = 1, `http_broadcast_port` = ?, `https_broadcast_port` = ?, `total_services` = ? WHERE `id` = ?;', $rHTTPPort, $rHTTPSPort, $rServices, $rServerID);
+			if ($rServeOnly) {
+				// B2, before the mode flip: serve_only gates whether this node's records
+				// carry a transcode Spec, so re-stamp its held streams' versions — the
+				// next delta re-emits their directives rather than waiting for the ~5-min
+				// resync safety net. Done first so serve_only is never committed while the
+				// directives still carry the old version; non-essential (the resync covers
+				// it), so a DB hiccup here must not fail an otherwise-complete install.
+				try {
+					StreamVersions::bump(StreamRecords::held($rServerID, null));
+				} catch (\Throwable $rE) {
+					echo 'serve_only install: held-stream re-stamp failed (' . $rE->getMessage() . '); the periodic resync will re-emit.' . "\n";
+				}
+			}
+			$db->query('UPDATE `servers` SET `status` = 1, `http_broadcast_port` = ?, `https_broadcast_port` = ?, `total_services` = ?, `serve_only` = ? WHERE `id` = ?;', $rHTTPPort, $rHTTPSPort, $rServices, $rServeOnly ? 1 : 0, $rServerID);
+			if ($rType == 2) {
+				// The plaintext marker (run.sh reads it to launch the front + seeding,
+				// and RootSignalsCronJob keys the demote off it) is written only here, on
+				// a completed install, and removed on a non-serve-only (downgrade)
+				// install — so a failed install never leaves the node's runtime mode
+				// disagreeing with MAIN, and config/ (which survives a re-install) is kept
+				// consistent with the DB serve_only just committed above.
+				//
+				// Written AS xc_vm (never root): config/cluster is xc_vm-owned, so a root
+				// write or chown through it would follow a symlink an unprivileged xc_vm
+				// could plant there and escalate. xc_vm writing its own files crosses no
+				// privilege boundary (it fails closed on a path it cannot already write).
+				if ($rServeOnly) {
+					call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm mkdir -p ' . CONFIG_PATH . 'cluster');
+					call_user_func($rRunSSH, $rConn, 'echo ' . escapeshellarg((string) $rServerID) . ' | sudo -u xc_vm tee ' . CONFIG_PATH . 'cluster/serve_only > /dev/null');
+					// Now that serve_only is committed, remove the now-inert http-nginx + php-fpm
+					// configs the node no longer reads (a serve-only node is "gone from config").
+					// Done AFTER the marker on purpose: a crash before the marker leaves these
+					// intact, so a failed convert still boots the normal nginx stack. Idempotent
+					// (rm -f); bin/daemons.sh is kept (it ships + is chmod'd for every node).
+					call_user_func($rRunSSH, $rConn, 'sudo rm -f ' . MAIN_HOME . 'bin/nginx/conf/custom.conf ' . MAIN_HOME . 'bin/nginx/conf/limit.conf ' . MAIN_HOME . 'bin/nginx/conf/limit_queue.conf ' . MAIN_HOME . 'bin/nginx/conf/balance.conf ' . MAIN_HOME . 'bin/php/etc/*.conf');
+					// P6: make the node PHP-free. Done here, at the very end of a successful
+					// install, AFTER every PHP-dependent install step has run with PHP present
+					// (installExtension's xcvm_core probe, readback's XC_VM::config_server, and
+					// the first `service` boot's console.php startup) — removing PHP earlier
+					// aborts the install. console.php gone flips the agent's PHP-free gates
+					// (self-heal, ffmpeg, certbot, node.root); bin/php goes too. The restart
+					// below then boots PHP-free (the service skips every PHP startup/cron via
+					// php_available). The node's steady state is owned by the Go agent (replica
+					// apply P1, binary self-heal P2, certbot P3, ffmpeg/maintenance P4, node.root
+					// P5/P6B).
+					//
+					// bin/nginx is KEPT (the http-nginx binary stays dormant — the service never
+					// starts it on a serve-only node): the Go front reads its listen ports from
+					// bin/nginx/conf/ports (http.conf and https.conf — fanoutcmd -front-ports
+					// defaults; LbInstallFlow writes https.conf there), so deleting the tree would
+					// leave the front with no ports and the node serving nothing.
+					call_user_func($rRunSSH, $rConn, 'sudo rm -rf ' . MAIN_HOME . 'console.php ' . MAIN_HOME . 'bin/php');
+					// xc_vm.service runs `bash service` as root and the blanket chown made it (and
+					// its directory) xc_vm's: root-own what root runs, as rootOwn() does on MAIN.
+					// This node has no PHP to run rootOwn(), so it is done here, last.
+					call_user_func($rRunSSH, $rConn, LbInstallFlow::rootOwnPhpFreeCommand());
+					// The service was already started during the install, BEFORE this marker
+					// existed — so that boot ran nginx + php-fpm and run.sh brought the front
+					// up alongside them (both on the public ports via SO_REUSEPORT: a split
+					// brain). Restart now that the marker is in place so `service` skips
+					// http-nginx + php-fpm and the Go front is the sole listener; without it
+					// the node stays dual-stacked until the next restart. Serve-only only.
+					call_user_func($rRunSSH, $rConn, 'sudo systemctl restart xc_vm');
+					// Sync the node's real cert to the Go front now: a node converted to
+					// serve-only while it already holds a valid cert would otherwise serve the
+					// installer's self-signed server.crt until the cert is next due (the daily
+					// cron sends no certbot_generate while it is valid). Queue one — the node's
+					// existing-cert path runs syncFrontCert (a fresh node issues via webroot).
+					// Skipped when the node has only an IP (no http-01 name).
+					$rCertDomains = [];
+					foreach (explode(',', (string) ($rServers[$rServerID]['domain_name'] ?? '')) as $rCertDomain) {
+						$rCertDomain = trim($rCertDomain);
+						if ($rCertDomain !== '' && !filter_var($rCertDomain, FILTER_VALIDATE_IP)) {
+							$rCertDomains[] = $rCertDomain;
+						}
+					}
+					if ($rCertDomains !== []) {
+						NodeActions::certbot($rServerID, $rCertDomains, $db);
+					}
+				} else {
+					// Downgrade out of serve-only: the service already (re)started above
+					// (finalizeHostAfterRuntime) while the marker was still present, so it booted
+					// sole-front (no nginx/php-fpm). Remove the marker and restart so the node boots
+					// its nginx + php-fpm — but only when the marker was actually there (a real
+					// downgrade), so a normal non-serve-only install does not recycle a second time.
+					call_user_func($rRunSSH, $rConn, 'if sudo test -f ' . CONFIG_PATH . 'cluster/serve_only; then sudo rm -f ' . LbInstallFlow::NODE_ROOT_SUDOERS . ' ' . LbInstallFlow::NODE_ROOT_HELPER . '; sudo -u xc_vm rm -f ' . CONFIG_PATH . 'cluster/serve_only && sudo systemctl restart xc_vm; fi');
+				}
+			}
 		} else {
 			$db->query('UPDATE `servers` SET `status` = 1 WHERE `id` = ?;', $rServerID);
 		}
@@ -311,10 +482,25 @@ class ServerInstallCommand implements CommandInterface {
 		}
 
 		echo "Ubuntu 20.x detected — installing libssl3 for PHP compatibility...\n";
-		call_user_func($rRunSSH, $rConn, 'wget -O /tmp/libssl3_3.0.2-0ubuntu1_amd64.deb http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl3_3.0.2-0ubuntu1_amd64.deb');
-		call_user_func($rRunSSH, $rConn, 'sudo dpkg -i /tmp/libssl3_3.0.2-0ubuntu1_amd64.deb || true');
-		call_user_func($rRunSSH, $rConn, 'rm -f /tmp/libssl3_3.0.2-0ubuntu1_amd64.deb');
-		echo "libssl3 installed successfully.\n";
+		// dpkg runs a package's scripts as root: it is handed this one only when
+		// it is the pinned build, from where no other user of the node can reach it.
+		$rDir = LbInstallFlow::privateDir($rConn, $rRunSSH);
+		if ($rDir === null) {
+			echo "libssl3 is not installed: the node gave no private directory to fetch it into.\n";
+			return;
+		}
+		$rDeb = $rDir . '/libssl3.deb';
+		call_user_func($rRunSSH, $rConn, 'wget -O ' . $rDeb . ' ' . self::LIBSSL3_URL);
+		$rSum = trim(explode(' ', (string) call_user_func($rRunSSH, $rConn, 'sha256sum ' . $rDeb)['output'])[0]);
+		if ($rSum !== self::LIBSSL3_SHA256) {
+			call_user_func($rRunSSH, $rConn, 'rm -rf ' . $rDir);
+			echo 'libssl3 is not installed: the download failed, or is not the expected package (SHA-256 ' . ($rSum === '' ? 'none' : $rSum) . ").\n";
+			return;
+		}
+		// Not dpkg's exit status: the package asks for a newer libc6 than Ubuntu 20
+		// has, so dpkg unpacks the library and still reports an error.
+		$rHave = trim((string) call_user_func($rRunSSH, $rConn, 'sudo dpkg -i ' . $rDeb . ' >/dev/null 2>&1; rm -rf ' . $rDir . '; test -e /usr/lib/x86_64-linux-gnu/libssl.so.3 && echo SSL_OK')['output']);
+		echo $rHave === 'SSL_OK' ? "libssl3 installed successfully.\n" : "libssl3 is not installed: dpkg could not unpack it.\n";
 	}
 
 	private function prepareInstallRoot($rConn, callable $rRunSSH, int $rType): void {
@@ -325,7 +511,20 @@ class ServerInstallCommand implements CommandInterface {
 		echo "Creating XC_VM system user\n";
 		call_user_func($rRunSSH, $rConn, 'sudo adduser --system --shell /bin/false --group --disabled-login xc_vm');
 		call_user_func($rRunSSH, $rConn, 'sudo mkdir ' . MAIN_HOME);
-		call_user_func($rRunSSH, $rConn, 'sudo rm -rf ' . BIN_PATH);
+		call_user_func($rRunSSH, $rConn, 'sudo sh -c ' . escapeshellarg(self::binResetCommand(BIN_PATH)));
+	}
+
+	/**
+	 * Empties bin/ for the archive and the binaries bundle, keeping what a
+	 * reinstall over a live node must not lose: the issued certificates
+	 * (bin/certbot), without which the node comes back on the self-signed
+	 * server.crt, and the fanout daemon's config.json, which holds keys the
+	 * panel does not write.
+	 */
+	public static function binResetCommand(string $rBin): string {
+		$rBin = rtrim($rBin, '/');
+		return 'find ' . escapeshellarg($rBin) . ' -mindepth 1 -maxdepth 1 ! -name certbot ! -name xc_fanout -exec rm -rf {} + 2>/dev/null; '
+			. 'find ' . escapeshellarg($rBin . '/xc_fanout') . ' -mindepth 1 -maxdepth 1 ! -name config.json -exec rm -rf {} + 2>/dev/null; true';
 	}
 
 	private function installSystemdService($rConn, callable $rRunSSH, callable $rSendFileSSH, int $rServerID): void {

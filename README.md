@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Vateron-Media/XC_VM" /></a>
-  <a href="https://github.com/Vateron-Media/XC_VM/stargazers"><img src="https://img.shields.io/github/stars/Vateron-Media/XC_VM?style=flat" /></a>
-  <a href="https://github.com/Vateron-Media/XC_VM/issues"><img src="https://img.shields.io/github/issues/Vateron-Media/XC_VM" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Mightyjay396/XC_VM-GO" /></a>
+  <a href="https://github.com/Mightyjay396/XC_VM-GO/stargazers"><img src="https://img.shields.io/github/stars/Mightyjay396/XC_VM-GO?style=flat" /></a>
+  <a href="https://github.com/Mightyjay396/XC_VM-GO/issues"><img src="https://img.shields.io/github/issues/Mightyjay396/XC_VM-GO" /></a>
 </p>
 
 ---
@@ -137,7 +137,7 @@ For new installations:
 
 ## 📥 Quick Install
 
-> ✅ Ubuntu 22.04+, Debian 12+
+> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM 2.7.4-p1**: official XC_VM 2.7.4 + the QC fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
 
 ```bash
 # 1. Update system
@@ -147,54 +147,27 @@ sudo apt update && sudo apt full-upgrade -y
 sudo apt install -y curl wget python3 unzip
 
 # 3. Download latest release
-latest_version=$(curl -s https://api.github.com/repos/Vateron-Media/XC_VM/releases/latest | grep '"tag_name":' | cut -d '"' -f 4)
-wget "https://github.com/Vateron-Media/XC_VM/releases/download/${latest_version}/XC_VM.zip"
+latest_version=$(curl -s https://api.github.com/repos/Mightyjay396/XC_VM-GO/releases/latest | grep '"tag_name":' | cut -d '"' -f 4)
+wget "https://github.com/Mightyjay396/XC_VM-GO/releases/download/${latest_version}/XC_VM.zip"
 
 # 4. Unpack and install
 unzip XC_VM.zip
 sudo python3 install
 ```
 
-### 🧪 Beta Install
+**Load balancers:** add them from the panel (*Servers → Install Load Balancer*). The Main installs this
+fork's `loadbalancer.tar.gz` (same version as the Main) and starts the Go delivery engine automatically.
 
-To install the latest **beta** (pre-release) version:
+**Updates:** the panel update and *Auto-update load balancers* download this fork's releases, exactly like the original XC_VM.
+
+**Already running official XC_VM 2.7.2 / 2.7.4?** Add the patches without reinstalling — on the Main:
 
 ```bash
-# 1. Update system
-sudo apt update && sudo apt full-upgrade -y
-
-# 2. Install dependencies
-sudo apt install -y curl wget python3-pip unzip
-
-# 3. Download latest beta release
-beta_version=$(curl -s https://api.github.com/repos/Vateron-Media/XC_VM/releases | grep -m1 '"tag_name":' | cut -d '"' -f 4)
-wget "https://github.com/Vateron-Media/XC_VM/releases/download/${beta_version}/XC_VM.zip"
-
-# 4. Unpack and install
-unzip XC_VM.zip
-sudo python3 install
+cd /root && rm -rf qc_xcvm_pkg qc_xcvm_updater.tgz && wget -q https://github.com/Mightyjay396/XC_VM-GO/releases/latest/download/qc_xcvm_updater.tgz && tar xzf qc_xcvm_updater.tgz && python3 qc_xcvm_pkg/qc_xcvm_updater.py --restart --all-lbs
 ```
 
-> ⚠️ Beta versions may contain unstable features. Use on test servers only.
-
-### ⚡ XC_VM-GO Install (this fork)
-
-This fork adds a high-performance Go delivery server for live TS/HLS/VOD streams.
-Go is the primary handler with automatic PHP fallback. Go auto-configures from
-the XC_VM installation (DB credentials, server identity, settings) — no manual
-configuration needed.
-
-**Fresh install** (new server):
-```bash
-wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/install_fresh.sh | sudo bash
-```
-
-**Upgrade** an existing XC_VM installation:
-```bash
-wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/upgrade_go.sh | sudo bash
-```
-
-See [INSTALL.md](INSTALL.md) for all installation methods and detailed documentation.
+`--all-lbs` updates every load balancer too (root password asked once per server).
+See [INSTALL.md](INSTALL.md) for the full guide: Go engine, fixes, modules and options.
 
 ---
 
@@ -317,38 +290,19 @@ Measured: 352 channels, ~2 Gbps inbound, 36 s ring
 - ✅ Security patches
 - ✅ Clean UI
 
-### ⚡ Go Delivery Server (this fork)
+### ⚡ Go Delivery Engine (this fork)
 
-This fork adds `xc_ts_server`, a native Go server that replaces the full PHP live stream pipeline.
+Installed and started automatically on every load balancer (not XC_VM's fanout, which stays as is):
 
-| Feature | Live TS/HLS (Go) | VOD (PHP → Go) | Fallback (PHP) |
-|---------|:-----------------:|:---------------:|:--------------:|
-| Token decryption (GCM + CBC) | **Go** | PHP | PHP |
-| Auth & validation (expiry, extension) | **Go** | PHP | PHP |
-| Connection tracking (lines_live) | **Go** | PHP + Go heartbeat | PHP |
-| Enforcement (3-pass, container-aware) | **Go** | PHP | PHP |
-| IP restrictions (2nd IP, same IP, subnet) | **Go** | PHP | PHP |
-| On-demand start (monitor + proxy) | **Go** | — | PHP |
-| Segment cache (inotify) | **Go** | — | — |
-| Chase-read + prebuffer | **Go** | — | PHP |
-| HLS playlist rewrite (tokenized m3u8) | **Go** | — | PHP |
-| HLS segment delivery (UUID + IP) | **Go** | — | PHP |
-| HTTP Range support (206/416/seek) | — | **Go** | PHP |
-| Content-Type mapping (11 types) | **Go** | **Go** | PHP |
-| Signal polling (admin kill/drop) | **Go** | **Go** | PHP daemon |
-| MariaDB heartbeat | **Go** | **Go** | PHP |
-| CONS_TMP touch files | **Go** | **Go** | PHP |
-| Activity logging | **Go** | — | PHP |
-| Redis dual-mode (code ready) | **Go** | — | PHP |
-| Auto PHP fallback | ← 502/503/504 → PHP | ← PID check → PHP | always |
+- **odrelay** (8147) — on-demand channels start instantly: the viewer gets video while FFmpeg starts (TS + HLS)
+- **livehold** (8150) — viewers stay connected through FFmpeg restarts and source drops (offline slate instead of a disconnect)
+- **ckts** (8160) — ClearKey DASH → MPEG-TS engine, with ad-break relays
+- **mpdproxy** (8098-8113) — DASH/ClearKey proxy with cache, plus **FFmpeg 8.1-dash**
+- Fix for the XC_VM 2.7.2/2.7.4 bug that disconnected active TS/VOD viewers every 10-20 min
+- Reseller credit refunds, trial API, line API, provider import, XAccel-compatible API, source proxies
+- *Service Status* on the dashboard shows which servers run the Go engine
 
-**Performance gains:**
-- Live: zero PHP workers needed (goroutines instead of php-fpm children)
-- VOD: PHP worker freed in ~100 ms (auth + X-Accel handoff to Go)
-- inotify-based segment notification (instant vs PHP sleep/poll)
-- sendfile(2) zero-copy for VOD file delivery
-
-See [docs/go_ts_server/GO_TS_DELIVERY_RFC.md](docs/go_ts_server/GO_TS_DELIVERY_RFC.md) for the complete technical specification.
+Details: [INSTALL.md](INSTALL.md).
 
 ---
 
@@ -431,10 +385,3 @@ channel** are ever involved. Full detail:
 
 ---
 
----
-
-## QC patches — moteur de diffusion Go pour XC_VM 2.7.2 / 2.7.4
-
-Corrections (dont la coupure des clients TS actifs), modules revendeurs/essais, API XAccel et moteur de
-diffusion Go (odrelay, livehold, ckts, mpdproxy) avec un outil d'installation qui met à jour le Main et
-tous ses LB en une commande : voir [`qc_patches/README.md`](qc_patches/README.md).

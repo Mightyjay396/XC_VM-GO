@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "80ef733ed7509622c5bc57a4feb01275",
+    "content-hash": "ae386d82d1bba7b9b6641667dd05a635",
     "packages": [
         {
             "name": "chrisyue/php-m3u8",
@@ -131,25 +131,25 @@
         },
         {
             "name": "gemorroj/m3u-parser",
-            "version": "6.0.1",
+            "version": "6.2.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/Gemorroj/M3uParser.git",
-                "reference": "92fc0fe236d77e1b5a26c735ffcb6fc637eb298a"
+                "reference": "469a75031a1552bcc0018b5161dccd00d6bef4cb"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/Gemorroj/M3uParser/zipball/92fc0fe236d77e1b5a26c735ffcb6fc637eb298a",
-                "reference": "92fc0fe236d77e1b5a26c735ffcb6fc637eb298a",
+                "url": "https://api.github.com/repos/Gemorroj/M3uParser/zipball/469a75031a1552bcc0018b5161dccd00d6bef4cb",
+                "reference": "469a75031a1552bcc0018b5161dccd00d6bef4cb",
                 "shasum": ""
             },
             "require": {
-                "php": ">=8.0.2"
+                "php": ">=8.2"
             },
             "require-dev": {
-                "friendsofphp/php-cs-fixer": "^3.73.1",
-                "phpstan/phpstan": "^2.1",
-                "phpunit/phpunit": "^9.6.22"
+                "friendsofphp/php-cs-fixer": "^3.95",
+                "phpstan/phpstan": "^2.3",
+                "phpunit/phpunit": "^11.5||^12.5||^13"
             },
             "type": "library",
             "autoload": {
@@ -174,9 +174,9 @@
             ],
             "support": {
                 "issues": "https://github.com/Gemorroj/M3uParser/issues",
-                "source": "https://github.com/Gemorroj/M3uParser/tree/6.0.1"
+                "source": "https://github.com/Gemorroj/M3uParser/tree/6.2.0"
             },
-            "time": "2025-03-25T19:21:43+00:00"
+            "time": "2026-10-11T13:41:06+00:00"
         },
         {
             "name": "geoip2/geoip2",
@@ -353,21 +353,21 @@
         },
         {
             "name": "mobiledetect/mobiledetectlib",
-            "version": "4.9.0",
+            "version": "4.11.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/serbanghita/Mobile-Detect.git",
-                "reference": "992cc85e34887b090b073b46bde6d5087c908e10"
+                "reference": "ab39168b7556f44c11c80be1222b44b239f5c2e4"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/serbanghita/Mobile-Detect/zipball/992cc85e34887b090b073b46bde6d5087c908e10",
-                "reference": "992cc85e34887b090b073b46bde6d5087c908e10",
+                "url": "https://api.github.com/repos/serbanghita/Mobile-Detect/zipball/ab39168b7556f44c11c80be1222b44b239f5c2e4",
+                "reference": "ab39168b7556f44c11c80be1222b44b239f5c2e4",
                 "shasum": ""
             },
             "require": {
-                "php": ">=8.0",
-                "psr/simple-cache": "3.0.0"
+                "php": ">=8.2",
+                "psr/simple-cache": "^1.0 || ^2.0 || ^3.0"
             },
             "require-dev": {
                 "friendsofphp/php-cs-fixer": "3.95.1",
@@ -405,7 +405,7 @@
             ],
             "support": {
                 "issues": "https://github.com/serbanghita/Mobile-Detect/issues",
-                "source": "https://github.com/serbanghita/Mobile-Detect/tree/4.9.0"
+                "source": "https://github.com/serbanghita/Mobile-Detect/tree/4.11.0"
             },
             "funding": [
                 {
@@ -413,7 +413,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-04-23T12:32:05+00:00"
+            "time": "2026-05-24T12:32:40+00:00"
         },
         {
             "name": "psr/simple-cache",
@@ -613,11 +613,11 @@
         },
         {
             "name": "phpstan/phpstan",
-            "version": "2.2.16",
+            "version": "2.3.5",
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/phpstan/phpstan/zipball/46a6d9060e5a7763adfcc21ebcb8b504ebdbcb92",
-                "reference": "46a6d9060e5a7763adfcc21ebcb8b504ebdbcb92",
+                "url": "https://api.github.com/repos/phpstan/phpstan/zipball/645a1bd6bead15fc1b8474137467961d0fa30a79",
+                "reference": "645a1bd6bead15fc1b8474137467961d0fa30a79",
                 "shasum": ""
             },
             "require": {
@@ -673,25 +673,25 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-09-25T09:31:51+00:00"
+            "time": "2026-11-03T12:14:22+00:00"
         },
         {
             "name": "rector/rector",
-            "version": "2.6.7",
+            "version": "2.8.4",
             "source": {
                 "type": "git",
                 "url": "https://github.com/rectorphp/rector.git",
-                "reference": "f4aa224edb9b0630fb43826d4cb6a49b62e48d4c"
+                "reference": "55acbd956d7e3907f7d21aab54edd68a310609e6"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/rectorphp/rector/zipball/f4aa224edb9b0630fb43826d4cb6a49b62e48d4c",
-                "reference": "f4aa224edb9b0630fb43826d4cb6a49b62e48d4c",
+                "url": "https://api.github.com/repos/rectorphp/rector/zipball/55acbd956d7e3907f7d21aab54edd68a310609e6",
+                "reference": "55acbd956d7e3907f7d21aab54edd68a310609e6",
                 "shasum": ""
             },
             "require": {
                 "php": "^7.4|^8.0",
-                "phpstan/phpstan": "^2.2.14"
+                "phpstan/phpstan": "^2.3.5"
             },
             "conflict": {
                 "rector/rector-doctrine": "*",
@@ -722,7 +722,7 @@
             ],
             "support": {
                 "issues": "https://github.com/rectorphp/rector/issues",
-                "source": "https://github.com/rectorphp/rector/tree/2.6.7"
+                "source": "https://github.com/rectorphp/rector/tree/2.8.4"
             },
             "funding": [
                 {
@@ -730,7 +730,7 @@
                     "type": "github"
                 }
             ],
-            "time": "2026-09-13T20:17:44+00:00"
+            "time": "2026-11-03T18:48:08+00:00"
         },
         {
             "name": "slevomat/coding-standard",
@@ -998,11 +998,11 @@
     "prefer-stable": false,
     "prefer-lowest": false,
     "platform": {
-        "php": ">=8.1"
+        "php": ">=8.3"
     },
     "platform-dev": {},
     "platform-overrides": {
-        "php": "8.1.33"
+        "php": "8.3.36"
     },
     "plugin-api-version": "2.9.0"
 }

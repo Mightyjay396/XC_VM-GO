@@ -4,6 +4,7 @@ namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\Enc;
+use XcVm\Core\Cluster\NodeCredentials;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -52,10 +53,10 @@ final class CommandBus {
 	public const ACTION_TYPES = ['node.rpc', 'node.root'];
 
 	/** Tries at a free `seq` before enqueue() gives up. */
-	public const ATTEMPTS = 4;
+	public const ATTEMPTS = 8;
 
 	/** Largest result stored from an ack. */
-	public const MAX_RESULT = 65536;
+	public const MAX_RESULT = 4194304;
 
 	/**
 	 * Is this node taking commands over the cluster API?
@@ -108,51 +109,95 @@ final class CommandBus {
 			$rArgs['artefact']['exp'] = $rNow + $rTtl;
 		}
 		$rError = null;
-		for ($rAttempt = 1; $rAttempt <= self::ATTEMPTS; $rAttempt++) {
-			self::db()->query('SELECT MAX(`seq`) AS `seq` FROM `cluster_commands` WHERE `server_id` = ?;', $rServerID);
-			$rSeq = max((int) (self::db()->get_row()['seq'] ?? 0), (int) $rNode['cmd_seq']) + 1;
-			$rDoc = (string) json_encode(self::envelope($rType, $rAction, [
-				'exp' => $rNow + $rTtl, 'iat' => $rNow, 'cmd_id' => $rCmdID, 'seq' => $rSeq,
-				'node_uuid' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'], 'dedupe_key' => $rDedupeKey, 'args' => (object) $rArgs,
-			]), JSON_UNESCAPED_SLASHES);
-			$rSig = $rCrypto->sign('cmd', $rDoc);
-			$rClass = $rCrypto->recordClass('cmd', $rDoc);
-			if ($rDedupeKey !== null) {
-				// A newer desired state supersedes a command not yet acked. An
-				// acked one keeps its outcome (result()), but not the key, which
-				// UNIQUE(server_id, dedupe_key) would otherwise refuse this one.
-				self::db()->query("DELETE FROM `cluster_commands` WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` <> 'acked';", $rServerID, $rDedupeKey);
-				self::db()->query("UPDATE `cluster_commands` SET `dedupe_key` = NULL WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` = 'acked';", $rServerID, $rDedupeKey);
+		// One enqueue per node at a time: a best-effort MariaDB user lock so two
+		// concurrent enqueues to the same node serialise instead of colliding on
+		// UNIQUE(server_id, seq). Never wait with a streaming request holding a
+		// connection: a busy lock uses the bounded retry loop below.
+		$rLocked = self::seqLock($rServerID);
+		try {
+			for ($rAttempt = 1; $rAttempt <= self::ATTEMPTS; $rAttempt++) {
+				self::db()->query('SELECT MAX(`seq`) AS `seq` FROM `cluster_commands` WHERE `server_id` = ?;', $rServerID);
+				$rSeq = max((int) (self::db()->get_row()['seq'] ?? 0), (int) $rNode['cmd_seq']) + 1;
+				$rDoc = (string) json_encode(self::envelope($rType, $rAction, [
+					'exp' => $rNow + $rTtl, 'iat' => $rNow, 'cmd_id' => $rCmdID, 'seq' => $rSeq,
+					'node_uuid' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'], 'dedupe_key' => $rDedupeKey, 'args' => (object) $rArgs,
+				]), JSON_UNESCAPED_SLASHES);
+				$rSig = $rCrypto->sign('cmd', $rDoc);
+				$rClass = $rCrypto->recordClass('cmd', $rDoc);
+				if ($rDedupeKey !== null) {
+					// A newer desired state supersedes a command not yet acked. An
+					// acked one keeps its outcome (result()), but not the key, which
+					// UNIQUE(server_id, dedupe_key) would otherwise refuse this one.
+					self::db()->query("DELETE FROM `cluster_commands` WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` <> 'acked';", $rServerID, $rDedupeKey);
+					self::db()->query("UPDATE `cluster_commands` SET `dedupe_key` = NULL WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` = 'acked';", $rServerID, $rDedupeKey);
+				}
+				// The panel's Database answers a refused write (the unique seq or
+				// dedupe key a concurrent enqueue took, a lost connection) with
+				// false; another handle throws. Either way the row is not there.
+				try {
+					$rStored = self::db()->query(
+						'INSERT INTO `cluster_commands` (`server_id`, `seq`, `cmd_id`, `type`, `action`, `class`, `dedupe_key`, `payload`, `sig`, `state`, `created_at`, `exp`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
+						$rServerID,
+						$rSeq,
+						$rCmdID,
+						$rType,
+						$rAction !== null ? substr($rAction, 0, 32) : null,
+						$rClass === 'R' ? 'R' : 'G',
+						$rDedupeKey,
+						$rDoc,
+						$rSig,
+						'queued',
+						$rNow,
+						$rNow + $rTtl
+					) !== false;
+				} catch (\Throwable $rE) {
+					$rStored = false;
+					$rError = $rE;
+				}
+				if ($rStored) {
+					// No database lock across the bus wake-up (which may time out).
+					if ($rLocked) {
+						self::seqUnlock($rServerID);
+						$rLocked = false;
+					}
+					ClusterBus::wakeNode($rServerID);
+					return $rCmdID;
+				}
+				if ($rAttempt < self::ATTEMPTS) {
+					// A growing random pause (2-20ms × attempt) desynchronises
+					// concurrent enqueues racing the same seq.
+					usleep(random_int(2000, 20000) * $rAttempt);
+				}
 			}
-			// The panel's Database answers a refused write (the unique seq or
-			// dedupe key a concurrent enqueue took, a lost connection) with
-			// false; another handle throws. Either way the row is not there.
-			try {
-				$rStored = self::db()->query(
-					'INSERT INTO `cluster_commands` (`server_id`, `seq`, `cmd_id`, `type`, `action`, `class`, `dedupe_key`, `payload`, `sig`, `state`, `created_at`, `exp`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
-					$rServerID,
-					$rSeq,
-					$rCmdID,
-					$rType,
-					$rAction !== null ? substr($rAction, 0, 32) : null,
-					$rClass === 'R' ? 'R' : 'G',
-					$rDedupeKey,
-					$rDoc,
-					$rSig,
-					'queued',
-					$rNow,
-					$rNow + $rTtl
-				) !== false;
-			} catch (\Throwable $rE) {
-				$rStored = false;
-				$rError = $rE;
-			}
-			if ($rStored) {
-				ClusterBus::wakeNode($rServerID);
-				return $rCmdID;
+			throw new \RuntimeException('Command ' . $rType . ' for server ' . $rServerID . ' not stored after ' . self::ATTEMPTS . ' tries', 0, $rError);
+		} finally {
+			// Signing/classification may throw before a write is attempted.
+			// Release on every exit, including those exceptions.
+			if ($rLocked) {
+				self::seqUnlock($rServerID);
 			}
 		}
-		throw new \RuntimeException('Command ' . $rType . ' for server ' . $rServerID . ' not stored after ' . self::ATTEMPTS . ' tries', 0, $rError);
+	}
+
+	/**
+	 * One enqueue per node at a time. A best-effort MariaDB user lock, taken
+	 * before the attempt loop and released on every exit. If busy, the enqueue
+	 * runs unserialised on the bounded retry loop. MAIN only.
+	 */
+	private static function seqLock(int $rServerID): bool {
+		try {
+			self::db()->query("SELECT GET_LOCK(CONCAT(DATABASE(), '.cmd_seq_', ?), 0);", $rServerID);
+			return (string) self::db()->get_col() === '1';
+		} catch (\Throwable) {
+			return false;
+		}
+	}
+
+	private static function seqUnlock(int $rServerID): void {
+		try {
+			self::db()->query("SELECT RELEASE_LOCK(CONCAT(DATABASE(), '.cmd_seq_', ?));", $rServerID);
+		} catch (\Throwable) {
+		}
 	}
 
 	/**
@@ -184,16 +229,24 @@ final class CommandBus {
 	 * Commands for a node after its high-water, oldest first; marks them
 	 * delivered. $rRestrictiveOnly hands out only the restrictive ones (a
 	 * quarantined node: kills, stops and fences still reach it, nothing that
-	 * grants), and leaves the rest queued for when an admin trusts it again.
+	 * grants). What granted and was queued before the quarantine was ended
+	 * by it (endGranting()), so Trust again hands none of it out.
+	 * A credential strip is judged once more as it is handed out
+	 * (DbCredentials::strip() judged it as it was queued): it goes out only
+	 * while the node's row says mode 2, since below it the node needs those
+	 * credentials. Its row stays for an ack.
 	 *
 	 * @return list<array{doc: string, sig: string, seq: int}>
 	 */
 	public static function pending(int $rServerID, int $rAfterSeq, int $rLimit = 50, bool $rRestrictiveOnly = false): array {
 		self::db()->query(
-			"SELECT `id`, `seq`, `payload`, `sig` FROM `cluster_commands` WHERE `server_id` = ? AND `seq` > ? AND `state` IN ('queued', 'delivered') AND `exp` > ?" . ($rRestrictiveOnly ? " AND `class` = 'R'" : '') . ' ORDER BY `seq` ASC LIMIT ' . max(1, min(200, $rLimit)) . ';',
+			"SELECT `id`, `seq`, `payload`, `sig` FROM `cluster_commands` WHERE `server_id` = ? AND `seq` > ? AND `state` IN ('queued', 'delivered') AND `exp` > ?" . ($rRestrictiveOnly ? " AND `class` = 'R'" : '')
+			. " AND NOT (`type` = 'node.root' AND `action` = ? AND NOT EXISTS (SELECT 1 FROM `cluster_nodes` WHERE `cluster_nodes`.`server_id` = `cluster_commands`.`server_id` AND `cluster_nodes`.`mode` = 2))"
+			. ' ORDER BY `seq` ASC LIMIT ' . max(1, min(200, $rLimit)) . ';',
 			$rServerID,
 			$rAfterSeq,
-			ClusterClock::now()
+			ClusterClock::now(),
+			NodeCredentials::STRIP
 		);
 		$rRows = self::db()->get_raw_rows();
 		$rOut = [];
@@ -206,6 +259,39 @@ final class CommandBus {
 			self::db()->query("UPDATE `cluster_commands` SET `state` = 'delivered', `delivered_at` = ? WHERE `state` = 'queued' AND `id` IN (" . implode(',', $rIDs) . ');', ClusterClock::now());
 		}
 		return $rOut;
+	}
+
+	/**
+	 * End every granting command of a node that is not acked, handed out or
+	 * not, as the node is quarantined (ADR 0004, "Granting commands across a
+	 * quarantine"): MAIN no longer knows who holds the node's keys, so what
+	 * was decided before is decided again after Trust again, not replayed.
+	 * Its exp becomes now, as a mode down ends a strip
+	 * (DbCredentials::cancelStrip()): it is handed out no more, its artefact
+	 * grant ends with it (ArtefactGrants::live()), and an ack is taken until
+	 * the next prune(), which keeps a strip that was handed out a day.
+	 * Restrictive commands keep their life. Answers, for the quarantine's
+	 * audit line, how many were ended and which (nothing when none was).
+	 * Never throws: the quarantine stands.
+	 *
+	 * @return array{ended?: int, commands?: list<array{type: string, action: ?string, cmd_id: string, handed_out: bool}>}
+	 */
+	public static function endGranting(int $rServerID): array {
+		try {
+			$rNow = ClusterClock::now();
+			self::db()->query("SELECT `cmd_id`, `type`, `action`, `state` FROM `cluster_commands` WHERE `server_id` = ? AND `class` <> 'R' AND `state` IN ('queued', 'delivered') AND `exp` > ? ORDER BY `seq` ASC;", $rServerID, $rNow);
+			$rEnded = array_map(static fn(array $rRow): array => [
+				'type' => (string) $rRow['type'], 'action' => $rRow['action'] === null ? null : (string) $rRow['action'], 'cmd_id' => (string) $rRow['cmd_id'], 'handed_out' => $rRow['state'] === 'delivered',
+			], self::db()->get_raw_rows());
+			if ($rEnded === []) {
+				return [];
+			}
+			self::db()->query("UPDATE `cluster_commands` SET `exp` = ? WHERE `server_id` = ? AND `class` <> 'R' AND `state` IN ('queued', 'delivered') AND `exp` > ?;", $rNow, $rServerID, $rNow);
+			// The count first: the audit keeps 4000 characters, about 45 named commands.
+			return ['ended' => count($rEnded), 'commands' => $rEnded];
+		} catch (\Throwable) {
+			return []; // no command table: nothing was queued
+		}
 	}
 
 	/**
@@ -315,10 +401,22 @@ final class CommandBus {
 		return self::result($rCmdID);
 	}
 
-	/** Drop expired commands and outcomes older than a day. */
+	/**
+	 * Drop expired commands and outcomes older than a day. A credential strip
+	 * the node was handed keeps its row a day past its exp: root runs a
+	 * command up to 300 s past it (RootPin::verify), and MAIN revokes the
+	 * node's grant on that ack alone (DbCredentials::acked). pending() stops
+	 * handing it out at exp.
+	 */
 	public static function prune(): void {
 		$rNow = ClusterClock::now();
-		self::db()->query("DELETE FROM `cluster_commands` WHERE (`exp` <= ? AND `state` IN ('queued', 'delivered')) OR (`acked_at` IS NOT NULL AND `acked_at` < ?);", $rNow, $rNow - 86400);
+		self::db()->query(
+			"DELETE FROM `cluster_commands` WHERE (`exp` <= ? AND `state` IN ('queued', 'delivered') AND NOT (`state` = 'delivered' AND `type` = 'node.root' AND `action` = ? AND `exp` > ?)) OR (`acked_at` IS NOT NULL AND `acked_at` < ?);",
+			$rNow,
+			NodeCredentials::STRIP,
+			$rNow - 86400,
+			$rNow - 86400
+		);
 	}
 
 	private static function ttl(string $rType): int {

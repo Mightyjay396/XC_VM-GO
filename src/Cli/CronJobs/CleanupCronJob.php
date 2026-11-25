@@ -20,6 +20,7 @@ use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
 use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
+use XcVm\Streaming\Auth\RtmpOffline;
 use XcVm\Streaming\Codec\FFmpegCommand;
 use XcVm\Streaming\Codec\FFprobeRunner;
 
@@ -39,6 +40,19 @@ class CleanupCronJob implements CommandInterface {
 	/** Rows one retention DELETE takes, and the longest the prune runs per pass (s). */
 	private const PRUNE_BATCH = 10000;
 	private const PRUNE_SEC = 20;
+
+	/** Seconds of deleting per log table per run: a backlog goes over several hourly runs. */
+	private const PRUNE_LOG_SEC = 240;
+
+	/**
+	 * The directories of resized images under IMAGES_PATH, the days a file
+	 * stays in one, and the bytes and the files one holds before its oldest
+	 * files go.
+	 */
+	private const IMAGE_CACHES = ['admin/', 'player/'];
+	private const IMAGE_CACHE_DAYS = 30;
+	private const IMAGE_CACHE_BYTES = 4 * 1024 * 1024 * 1024;
+	private const IMAGE_CACHE_FILES = 250000;
 
 	public function getName(): string {
 		return 'cron:cleanup';
@@ -75,7 +89,7 @@ class CleanupCronJob implements CommandInterface {
 	 * past their retention, and neither the VOD analysis nor the
 	 * created-channel checks run. Never against an empty or partial list,
 	 * which would delete every file: a check whose list the replica cannot
-	 * give whole is skipped.
+	 * give whole, or MAIN's database did not answer, is skipped.
 	 */
 	protected function streamChecks(): bool {
 		return !NodeRole::refusesConnects() || StreamSource::local();
@@ -92,6 +106,8 @@ class CleanupCronJob implements CommandInterface {
 		// of the audit.json its agent sends.
 		SettingsAudit::prune(8);
 		SettingsAudit::publish();
+		// The RTMP viewers MAIN said yes to, past the hour they stand in for it.
+		RtmpOffline::prune();
 
 		// Everything below reads MAIN's database; the MAIN-only part never runs on a node.
 		if (!$this->streamChecks()) {
@@ -111,10 +127,14 @@ class CleanupCronJob implements CommandInterface {
 			date_default_timezone_set('UTC');
 			foreach ($rArchive === null ? [] : glob(ARCHIVE_PATH . '*') as $rStreamID) {
 				$rID = intval(basename($rStreamID));
-				if (0 < $rID && is_dir(ARCHIVE_PATH . $rID)) {
+				// The stream's own directory, "<id>": a recording writes "<id>.ts" and
+				// "<id>_.record" beside it under ITS id, and those were taken for the
+				// stream of that number's archive and removed with it.
+				if (0 < $rID && basename($rStreamID) === (string) $rID && is_dir($rStreamID)) {
 					if (!isset($rArchive[$rID])) {
 						echo 'Deleting: ' . $rStreamID . "\n";
-						exec('rm -rf ' . $rStreamID);
+						// An argument list, no shell: the directory is one argument whatever its name.
+						ProcessRunner::run(['rm', '-rf', '--', $rStreamID], true);
 					} else {
 						$rDuration = $rArchive[$rID];
 						$rDeleteBefore = time() - $rDuration * 86400 + 3600;
@@ -254,14 +274,7 @@ class CleanupCronJob implements CommandInterface {
 		}
 		// SSH passwords saved by installs before they moved to one-shot cred files.
 		InstallCredentials::scrubLegacyMetadata();
-		$rTables = ['lines_activity' => ['keep_activity', 'date_end'], 'lines_logs' => ['keep_client', 'date'], 'login_logs' => ['keep_login', 'date'], 'streams_errors' => ['keep_errors', 'date'], 'streams_logs' => ['keep_restarts', 'date'], 'ondemand_check' => ['on_demand_scan_keep', 'date']];
-		foreach ($rTables as $rTable => $rArray) {
-			// lb-settings: keep_activity, keep_client, keep_login, keep_errors, keep_restarts, on_demand_scan_keep
-			if (SettingsManager::getAll()[$rArray[0]] && 0 < SettingsManager::getAll()[$rArray[0]]) {
-				$rDeleteBefore = time() - intval(SettingsManager::getAll()[$rArray[0]]); // lb-settings: keep_activity, keep_client, keep_login, keep_errors, keep_restarts, on_demand_scan_keep
-				$db->query('DELETE FROM `' . $rTable . '` WHERE `' . $rArray[1] . '` < ?;', $rDeleteBefore);
-			}
-		}
+		self::pruneLogs($db, SettingsManager::getAll(), time());
 
 		// The cluster settings' own retention, in days (ClusterSettings::INTS,
 		// which also holds each one's bounds and default): the dashboard's
@@ -273,11 +286,119 @@ class CleanupCronJob implements CommandInterface {
 			$rDays = ClusterSettings::int($rSetting, SettingsManager::getAll()[$rSetting] ?? null);
 			self::prune($db, $rTable, time() - $rDays * 86400, $rUntil);
 		}
-		// The indexes that prune and the server graphs read by, built online
-		// and apart: on a year of rows the ALTER runs for minutes.
-		if (class_exists(ClusterMaintainStatsCommand::class) && ClusterMaintainStatsCommand::missing($db) !== []) {
+		// The indexes that prune, the server graphs and the log pages read by,
+		// built online and apart: on a year of rows an ALTER runs for minutes.
+		if (class_exists(ClusterMaintainStatsCommand::class) && ClusterMaintainStatsCommand::pending($db) !== []) {
 			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'cluster:maintain-stats']);
 		}
+		// The resized images the panels cache: nothing else removes them.
+		if (defined('IMAGES_PATH')) {
+			self::pruneImageCaches(IMAGES_PATH);
+		}
+	}
+
+	/**
+	 * Prune the directories ImageResizeService caches resized images in
+	 * (IMAGE_CACHES under $rImages), where every distinct URL and size leaves
+	 * a file. One last written more than IMAGE_CACHE_DAYS ago goes: it is
+	 * built again when asked for, and browsers are told to keep theirs for 7
+	 * days. A directory still over $rMaxBytes or $rMaxFiles then loses its
+	 * oldest files first: the bytes alone would let any number of small files
+	 * stay.
+	 *
+	 * Only the names the resizer writes are removed ('<md5>_<width>_<height>.png'
+	 * and '<md5>.webp'), and only in those directories, never below them:
+	 * $rImages itself and its other sub-directories hold the icons and logos
+	 * the panel keeps. No more than twice $rMaxFiles names are held while a
+	 * directory is read, however many files it has (some 70 MB at
+	 * IMAGE_CACHE_FILES).
+	 *
+	 * @return int the files deleted
+	 */
+	public static function pruneImageCaches(string $rImages, ?int $rNow = null, int $rMaxBytes = self::IMAGE_CACHE_BYTES, int $rMaxFiles = self::IMAGE_CACHE_FILES): int {
+		$rBefore = ($rNow ?? time()) - self::IMAGE_CACHE_DAYS * 86400;
+		$rDeleted = 0;
+		foreach (self::IMAGE_CACHES as $rCache) {
+			$rDir = $rImages . $rCache;
+			$rHandle = is_dir($rDir) ? @opendir($rDir) : false;
+			if ($rHandle === false) {
+				continue;
+			}
+			$rKept = [];
+			$rBytes = 0;
+			while (($rName = readdir($rHandle)) !== false) {
+				if (!preg_match('/^[0-9a-f]{32}(_\d+_\d+\.png|\.webp)\z/', $rName) || !is_file($rDir . $rName)) {
+					continue;
+				}
+				$rTime = @filemtime($rDir . $rName);
+				if ($rTime === false) {
+					continue;
+				}
+				if ($rTime < $rBefore) {
+					$rDeleted += (int) @unlink($rDir . $rName);
+					continue;
+				}
+				$rKept[$rName] = $rTime;
+				$rBytes += (int) @filesize($rDir . $rName);
+				if (count($rKept) >= 2 * $rMaxFiles) {
+					$rDeleted += self::trimImageCache($rDir, $rKept, $rBytes, $rMaxBytes, $rMaxFiles);
+				}
+			}
+			closedir($rHandle);
+			$rDeleted += self::trimImageCache($rDir, $rKept, $rBytes, $rMaxBytes, $rMaxFiles);
+		}
+		return $rDeleted;
+	}
+
+	/**
+	 * Delete the oldest of $rKept (file name => when it was last written, in
+	 * $rDir, $rBytes in all) until no more than $rMaxFiles of them and
+	 * $rMaxBytes stay. $rKept and $rBytes are left as what stays.
+	 *
+	 * @param array<string, int> $rKept
+	 * @return int the files deleted
+	 */
+	private static function trimImageCache(string $rDir, array &$rKept, int &$rBytes, int $rMaxBytes, int $rMaxFiles): int {
+		$rOver = count($rKept) - $rMaxFiles;
+		if ($rOver <= 0 && $rBytes <= $rMaxBytes) {
+			return 0;
+		}
+		asort($rKept);
+		$rGone = 0;
+		$rDeleted = 0;
+		foreach ($rKept as $rName => $rTime) {
+			if ($rGone >= $rOver && $rBytes <= $rMaxBytes) {
+				break;
+			}
+			$rSize = (int) @filesize($rDir . $rName);
+			if (@unlink($rDir . $rName)) {
+				$rBytes -= $rSize;
+				$rDeleted++;
+			}
+			$rGone++;
+		}
+		$rKept = array_slice($rKept, $rGone, null, true);
+		return $rDeleted;
+	}
+
+	/**
+	 * The retention of the connection and log tables (Settings, Logs): each table
+	 * whose keep period is set loses its rows older than that, PRUNE_BATCH at a
+	 * time and for at most $rSeconds, so no single statement holds the table.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @return array<string, int> table => rows deleted
+	 */
+	public static function pruneLogs(object $db, array $rSettings, int $rNow, float $rSeconds = self::PRUNE_LOG_SEC): array {
+		$rTables = ['lines_activity' => ['keep_activity', 'date_end'], 'lines_logs' => ['keep_client', 'date'], 'login_logs' => ['keep_login', 'date'], 'streams_errors' => ['keep_errors', 'date'], 'streams_logs' => ['keep_restarts', 'date'], 'ondemand_check' => ['on_demand_scan_keep', 'date'], 'mysql_syslog' => ['keep_syslog', 'date']];
+		$rDeleted = [];
+		foreach ($rTables as $rTable => [$rKey, $rColumn]) {
+			$rKeep = intval($rSettings[$rKey] ?? 0); // lb-settings: keep_activity, keep_client, keep_login, keep_errors, keep_restarts, on_demand_scan_keep, keep_syslog
+			if (0 < $rKeep) {
+				$rDeleted[$rTable] = self::prune($db, $rTable, $rNow - $rKeep, microtime(true) + $rSeconds, $rColumn);
+			}
+		}
+		return $rDeleted;
 	}
 
 	/**
@@ -288,10 +409,10 @@ class CleanupCronJob implements CommandInterface {
 	 *
 	 * @return int the rows deleted
 	 */
-	public static function prune(object $db, string $rTable, int $rBefore, float $rUntil): int {
+	public static function prune(object $db, string $rTable, int $rBefore, float $rUntil, string $rColumn = 'time'): int {
 		$rDeleted = 0;
 		do {
-			if (!$db->query('DELETE FROM `' . $rTable . '` WHERE `time` < ? LIMIT ' . self::PRUNE_BATCH . ';', $rBefore)) {
+			if (!$db->query('DELETE FROM `' . $rTable . '` WHERE `' . $rColumn . '` < ? LIMIT ' . self::PRUNE_BATCH . ';', $rBefore)) {
 				break;
 			}
 			$rRows = $db->num_rows();

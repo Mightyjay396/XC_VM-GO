@@ -3,6 +3,7 @@
 namespace XcVm\Core\Module;
 
 use XcVm\Cli\CommandRegistry;
+use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\ModuleState;
 use XcVm\Core\Enum\ServerEnvironment;
@@ -13,6 +14,7 @@ use XcVm\Core\Exception\Module\ModuleLoadException;
 use XcVm\Core\Exception\Module\ModuleManifestException;
 use XcVm\Core\Exception\Module\ModuleNotFoundException;
 use XcVm\Core\Http\Router;
+use XcVm\Core\Localization\Translator;
 use XcVm\Core\Module\Contract\CommandProviderInterface;
 use XcVm\Core\Module\Contract\CronProviderInterface;
 use XcVm\Core\Module\Contract\NavbarProviderInterface;
@@ -20,8 +22,10 @@ use XcVm\Core\Module\Contract\PermissionProviderInterface;
 use XcVm\Core\Module\Contract\QuickToolsProviderInterface;
 use XcVm\Core\Module\Contract\ResellerNavbarProviderInterface;
 use XcVm\Core\Module\Contract\ServiceProviderInterface;
+use XcVm\Core\Module\Contract\StreamRoutingProviderInterface;
 use XcVm\Core\Module\Contract\TableProviderInterface;
 use XcVm\Core\Module\Contract\TopbarProviderInterface;
+use XcVm\Streaming\Routing\PlaybackRouter;
 
 /**
  * ModuleLoader — automatic system module loader and dependency resolver.
@@ -36,7 +40,7 @@ use XcVm\Core\Module\Contract\TopbarProviderInterface;
  * - Automatic discovery of modules in modules/ directory
  * - Environment filtering (main / lb environments with 'any' as universal)
  * - Topological dependency resolution with cycle detection
- * - Fail-fast validation of manifests
+ * - Validation of manifests (a module with an unusable one is skipped)
  * - Module booting and command registration
  *
  * @package XC_VM_Core_Module
@@ -70,6 +74,115 @@ class ModuleLoader {
 	private static array $autoloadedPaths = [];
 
 	/**
+	 * Load only declared stream-routing providers for the streaming hot path.
+	 *
+	 * Unlike loadAll(), this does not instantiate or boot every module.
+	 */
+	public function loadStreamRoutingProviders(?string $modulesDir = null): void {
+		PlaybackRouter::reset();
+		$modulesDir ??= defined('MAIN_HOME')
+			? MAIN_HOME . 'Modules'
+			: dirname(__DIR__, 2) . '/Modules';
+		$overridesPath = defined('CONFIG_PATH')
+			? CONFIG_PATH . 'modules.php'
+			: dirname(__DIR__, 2) . '/config/modules.php';
+
+		if (!is_file($overridesPath)) {
+			return;
+		}
+
+		try {
+			$overrides = require $overridesPath;
+		} catch (\Throwable $e) {
+			error_log('ModuleLoader: unable to read stream-routing module overrides: ' . $e->getMessage());
+			return;
+		}
+		if (!is_array($overrides)) {
+			error_log('ModuleLoader: stream-routing module overrides are not an array');
+			return;
+		}
+		$this->overrides = $overrides;
+
+		$jsonFiles = glob($modulesDir . '/*/module.json') ?: [];
+		$vendorDir = $this->resolveVendorDir($modulesDir);
+		if ($vendorDir !== null) {
+			foreach ($this->collectComposerModuleManifests($vendorDir) as $manifest) {
+				if (!in_array($manifest, $jsonFiles, true)) {
+					$jsonFiles[] = $manifest;
+				}
+			}
+		}
+		if ($jsonFiles === []) {
+			return;
+		}
+		sort($jsonFiles, SORT_STRING);
+
+		$discovered = $this->discoverModules($jsonFiles, $this->getCurrentEnvironment());
+		try {
+			$loadOrder = $this->resolveLoadOrder($discovered);
+		} catch (\Throwable $e) {
+			error_log('ModuleLoader: unable to resolve stream-routing providers: ' . $e->getMessage());
+			return;
+		}
+
+		foreach ($loadOrder as $name) {
+			$modulePath = $discovered[$name]['path'];
+			$manifest = $discovered[$name]['manifest'];
+			$routing = $manifest['stream_routing'] ?? null;
+			if ($routing === null) {
+				continue;
+			}
+
+			$override = $this->overrides[$name] ?? $this->overrides[basename($modulePath)] ?? [];
+			if (empty($override['installed_version'])) {
+				continue;
+			}
+			if ($routing['version'] !== PlaybackRouter::API_VERSION) {
+				error_log("ModuleLoader: skipping stream-routing provider for '{$name}' — unsupported API version {$routing['version']}");
+				continue;
+			}
+			if (dirname($modulePath) === rtrim($modulesDir, '/')
+				&& ModuleQuarantine::reason($modulesDir, basename($modulePath)) !== null
+			) {
+				continue;
+			}
+
+			$moduleClass = $this->resolveClassName($name);
+			$namespaceEnd = strrpos($moduleClass, '\\');
+			$moduleNamespace = $namespaceEnd === false ? '' : substr($moduleClass, 0, $namespaceEnd);
+			$providerClass = $routing['class'];
+			if ($moduleNamespace === '' || !str_starts_with($providerClass, $moduleNamespace . '\\')) {
+				error_log("ModuleLoader: skipping stream-routing provider for '{$name}' — class is outside the module namespace");
+				continue;
+			}
+
+			$moduleRoot = realpath($modulePath);
+			$providerFile = realpath($modulePath . '/' . $routing['file']);
+			if ($moduleRoot === false || $providerFile === false
+				|| !str_starts_with($providerFile, $moduleRoot . DIRECTORY_SEPARATOR)
+			) {
+				error_log("ModuleLoader: skipping stream-routing provider for '{$name}' — provider file is unavailable or outside the module");
+				continue;
+			}
+
+			$this->registerModuleAutoloader($modulePath, $moduleNamespace);
+			try {
+				require_once $providerFile;
+				if (!class_exists($providerClass, false)) {
+					throw new \RuntimeException("Provider class '{$providerClass}' was not declared");
+				}
+				$provider = new $providerClass();
+				if (!$provider instanceof StreamRoutingProviderInterface) {
+					throw new \RuntimeException("Provider class '{$providerClass}' does not implement StreamRoutingProviderInterface");
+				}
+				PlaybackRouter::register($provider);
+			} catch (\Throwable $e) {
+				error_log("ModuleLoader: stream-routing provider for '{$name}' failed to load: " . $e->getMessage());
+			}
+		}
+	}
+
+	/**
 	 * Loads all discovered modules from modules/ directory.
 	 *
 	 * Performs automatic discovery, dependency validation, load order resolution,
@@ -78,7 +191,7 @@ class ModuleLoader {
 	 *
 	 * @param string|null $modulesDir Path to modules directory. If null, auto-detected via MAIN_HOME or src/modules.
 	 * @return self Fluent interface for chaining.
-	 * @throws \RuntimeException If a module fails to load, dependency is missing, or manifest is invalid.
+	 * @throws \RuntimeException If module dependencies are cyclic.
 	 */
 	public function loadAll(?string $modulesDir = null): self {
 		if ($modulesDir === null) {
@@ -90,6 +203,7 @@ class ModuleLoader {
 		$this->modules = [];
 		$this->manifests = [];
 
+		ModuleQuarantine::watch($modulesDir);
 		$this->loadOverrides();
 
 		$jsonFiles = glob($modulesDir . '/*/module.json') ?: [];
@@ -108,6 +222,7 @@ class ModuleLoader {
 		if ($jsonFiles === []) {
 			return $this;
 		}
+
 
 		sort($jsonFiles, SORT_STRING);
 
@@ -132,7 +247,27 @@ class ModuleLoader {
 				continue;
 			}
 
-			if (!$this->load($name, $discovered[$name]['path'])) {
+			$modulePath = $discovered[$name]['path'];
+			$quarantine = dirname($modulePath) === rtrim($modulesDir, '/')
+				? ModuleQuarantine::reason($modulesDir, basename($modulePath))
+				: null;
+			if ($quarantine !== null) {
+				error_log("ModuleLoader: skipping quarantined module '{$name}' — {$quarantine}");
+				$failed[] = $name;
+				continue;
+			}
+
+			// A class file that does not parse and a constructor that throws are a
+			// broken module like any other. load() itself still throws, so a caller
+			// installing one module gets the reason.
+			try {
+				$loaded = $this->load($name, $discovered[$name]['path']);
+			} catch (\Throwable $e) {
+				error_log("ModuleLoader: module '{$name}' cannot be loaded: " . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+				$loaded = false;
+			}
+
+			if (!$loaded) {
 				error_log("ModuleLoader: failed to load module '{$name}' — skipping (panel stays up)");
 				$failed[] = $name;
 				continue;
@@ -211,6 +346,7 @@ class ModuleLoader {
 		}
 
 		$this->modules[$name] = $module;
+		Translator::addModuleDir($modulePath . '/lang');
 		return true;
 	}
 
@@ -257,41 +393,50 @@ class ModuleLoader {
 
 		// Module stream-form tabs and import kinds (modules add them from boot()).
 		StreamFormRegistry::reset();
+		LineFormRegistry::reset();
 		ImportSourceRegistry::reset();
 		AdminApiRegistry::reset();
 
-		foreach ($this->modules as $module) {
-			if ($module instanceof ServiceProviderInterface) {
-				$module->boot($container);
-				$this->registerEventSubscribers($module, $container);
-			}
+		foreach ($this->modules as $name => $module) {
+			// A module that throws while booting is dropped for this process; the
+			// panel and the other modules carry on. What it registered before the
+			// throw stays registered.
+			try {
+				if ($module instanceof ServiceProviderInterface) {
+					$module->boot($container);
+					$this->registerEventSubscribers($module, $container);
+				}
 
-			if ($router instanceof \XcVm\Core\Http\Router) {
-				$module->registerRoutes($router);
-			}
+				if ($router instanceof \XcVm\Core\Http\Router) {
+					$module->registerRoutes($router);
+				}
 
-			if ($module instanceof NavbarProviderInterface) {
-				$module->registerNavbar($navbarRegistry);
-			}
+				if ($module instanceof NavbarProviderInterface) {
+					$module->registerNavbar($navbarRegistry);
+				}
 
-			if ($module instanceof ResellerNavbarProviderInterface) {
-				$module->registerResellerNavbar($resellerNavbarRegistry);
-			}
+				if ($module instanceof ResellerNavbarProviderInterface) {
+					$module->registerResellerNavbar($resellerNavbarRegistry);
+				}
 
-			if ($module instanceof TopbarProviderInterface) {
-				$module->registerTopbar($topbarRegistry);
-			}
+				if ($module instanceof TopbarProviderInterface) {
+					$module->registerTopbar($topbarRegistry);
+				}
 
-			if ($module instanceof TableProviderInterface) {
-				$module->registerTables($tableRegistry);
-			}
+				if ($module instanceof TableProviderInterface) {
+					$module->registerTables($tableRegistry);
+				}
 
-			if ($module instanceof PermissionProviderInterface) {
-				$module->registerPermissions($permissionRegistry);
-			}
+				if ($module instanceof PermissionProviderInterface) {
+					$module->registerPermissions($permissionRegistry);
+				}
 
-			if ($module instanceof QuickToolsProviderInterface) {
-				$module->registerQuickTools($quickToolsRegistry);
+				if ($module instanceof QuickToolsProviderInterface) {
+					$module->registerQuickTools($quickToolsRegistry);
+				}
+			} catch (\Throwable $e) {
+				error_log("ModuleLoader: module '{$name}' failed to boot — skipping (panel stays up): " . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+				unset($this->modules[$name], $this->manifests[$name]);
 			}
 		}
 	}
@@ -356,6 +501,18 @@ class ModuleLoader {
 	}
 
 	/**
+	 * Whether this process has already declared the module's class. load() then
+	 * returns an instance of that class, whatever files are in $modulePath now.
+	 *
+	 * @param string $name Module name.
+	 * @param string $modulePath Full path to module directory.
+	 * @return bool True if load() would not include the class file.
+	 */
+	public function isDeclared(string $name, string $modulePath): bool {
+		return class_exists($this->resolveClassName($this->manifestName($modulePath, $name)), false);
+	}
+
+	/**
 	 * Retrieves a loaded module instance by name.
 	 *
 	 * @param string $name Module name.
@@ -415,6 +572,7 @@ class ModuleLoader {
 			: dirname(__DIR__, 2) . '/config/modules.php';
 
 		if (file_exists($overridesPath)) {
+			ModuleManager::revalidate($overridesPath);
 			$this->overrides = require $overridesPath;
 			if (!is_array($this->overrides)) {
 				$this->overrides = [];
@@ -427,15 +585,16 @@ class ModuleLoader {
 	 *
 	 * Reads all module.json manifests, normalizes manifest data, checks override disabling,
 	 * and filters modules to current environment (main/lb). Returns discovered modules
-	 * with their paths and normalized manifest data.
+	 * with their paths and normalized manifest data. A module whose manifest
+	 * readManifest() rejects is logged and left out.
 	 *
 	 * @param array           $jsonFiles          Array of full paths to module.json files.
 	 * @param ServerEnvironment $currentEnvironment Current server environment.
 	 * @return array Associative array of discovered modules: name => [path, manifest].
-	 * @throws \RuntimeException If manifest has invalid environment value or JSON is malformed.
 	 */
 	protected function discoverModules(array $jsonFiles, ServerEnvironment $currentEnvironment): array {
 		$discovered = [];
+		$stepsOf    = self::stepsRunHere();
 
 		foreach ($jsonFiles as $jsonFile) {
 			// Derive a provisional name from directory — used only as fallback in readManifest().
@@ -446,7 +605,14 @@ class ModuleLoader {
 				continue;
 			}
 
-			$manifest = $this->readManifest($jsonFile, $dirName);
+			// A module whose manifest cannot be used is left out like one that fails
+			// to load (see loadAll()): its dependents go with it, the rest still load.
+			try {
+				$manifest = $this->readManifest($jsonFile, $dirName);
+			} catch (\Throwable $e) {
+				error_log("ModuleLoader: skipping module '{$dirName}' — " . $e->getMessage());
+				continue;
+			}
 
 			// Canonical name: always from the manifest (handles module-path subdirs in Composer packages).
 			$name = $manifest['name'];
@@ -456,8 +622,9 @@ class ModuleLoader {
 				continue;
 			}
 
-			if (!in_array($manifest['environment'], ['main', 'lb', 'any'], true)) {
-				throw new ModuleManifestException("ModuleLoader: invalid environment in module.json for module {$name}");
+			// Its steps run in this process before it may boot (stepsRunHere()).
+			if ($name === $stepsOf) {
+				continue;
 			}
 
 			if (!$this->runsHere($name, $manifest, $currentEnvironment)) {
@@ -471,6 +638,26 @@ class ModuleLoader {
 		}
 
 		return $discovered;
+	}
+
+	/**
+	 * The module whose install or update steps this process was started to run
+	 * (`console.php module:migrate <action> <name>`, see
+	 * ModuleManager::migrateReplaced()), or null in any other process.
+	 *
+	 * loadAll() leaves that module out, and with it the ones that depend on
+	 * it: the console boots every module it loaded before its command runs,
+	 * and the version on disk need not boot on the schema its own steps are
+	 * about to change. The command loads the module when it runs them.
+	 *
+	 * @return string|null
+	 */
+	private static function stepsRunHere(): ?string {
+		$argv = $_SERVER['argv'] ?? null;
+		if (PHP_SAPI !== 'cli' || !is_array($argv) || ($argv[1] ?? null) !== 'module:migrate') {
+			return null;
+		}
+		return isset($argv[3]) ? (string) $argv[3] : null;
 	}
 
 	/**
@@ -553,10 +740,10 @@ class ModuleLoader {
 	/**
 	 * Detects the current environment (main or load-balancer).
 	 *
-	 * Checks SERVER_TYPE constant. Returns LoadBalancer if set to 'lb' (case-insensitive), else Main.
+	 * The encrypted server config is available before modules are loaded.
 	 */
 	protected function getCurrentEnvironment(): ServerEnvironment {
-		if (defined('SERVER_TYPE') && strtolower((string) constant('SERVER_TYPE')) === 'lb') {
+		if (class_exists(\XC_VM::class, false) && ConfigReader::get('is_lb')) {
 			return ServerEnvironment::LoadBalancer;
 		}
 		return ServerEnvironment::Main;
@@ -576,7 +763,8 @@ class ModuleLoader {
 	 * @param string $jsonFile Full path to module.json file.
 	 * @param string $name Module name (used for error messages).
 	 * @return array Normalized manifest.
-	 * @throws \RuntimeException If JSON is invalid, dependencies not array, or dependency names not strings.
+	 * @throws \RuntimeException If JSON is invalid, dependencies not array, dependency names not strings,
+	 *                           or environment is not main, lb or any.
 	 */
 	protected function readManifest(string $jsonFile, string $name): array {
 		$raw = @file_get_contents($jsonFile);
@@ -601,23 +789,80 @@ class ModuleLoader {
 			return array_values(array_unique($result));
 		};
 
+		$environment = strtolower((string) ($manifest['environment'] ?? 'main'));
+		if (!in_array($environment, ['main', 'lb', 'any'], true)) {
+			throw new ModuleManifestException("ModuleLoader: invalid environment in module.json for module {$name}");
+		}
+		if ((array_key_exists('lb_source_drivers', $manifest) && !is_bool($manifest['lb_source_drivers']))
+			|| (!empty($manifest['lb_source_drivers']) && $environment !== 'any')
+		) {
+			throw new ModuleManifestException("ModuleLoader: lb_source_drivers requires a boolean and environment any for module {$name}");
+		}
+
 		return [
 			'name'                  => $manifest['name'] ?? $name,
+			// What people read; `name` is the code identifier (class, config, dependencies).
+			'title'                 => trim((string) ($manifest['title'] ?? '')),
 			'hash_id'               => (string) ($manifest['hash_id'] ?? ''),
 			'description'           => $manifest['description'] ?? '',
 			'version'               => $manifest['version'] ?? '',
 			'requires_core'         => $manifest['requires_core'] ?? '',
-			'environment'           => strtolower((string) ($manifest['environment'] ?? 'main')),
+			'environment'           => $environment,
 			'dependencies'          => self::filterCoreProvidedDependencies($normalizeDepArray($manifest['dependencies'] ?? [], 'dependencies')),
 			'optional_dependencies' => self::filterCoreProvidedDependencies($normalizeDepArray($manifest['optional_dependencies'] ?? [], 'optional_dependencies')),
 			'has_navbar'            => (bool) ($manifest['has_navbar'] ?? false),
 			'has_settings'          => (bool) ($manifest['has_settings'] ?? false),
 			'priority'              => (int) ($manifest['priority'] ?? 0),
 			'update'                => self::normalizeUpdateBlock($manifest, $manifest['name'] ?? $name),
+			'stream_routing'        => self::normalizeStreamRouting($manifest['stream_routing'] ?? null, $name),
 			// SourceDriverRegistry: driver FQCNs and the first-output wait they need.
 			'source_drivers'        => array_values(array_filter((array) ($manifest['source_drivers'] ?? []), 'is_string')),
+			'lb_source_drivers'     => $manifest['lb_source_drivers'] ?? false,
 			'start_timeout'         => max(0, (int) ($manifest['start_timeout'] ?? 0)),
 		];
+	}
+
+	/**
+	 * Normalize the optional provider contract used by streaming requests.
+	 *
+	 * @return array{version:int,file:string,class:string}|null
+	 */
+	private static function normalizeStreamRouting(mixed $routing, string $name): ?array {
+		if ($routing === null) {
+			return null;
+		}
+		if (!is_array($routing)
+			|| !is_int($routing['version'] ?? null)
+			|| !is_string($routing['file'] ?? null)
+			|| !preg_match('/^[A-Za-z0-9_\/-]+\.php$/', $routing['file'])
+			|| in_array('..', explode('/', $routing['file']), true)
+			|| !is_string($routing['class'] ?? null)
+			|| !preg_match('/^XcVm\\\\Module\\\\[A-Za-z_][A-Za-z0-9_\\\\]*$/', $routing['class'])
+		) {
+			throw new ModuleManifestException("ModuleLoader: invalid stream_routing contract for module {$name}");
+		}
+		return [
+			'version' => $routing['version'],
+			'file'    => $routing['file'],
+			'class'   => $routing['class'],
+		];
+	}
+
+	/**
+	 * Why discovery would leave a module.json out, or null when it can be used.
+	 * For a caller that has to refuse a module before putting it in place.
+	 *
+	 * @param string $jsonFile Full path to module.json file.
+	 * @param string $name     Module name (used in the message).
+	 * @return string|null The reason, or null when the manifest is usable.
+	 */
+	public static function manifestError(string $jsonFile, string $name): ?string {
+		try {
+			(new self())->readManifest($jsonFile, $name);
+		} catch (\Throwable $e) {
+			return $e->getMessage();
+		}
+		return null;
 	}
 
 	/**
@@ -640,6 +885,8 @@ class ModuleLoader {
 	 *
 	 * A nightly (`2.6.1-dev.N`) is built from main as the upcoming `2.6.1`, so it
 	 * counts as `2.6.1`; otherwise version_compare() would put it below `2.6.1`.
+	 * A patch build (`2.6.1-p2`) is `2.6.1` with fixes, and counts as it: a
+	 * module that asks for `=2.6.1` or `<=2.6.1` keeps loading.
 	 *
 	 * @param string      $requiresCore The manifest's `requires_core`.
 	 * @param string|null $coreVersion  Core version to check against (default: XC_VM_VERSION).
@@ -671,13 +918,13 @@ class ModuleLoader {
 		return $rAll;
 	}
 
-	/** The core version to compare, nightly suffix stripped. */
+	/** The core version to compare, without a nightly's or a patch build's suffix. */
 	private static function comparableCoreVersion(?string $coreVersion): string {
 		if ($coreVersion === null) {
 			class_exists(\XcVm\Core\Config\ConstantsInitializer::class); // defines XC_VM_VERSION
 			$coreVersion = defined('XC_VM_VERSION') ? (string) XC_VM_VERSION : '0';
 		}
-		return (string) preg_replace('/-dev\.\d+$/', '', $coreVersion);
+		return (string) preg_replace('/-(dev\.|p)\d+$/', '', $coreVersion);
 	}
 
 	/** Whether one `requires_core` condition holds; null when it can't be read. */
@@ -698,17 +945,20 @@ class ModuleLoader {
 	 *     "source": "bundled | platform | git | url",
 	 *     "repository": "https://…",   // git
 	 *     "channel": "stable | beta",
-	 *     "slug": "…",                  // platform (defaults to name)
 	 *     "url": "https://…"            // url
 	 *   }
+	 *
+	 * A `platform` module is named to the store by its top-level `hash_id` (the
+	 * store writes this block into every module.json it serves); a `slug` there
+	 * is no longer read — the store's slug can be renamed, the hash_id cannot.
 	 *
 	 * Absent or unknown source → `bundled` (files ship with the panel), so every
 	 * existing module keeps working unchanged. NO network is done here — this only
 	 * shapes the declared source for the later fetch/apply phases.
 	 *
 	 * @param array  $manifest Raw module.json.
-	 * @param string $name     Module name (fallback for slug).
-	 * @return array{source:string,repository:string,channel:string,slug:string,url:string}
+	 * @param string $name     Module name (unused; kept for callers).
+	 * @return array{source:string,repository:string,channel:string,url:string}
 	 */
 	public static function normalizeUpdateBlock(array $manifest, string $name): array {
 		$raw    = is_array($manifest['update'] ?? null) ? $manifest['update'] : [];
@@ -721,7 +971,6 @@ class ModuleLoader {
 			'source'     => $source,
 			'repository' => trim((string) ($raw['repository'] ?? '')),
 			'channel'    => strtolower(trim((string) ($raw['channel'] ?? 'stable'))) ?: 'stable',
-			'slug'       => trim((string) ($raw['slug'] ?? '')) ?: $name,
 			'url'        => trim((string) ($raw['url'] ?? '')),
 		];
 	}
@@ -880,7 +1129,7 @@ class ModuleLoader {
 	 *   1. getEventSubscribers() — legacy array API:
 	 *        ['EventClass' => callable]  or  ['EventClass' => [callable, $priority]]
 	 *
-	 *   2. #[ListensTo] attribute — declarative PHP 8.1 attribute on public methods:
+	 *   2. #[ListensTo] attribute — declarative PHP attribute on public methods:
 	 *        #[ListensTo(SomeEvent::class, priority: 10)]
 	 *        public function onSome(SomeEvent $e): void { ... }
 	 *
@@ -901,10 +1150,10 @@ class ModuleLoader {
 		foreach ($subscribers as $event => $handler) {
 			if (is_array($handler) && isset($handler[0]) && is_callable($handler[0])) {
 				// [callable, int $priority] tuple — new PSR-14 style
-				EventDispatcher::listen($event, $handler[0], $handler[1] ?? 0);
+				EventDispatcher::listen($event, self::isolated($handler[0], $module), $handler[1] ?? 0);
 			} else {
 				// Legacy: string event name or class-string, plain callable
-				EventDispatcher::listen($event, $handler);
+				EventDispatcher::listen($event, self::isolated($handler, $module));
 			}
 		}
 
@@ -926,11 +1175,26 @@ class ModuleLoader {
 
 				EventDispatcher::listen(
 					$listensTo->eventClass,
-					[$module, $method->getName()],
+					self::isolated([$module, $method->getName()], $module),
 					$listensTo->priority,
 				);
 			}
 		}
+	}
+
+	/**
+	 * A module's listener that logs what it throws instead of passing it on: a
+	 * broken module must not fail the core operation that dispatched the event.
+	 * Vetoes go through stopPropagation(), never a throw.
+	 */
+	private static function isolated(callable $listener, object $module): \Closure {
+		return static function (object $event) use ($listener, $module): void {
+			try {
+				$listener($event);
+			} catch (\Throwable $e) {
+				error_log('ModuleLoader: ' . $module::class . ' failed handling ' . $event::class . ': ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+			}
+		};
 	}
 
 	/**

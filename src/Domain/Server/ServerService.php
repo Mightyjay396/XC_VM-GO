@@ -124,6 +124,9 @@ class ServerService {
 		}
 
 		if (isset($rData['domain_name'])) {
+			if (!self::domainNamesValid($rData['domain_name'], (string) $rServer['domain_name'])) {
+				return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			}
 			$rArray['domain_name'] = implode(',', $rData['domain_name']);
 		} else {
 			$rArray['domain_name'] = '';
@@ -201,6 +204,30 @@ class ServerService {
 	}
 
 	/**
+	 * Whether a server's domain list holds only what the form adds to it:
+	 * addresses, and names made of letters, digits, hyphens and underscores
+	 * in labels joined by dots. An entry the server already has is kept as it
+	 * is (a migrated row may hold a name written as a URL). The list is stored
+	 * joined by commas and goes into URLs, the allowed hosts and certbot's
+	 * request.
+	 *
+	 * @param mixed  $rNames  The posted `domain_name` list.
+	 * @param string $rStored The server's `domain_name` as stored.
+	 */
+	public static function domainNamesValid(mixed $rNames, string $rStored = ''): bool {
+		if (!is_array($rNames)) {
+			return false;
+		}
+		$rKept = array_filter(explode(',', $rStored));
+		foreach ($rNames as $rName) {
+			if (!is_string($rName) || !(in_array($rName, $rKept, true) || filter_var($rName, FILTER_VALIDATE_IP) || preg_match('/^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$/iD', $rName))) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
 	 * The ports of $rPorts this server does not listen on yet (its row's
 	 * HTTP, HTTPS and RTMP ports) that something on this machine already
 	 * accepts connections on.
@@ -266,7 +293,11 @@ class ServerService {
 			exit();
 		}
 
-		$rArray = AdminHelpers::overwriteData(ServerRepository::getById($rData['edit']), $rData);
+		// The edit starts from the proxy as stored: the row cleaner's
+		// escaping would be written back into every field not sent.
+		$db->query('SELECT * FROM `servers` WHERE `id` = ?;', intval($rData['edit']));
+		$rServer = $db->get_raw_row();
+		$rArray = AdminHelpers::overwriteData($rServer, $rData);
 		foreach (['enable_https', 'random_ip', 'enable_geoip', 'enabled'] as $rKey) {
 			$rArray[$rKey] = isset($rData[$rKey]);
 		}
@@ -281,6 +312,9 @@ class ServerService {
 		}
 
 		if (isset($rData['domain_name'])) {
+			if (!self::domainNamesValid($rData['domain_name'], (string) $rServer['domain_name'])) {
+				return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			}
 			$rArray['domain_name'] = implode(',', $rData['domain_name']);
 		} else {
 			$rArray['domain_name'] = '';
@@ -349,10 +383,14 @@ class ServerService {
 			}
 
 			$db->query('UPDATE `servers` SET `status` = 3, `parent_id` = ? WHERE `id` = ?;', '[' . implode(',', $rParentIDs) . ']', $rServer['id']);
+			// Reinstalling an existing node keeps its own mode: preserve the
+			// serve_only state recorded at its first install (ServerInstallCommand),
+			// not the current global new-node mode, which may have changed since.
+			$rServeOnlyTail = (intval($rData['type']) === 2 && !empty($rServer['serve_only'])) ? ['--serve-only'] : [];
 			if ($rData['type'] == 1) {
 				$rCommand = InstallCredentials::command(intval($rData['type']), intval($rServer['id']), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], [(string) intval($rData['http_broadcast_port']), (string) intval($rData['https_broadcast_port']), (string) intval($rUpdateSysctl), (string) intval($rPrivateIP), escapeshellarg(json_encode($rParentIDs))], (string) ($rData['expected_hostkey'] ?? ''), !empty($rData['forget_hostkey']));
 			} else {
-				$rCommand = InstallCredentials::command(intval($rData['type']), intval($rServer['id']), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], ['80', '443', (string) intval($rUpdateSysctl)], (string) ($rData['expected_hostkey'] ?? ''), !empty($rData['forget_hostkey']));
+				$rCommand = InstallCredentials::command(intval($rData['type']), intval($rServer['id']), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], ['80', '443', (string) intval($rUpdateSysctl), ...$rServeOnlyTail], (string) ($rData['expected_hostkey'] ?? ''), !empty($rData['forget_hostkey']));
 			}
 			shell_exec($rCommand);
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rServer['id']]];
@@ -371,13 +409,21 @@ class ServerService {
 		if (QueryHelper::checkExists('servers', 'server_ip', $rArray['server_ip'])) {
 			return ['status' => STATUS_EXISTS_IP, 'data' => $rData];
 		}
-
 		if ($rData['type'] == 1) {
 			$rArray['server_type'] = 1;
 			$rArray['parent_id'] = '[' . implode(',', $rParentIDs) . ']';
 		} else {
 			$rArray['server_type'] = 0;
 		}
+
+		// Decide and PERSIST the serve-only mode now, on the row, before the
+		// background installer is launched. The install records serve_only only
+		// near its end, so without this a retry/reinstall started meanwhile (which
+		// reads servers.serve_only) would read 0 and silently install a PHP LB; and
+		// the worker reads the row to stay serve-only even if the global mode
+		// changes between this queue and the worker's start.
+		$rServeOnly = intval($rData['type']) === 2 && ClusterSettings::newNodesServeOnly(SettingsManager::getAll());
+		$rArray['serve_only'] = $rServeOnly ? 1 : 0;
 
 		$rArray['network_interface'] = 'auto';
 		$rPrepare = QueryHelper::prepareArray($rArray);
@@ -395,10 +441,13 @@ class ServerService {
 			BackupService::grantPrivileges($rArray['server_ip']);
 		}
 
+		// Arm --serve-only from the same decision just persisted on the row, so
+		// the queued command and the stored mode cannot disagree.
+		$rServeOnlyTail = $rServeOnly ? ['--serve-only'] : [];
 		if ($rData['type'] == 1) {
 			$rCommand = InstallCredentials::command(intval($rData['type']), intval($rInsertID), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], [(string) intval($rData['http_broadcast_port']), (string) intval($rData['https_broadcast_port']), (string) intval($rUpdateSysctl), (string) intval($rPrivateIP), escapeshellarg(json_encode($rParentIDs))], (string) ($rData['expected_hostkey'] ?? ''));
 		} else {
-			$rCommand = InstallCredentials::command(intval($rData['type']), intval($rInsertID), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], ['80', '443', (string) intval($rUpdateSysctl)], (string) ($rData['expected_hostkey'] ?? ''));
+			$rCommand = InstallCredentials::command(intval($rData['type']), intval($rInsertID), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], ['80', '443', (string) intval($rUpdateSysctl), ...$rServeOnlyTail], (string) ($rData['expected_hostkey'] ?? ''));
 		}
 
 		shell_exec($rCommand);

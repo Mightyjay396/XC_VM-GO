@@ -17,6 +17,15 @@ use XcVm\Core\Util\AdminHelpers;
 
 class PageAuthorization {
 	/**
+	 * The requested page under the name its rule is written for. The router
+	 * takes `line/mass` for `line_mass`, each with or without a trailing `.php`
+	 * (Router::normalizePage), and a page has one rule whichever way it was asked for.
+	 */
+	private static function requestedPage(): string {
+		return str_replace('/', '_', (string) preg_replace('/\.php$/', '', AdminHelpers::getPageName()));
+	}
+
+	/**
 	 * Check whether the current reseller may access a given page.
 	 *
 	 * Maps the page name to the reseller permission flag that gates it; defaults
@@ -29,7 +38,7 @@ class PageAuthorization {
 		global $rPermissions;
 
 		if (!$rPage) {
-			$rPage = AdminHelpers::getPageName();
+			$rPage = self::requestedPage();
 		}
 
 		switch ($rPage) {
@@ -81,7 +90,7 @@ class PageAuthorization {
 			// Under the front controller SCRIPT_FILENAME is always Public/index.php,
 			// so deriving the page from it checked "index" — a page no rule names —
 			// and every page opened for every administrator.
-			$rPage = AdminHelpers::getPageName();
+			$rPage = self::requestedPage();
 		}
 		// Editing an existing record needs edit_*, creating one add_*. A page tells
 		// them apart by ?id=; post.php passes whether the form carries `edit`.
@@ -125,7 +134,8 @@ class PageAuthorization {
 					return true;
 				}
 
-				// no break
+				break;
+
 			case 'code':
 			case 'codes':
 				return Authorization::check('adv', 'add_code');
@@ -162,7 +172,8 @@ class PageAuthorization {
 					return true;
 				}
 
-				// no break
+				break;
+
 			case 'episodes':
 				return Authorization::check('adv', 'episodes');
 
@@ -321,9 +332,12 @@ class PageAuthorization {
 			case 'server_view':
 			case 'server_order':
 			case 'proxies':
+			case 'source_proxies': // srcproxy
 				return Authorization::check('adv', 'servers');
 
 			case 'settings':
+			case 'alerts':
+			case 'translations':
 				return Authorization::check('adv', 'settings');
 
 			case 'backups':
@@ -346,6 +360,16 @@ class PageAuthorization {
 
 			case 'review':
 				return Authorization::check('adv', 'import_streams');
+
+			// It renames streams and changes their EPG, categories and bouquets.
+			// No rule named it, and a page no rule names is open to every group.
+			case 'stream_review':
+				return Authorization::check('adv', 'import_streams') || Authorization::check('adv', 'mass_edit_streams');
+
+			// Its lists decide whose MAC guesses are counted and whose address is
+			// blocked at once: the navbar's permission, which no rule asked for.
+			case 'magscan_settings':
+				return Authorization::check('adv', 'manage_mag');
 
 			case 'mass_edit_streams':
 				return Authorization::check('adv', 'edit_stream');
@@ -415,13 +439,20 @@ class PageAuthorization {
 				return Authorization::check('adv', 'connection_logs');
 
 			case 'line_mass':
+			case 'active_codes_mass':
 				return Authorization::check('adv', 'mass_edit_lines');
+
+			// Generating codes creates lines.
+			case 'active_code':
+				return Authorization::check('adv', 'add_user');
 
 			case 'useragents':
 			case 'useragent':
 				return Authorization::check('adv', 'block_uas');
 
 			case 'lines':
+			case 'active_codes':
+			case 'active_codes_batch':
 				return Authorization::check('adv', 'users');
 
 			case 'mysql_syslog':
@@ -430,6 +461,8 @@ class PageAuthorization {
 
 			case 'login_logs':
 				return Authorization::check('adv', 'login_logs');
+			case 'admin_actions':
+				return Authorization::check('adv', 'admin_audit');
 
 			case 'restream_logs':
 				return Authorization::check('adv', 'restream_logs');
@@ -454,11 +487,15 @@ class PageAuthorization {
 	 * @param bool   $rIsEdit Whether the form edits an existing record (`edit`).
 	 */
 	public static function checkPostAction(string $rAction, bool $rIsEdit): bool {
+		if ($rAction === 'vod_playlist_preview') {
+			return Authorization::check('adv', 'import_movies');
+		}
 		if (str_starts_with($rAction, 'mass_delete_')) {
 			return self::checkPermissions('mass_delete', $rIsEdit, false);
 		}
 
-		$rPage = ['import_tmdb_categories' => 'stream_categories'][$rAction] ?? $rAction;
+		// twofactor and api_tokens are the administrator's own, part of the profile.
+		$rPage = ['import_tmdb_categories' => 'stream_categories', 'twofactor' => 'edit_profile', 'api_tokens' => 'edit_profile'][$rAction] ?? $rAction;
 		if ($rPage === '' || $rPage === 'edit_profile') {
 			return $rPage === 'edit_profile';
 		}

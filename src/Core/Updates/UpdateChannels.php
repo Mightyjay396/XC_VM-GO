@@ -79,7 +79,26 @@ final class UpdateChannels {
 	 * On 'dev' it also reads the nightly builds from GIT_REPO_DEV.
 	 */
 	public static function mainReleases(): GitHubReleases {
-		return new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, self::main(), null, GIT_REPO_DEV);
+		return new GitHubReleases(GIT_OWNER_MAIN, GIT_REPO_MAIN, self::main(), null, GIT_REPO_DEV);
+	}
+
+	/**
+	 * The panel's channel in the single `update_channel` setting a server on an
+	 * older release reads to pick its update (stable 2.3.9 and the betas up to
+	 * 2.4.x; they know 'stable' and 'unstable' only, and take anything else,
+	 * a missing value included, as 'stable'). A load balancer still on such a
+	 * release under an updated MAIN follows the panel's channel through it.
+	 *
+	 * @param array $rSave Settings about to be saved (column => value).
+	 * @return array The same, with `update_channel` set from `update_channel_main`
+	 *               when that is saved, and never taken from the request.
+	 */
+	public static function withLegacy(array $rSave): array {
+		unset($rSave['update_channel']);
+		if (isset($rSave['update_channel_main'])) {
+			$rSave['update_channel'] = in_array($rSave['update_channel_main'], ['beta', 'dev', 'unstable'], true) ? 'unstable' : 'stable';
+		}
+		return $rSave;
 	}
 
 	/**

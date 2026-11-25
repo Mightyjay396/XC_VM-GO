@@ -235,7 +235,7 @@ foreach ($rConnectionMap as $rCountry) {
     // [action, paneId, tableId, tabIcon, rowIcon, accent, imageColumnLabel, imageWidth].
     // `action` is both the ./table id and the list page the View All button opens.
     // The column order mirrors the Streams / Movies / Episodes pages because
-    // ResellerTableRenderer resolves the sort column by DataTables index — only
+    // ResellerTableController resolves the sort column by DataTables index — only
     // id (1), title (3) and category (4) are orderable, so the columns added
     // after them are safe to append.
     $xmMediaTabs = [
@@ -342,11 +342,7 @@ LayoutRenderer::renderFooter('reseller');
         }
         poll();
 
-        var esc = function(s) {
-            var d = document.createElement('div');
-            d.textContent = (s == null ? '' : String(s));
-            return d.innerHTML;
-        };
+        var esc = function(s) { return (s == null ? '' : String(s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); };
         var pad = function(n) {
             return (n < 10 ? '0' : '') + n;
         };
@@ -498,7 +494,7 @@ LayoutRenderer::renderFooter('reseller');
                     searchable: false,
                     className: 'text-center',
                     render: function(d, t, row) {
-                        return '<a href="live_connections?stream=' + encodeURIComponent(row.id) + '&stream_id=' + encodeURIComponent(row.id) + '"' +
+                        return '<a href="live_connections?stream_id=' + encodeURIComponent(row.id) + '"' +
                             ' class="btn btn-sm btn-icon btn-label-primary" title="' + esc(langConnections) + '">' +
                             '<i class="icon-base ti tabler-plug-connected"></i></a>';
                     }
@@ -547,7 +543,7 @@ LayoutRenderer::renderFooter('reseller');
 
         <?php if ($xmCanSeeConnections): ?>
             // Live connections. The column list must stay identical to the Live
-            // Connections page: ResellerTableRenderer resolves the sort column by
+            // Connections page: ResellerTableController resolves the sort column by
             // DataTables index, so hiding columns is safe but reordering is not.
             var liveTable = jQuery('#dash-live-table').DataTable({
                 serverSide: true,
@@ -604,14 +600,17 @@ LayoutRenderer::renderFooter('reseller');
                     },
                     {
                         data: 'stream_name',
-                        responsivePriority: 3
+                        responsivePriority: 3,
+                        render: esc
                     },
                     {
-                        data: 'player'
+                        data: 'player',
+                        render: esc
                     },
                     {
                         data: 'isp',
-                        visible: false
+                        visible: false,
+                        render: esc
                     },
                     {
                         data: 'user_ip',
@@ -631,7 +630,8 @@ LayoutRenderer::renderFooter('reseller');
                     {
                         data: 'container',
                         className: 'text-center',
-                        visible: false
+                        visible: false,
+                        render: esc
                     },
                     {
                         data: 'is_restreamer',

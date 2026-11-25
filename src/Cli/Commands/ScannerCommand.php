@@ -115,7 +115,7 @@ class ScannerCommand implements CommandInterface {
 
 			foreach ($rSources as $rSource) {
 				$rProcessed = false;
-				$rStreamSource = StreamUtils::parseStreamURL($rSource, (string) (array_column($rStreamArguments, 'value', 'argument_key')['proxy'] ?? ''));
+				$rStreamSource = StreamUtils::parseStreamURL($rSource, (string) (array_column($rStreamArguments, 'value', 'argument_key')['proxy'] ?? ''), (int) (array_column($rStreamArguments, 'value', 'argument_key')['max_height'] ?? 0));
 				echo 'Checking source: ' . $rSource . "\n";
 				$rURLInfo = parse_url($rStreamSource);
 				$rIsXC_VM = StreamUtils::detectXC_VM($rStreamSource);
@@ -162,7 +162,8 @@ class ScannerCommand implements CommandInterface {
 				}
 
 				$rTime = round(microtime(true) * 1000);
-				$rFFProbeOutput = StreamProcess::driverProbe(intval($rRow['id']), (string) $rSource) ?? json_decode(shell_exec(str_replace(['{FETCH_OPTIONS}', '{STREAM_SOURCE}'], [$rFetchOptions, escapeshellarg($rStreamSource)], $rFFProbee)), true);
+				// One pass: the fetch options are values, and are not read for tokens themselves.
+				$rFFProbeOutput = StreamProcess::driverProbe(intval($rRow['id']), (string) $rSource) ?? json_decode(shell_exec(strtr($rFFProbee, ['{FETCH_OPTIONS}' => $rFetchOptions, '{STREAM_SOURCE}' => escapeshellarg($rStreamSource)])), true);
 				$rTimeTaken = round(microtime(true) * 1000) - $rTime;
 
 				if (file_exists(STREAMS_TMP_PATH . $rRow['id'] . '._errors') && 0 < filesize(STREAMS_TMP_PATH . $rRow['id'] . '._errors')) {

@@ -2,15 +2,18 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
+use XcVm\Core\Config\DashboardAlerts;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Domain\Stream\StreamRepository;
+use XcVm\Domain\User\UiPrefs;
 
 /**
  * Admin-ajax controller for the "Stats & Graphs" group.
  *
- * Actions: graph_stats, stats, header_stats.
+ * Actions: graph_stats, stats, header_stats, stream_events.
  *
  * `graph_stats` has no per-action permission gate (only the shared
  * admin-session + XHR guard). All three responses are custom JSON shapes kept
@@ -26,6 +29,8 @@ class StatsAjaxController extends BaseAjaxController {
 	/** action=graph_stats — per-minute time-series for the dashboard graphs. */
 	public function graphStats(): never {
 		$this->requireXhr();
+		// The dashboard's graph, and a server's: the load of every server went to any group.
+		$this->gateAny([['adv', 'index'], ['adv', 'servers']]);
 
 		global $db, $rServers;
 		$rLimit = 3600;
@@ -240,7 +245,7 @@ class StatsAjaxController extends BaseAjaxController {
 			foreach ($db->get_rows() as $rRow) {
 				$rOpenConnections[intval($rRow['server_id'])] = intval($rRow['count']);
 			}
-			$db->query('SELECT `server_id`, COUNT(DISTINCT(`user_id`)) AS `count` FROM `lines_live` GROUP BY `server_id`;');
+			$db->query('SELECT `server_id`, COUNT(DISTINCT(`user_id`)) AS `count` FROM `lines_live` WHERE `hls_end` = 0 GROUP BY `server_id`;');
 
 			foreach ($db->get_rows() as $rRow) {
 				$rOnlineUsers[intval($rRow['server_id'])] = intval($rRow['count']);
@@ -271,7 +276,6 @@ class StatsAjaxController extends BaseAjaxController {
 						$rReturn['total_connections'] += $rServers[$rServerID]['connections'];
 						$rArray['online_users'] = $rServers[$rServerID]['users'];
 						$rReturn['online_users'] += $rServers[$rServerID]['users'];
-						$rReturn['total_users'] += $rServers[$rServerID]['users'];
 					} else {
 						$rArray['open_connections'] = $rOpenConnections[$rServerID] ?? 0;
 						$rArray['online_users']     = $rOnlineUsers[$rServerID] ?? 0;
@@ -319,10 +323,36 @@ class StatsAjaxController extends BaseAjaxController {
 				$rReturn['total_running_streams'] += $rServerArray['total_running_streams'];
 				$rReturn['offline_streams'] += $rServerArray['offline_streams'];
 			}
-			$rReturn['online_users'] = SettingsManager::get('total_users');
+			if (SettingsManager::get('redis_handler')) {
+				$rReturn['online_users'] = SettingsManager::get('total_users');
+			}
 		}
 
 		$this->json($rReturn, JSON_PARTIAL_OUTPUT_ON_ERROR);
+	}
+
+	/** action=stream_events — latest dashboard alerts, or the stream log past a cursor. */
+	public function streamEvents(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'streams');
+		if ((string) RequestManager::get('latest') === '1') {
+			$this->json(self::latestAlertsPayload());
+		}
+		$rHoles = array_map('intval', array_filter(explode(',', (string) RequestManager::get('holes')), 'is_numeric'));
+		$rLog = StreamRepository::logSince(RequestManager::has('after') ? (int) RequestManager::get('after') : -1, $rHoles);
+		// No answer from the database: no `last`, so the tab keeps its cursor and asks again.
+		$this->json($rLog ?? ['error' => 'unavailable']);
+	}
+
+	/** Latest dashboard feed, with both logging and visibility enforced before reading events. */
+	public static function latestAlertsPayload(): array {
+		$rOptions = DashboardAlerts::options();
+		$rLogging = SettingsManager::getBool('save_restart_logs');
+		$rLimit = $rLogging && $rOptions['latest_enabled'] ? max($rOptions['latest_count'], $rOptions['history_enabled'] ? $rOptions['history_count'] : 0) : 0;
+		$rEvents = $rLimit > 0 ? StreamRepository::latestLogEvents($rLimit) : [];
+		$rNow = time();
+		$rSummary = $rLogging && $rOptions['latest_enabled'] ? StreamRepository::logEventSummary($rNow - 60, $rNow) : [];
+		return $rEvents === null || $rSummary === null ? ['error' => 'unavailable'] : ['events' => $rEvents, 'summary' => $rSummary, 'options' => $rOptions];
 	}
 
 	/** action=header_stats — compact fleet totals for the top navbar. */
@@ -396,7 +426,7 @@ class StatsAjaxController extends BaseAjaxController {
 			$this->fail();
 		}
 
-		global $db, $rUserInfo;
+		global $rUserInfo;
 		if (empty($rUserInfo['id'])) {
 			$this->fail();
 		}
@@ -406,43 +436,9 @@ class StatsAjaxController extends BaseAjaxController {
 			$this->fail();
 		}
 
-		// Customizer "Reset" — drop the saved prefs so the panel falls back to the
-		// project defaults (XC_VM_UIDefaults) on the next load.
-		if (!empty($rIn['__reset'])) {
-			$db->query('UPDATE `users` SET `ui_prefs` = NULL WHERE `id` = ?;', intval($rUserInfo['id']));
-			$this->ok();
-		}
-
-		// Whitelist + validate — never store arbitrary keys/values.
-		$rClean = [];
-		$rEnum = static function ($rVal, array $rAllowed) {
-			return in_array($rVal, $rAllowed, true) ? $rVal : null;
-		};
-		$rBool = static function ($rVal) {
-			return ($rVal === true || $rVal === 'true') ? true : (($rVal === false || $rVal === 'false') ? false : null);
-		};
-		$rMap = [
-			'theme'           => static fn($v) => $rEnum($v, ['light', 'dark', 'system']),
-			'skin'            => static fn($v) => in_array($v, ['default', 'bordered'], true) ? $v : null,
-			'semiDark'        => $rBool,
-			'layoutCollapsed' => $rBool,
-			'rtl'             => $rBool,
-			'navbar'          => static fn($v) => $rEnum($v, ['sticky', 'static', 'hidden']),
-			'headerType'      => static fn($v) => $rEnum($v, ['static', 'fixed']),
-			'contentLayout'   => static fn($v) => $rEnum($v, ['compact', 'wide']),
-			'color'           => static fn($v) => (is_string($v) && preg_match('/^#[0-9a-fA-F]{6}$/', $v)) ? $v : null,
-			'lang'            => static fn($v) => (is_string($v) && preg_match('/^[a-z]{2,8}$/', $v)) ? $v : null,
-		];
-		foreach ($rMap as $rKey => $rValidator) {
-			if (array_key_exists($rKey, $rIn)) {
-				$rVal = $rValidator($rIn[$rKey]);
-				if ($rVal !== null) {
-					$rClean[$rKey] = $rVal;
-				}
-			}
-		}
-
-		$db->query('UPDATE `users` SET `ui_prefs` = ? WHERE `id` = ?;', json_encode($rClean), intval($rUserInfo['id']));
+		// Also handles the customizer "Reset" (`__reset`): the saved prefs are dropped
+		// and the panel falls back to XC_VM_UIDefaults.
+		UiPrefs::save(intval($rUserInfo['id']), $rIn);
 		$this->ok();
 	}
 }

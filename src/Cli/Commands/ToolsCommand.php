@@ -3,15 +3,21 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Core\Auth\AuthRepository;
+use XcVm\Core\Auth\TwoFactor;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Config\NginxPortsFile;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsDeletedEvent;
 use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\ImageUtils;
+use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -44,7 +50,7 @@ class ToolsCommand implements CommandInterface {
 		$rMethod = (!empty($rArgs[0]) ? $rArgs[0] : null);
 		$rUser = posix_getpwuid(posix_geteuid())['name'];
 
-		$rRootMethods = ['rescue', 'recaptcha', 'access', 'ports', 'migration', 'user', 'mysql', 'database', 'flush'];
+		$rRootMethods = ['rescue', 'recaptcha', 'access', 'ports', 'migration', 'user', 'mysql', 'database', 'flush', 'twofactor'];
 		$rUserMethods = ['images', 'duplicates', 'bouquets'];
 
 		// No or unknown subcommand → show the full help to any user (root or xc_vm)
@@ -81,6 +87,8 @@ class ToolsCommand implements CommandInterface {
 					return $this->processDatabase($rArgs);
 				case 'flush':
 					return $this->processFlush();
+				case 'twofactor':
+					return $this->processTwoFactor((string) ($rArgs[1] ?? ''));
 			}
 		}
 
@@ -211,7 +219,7 @@ class ToolsCommand implements CommandInterface {
 			if (!$this->restoreMigrationBackup($database)) {
 				return 1;
 			}
-			echo "Restore completed. You can now run: console.php migrate\n\n";
+			echo "Restore completed. You can now run: /home/xc_vm/console.php migrate\n\n";
 		} else {
 			echo "You can restore a database to it using:\n";
 			echo "  mariadb -h 127.0.0.1 -P <port> -u <username> -p'<password>' xc_vm_migrate < backup.sql\n";
@@ -267,11 +275,25 @@ class ToolsCommand implements CommandInterface {
 		return 0;
 	}
 
+	/** Turn off the second factor of an admin or reseller locked out of it (Core\Auth\TwoFactor). */
+	private function processTwoFactor(string $rUsername): int {
+		$db = self::db();
+		$db->query('SELECT `id` FROM `users` WHERE `username` = ?;', $rUsername);
+		$rRow = $db->num_rows() === 1 ? $db->get_raw_row() : null;
+		if ($rUsername === '' || !$rRow) {
+			echo "Usage: console.php tools twofactor <username>  (no such user)\n";
+			return 1;
+		}
+		TwoFactor::disable((int) $rRow['id']);
+		echo "Two-factor sign-in turned off for {$rUsername}. If the user's group requires it, the next sign-in sets it up again.\n";
+		return 0;
+	}
+
 	private function processFlush(): int {
 		$db = self::db();
 		echo "Flushing iptables rules...\n";
-		exec('sudo iptables -F && sudo ip6tables -F');
-		shell_exec('sudo rm -f ' . escapeshellarg(FLOOD_TMP_PATH) . 'block_*');
+		// The panel's own blocks only, as the Flush button's root action does.
+		(new RootSignalsCronJob())->unblockAll();
 		exec('sudo iptables-save && sudo ip6tables-save');
 		$db->query('TRUNCATE `blocked_ips`;');
 		BlocklistChanges::reset('ip', $db);
@@ -295,6 +317,7 @@ class ToolsCommand implements CommandInterface {
 		echo "  mysql       Reauthorise load balancers on MySQL\n";
 		echo "  database    Restore blank XC_VM database (requires --confirm)\n";
 		echo "  flush       Flush all blocked IPs (iptables + database)\n";
+		echo "  twofactor <username>  Turn off a user's two-factor sign-in (lost authenticator)\n";
 	}
 
 	private function processRecaptcha(): int {
@@ -352,7 +375,7 @@ class ToolsCommand implements CommandInterface {
 						$rListen[] = 'listen ' . intval($rPort) . ';';
 					}
 				}
-				file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/http.conf', implode(' ', $rListen));
+				NginxPortsFile::write(MAIN_HOME . 'bin/nginx/conf/ports/http.conf', implode(' ', $rListen));
 				file_put_contents(MAIN_HOME . 'bin/nginx_rtmp/conf/live.conf', 'on_play http://127.0.0.1:' . intval($rPorts[0]) . '/stream/rtmp; on_publish http://127.0.0.1:' . intval($rPorts[0]) . '/stream/rtmp; on_play_done http://127.0.0.1:' . intval($rPorts[0]) . '/stream/rtmp;');
 			} elseif ($rKey === 'https') {
 				$rListen = [];
@@ -361,7 +384,7 @@ class ToolsCommand implements CommandInterface {
 						$rListen[] = 'listen ' . intval($rPort) . ' ssl;';
 					}
 				}
-				file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/https.conf', implode(' ', $rListen));
+				NginxPortsFile::write(MAIN_HOME . 'bin/nginx/conf/ports/https.conf', implode(' ', $rListen));
 			} elseif ($rKey === 'rtmp') {
 				file_put_contents(MAIN_HOME . 'bin/nginx_rtmp/conf/port.conf', 'listen ' . intval($rPorts) . ';');
 			}
@@ -383,6 +406,24 @@ class ToolsCommand implements CommandInterface {
 	}
 
 	private function processImages(): void {
+		if (NodeRole::refusesConnects()) {
+			$rImages = [];
+			if (!ReplicaStreamCache::owned()) {
+				echo "Image restoration waits for the local stream replica.\n";
+				return;
+			}
+			foreach (ReplicaStreamCache::index() as $rID => $_) {
+				$rStream = ReplicaStreamCache::get((int) $rID)['stream'] ?? [];
+				$rProperties = json_decode((string) ($rStream['movie_properties'] ?? ''), true);
+				foreach ([$rStream['stream_icon'] ?? null, $rProperties['movie_image'] ?? null, $rProperties['cover_big'] ?? null, $rProperties['backdrop_path'][0] ?? null] as $rImage) {
+					if (is_string($rImage) && str_starts_with($rImage, 's:')) {
+						$rImages[] = $rImage;
+					}
+				}
+			}
+			$this->restoreImageReferences($rImages);
+			return;
+		}
 		$db = self::db();
 		$rImages = [];
 		$db->query('SELECT COUNT(*) AS `count` FROM `streams`;');
@@ -440,6 +481,11 @@ class ToolsCommand implements CommandInterface {
 				}
 			}
 		}
+		$this->restoreImageReferences($rImages);
+	}
+
+	/** @param list<string> $rImages */
+	private function restoreImageReferences(array $rImages): void {
 		$rImages = array_unique($rImages);
 		foreach ($rImages as $rImage) {
 			$rSplit = explode(':', $rImage, 3);
@@ -484,45 +530,65 @@ class ToolsCommand implements CommandInterface {
 
 	private function processBouquets(): void {
 		$db = self::db();
-		$rStreamIDs = [[], []];
-		$db->query('SELECT `id` FROM `streams`;');
-		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() as $rRow) {
-				$rStreamIDs[0][] = intval($rRow['id']);
-			}
+		// Every delete starts a scan, and each holds every bouquet in turn: one scan runs and one waits for it
+		// (five minutes, then it goes on, as a writer does in BouquetService::lock()). A scan that finds one
+		// waiting leaves it the work: that one starts later than this one was asked for.
+		if ($db->query("SELECT GET_LOCK(CONCAT(DATABASE(), '.bouquet_scan_next'), 0);") && (string) $db->get_col() === '0') {
+			return;
 		}
-		$db->query('SELECT `id` FROM `streams_series`;');
-		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() as $rRow) {
-				$rStreamIDs[1][] = intval($rRow['id']);
+		$db->query("SELECT GET_LOCK(CONCAT(DATABASE(), '.bouquet_scan'), 300);");
+		$db->query("SELECT RELEASE_LOCK(CONCAT(DATABASE(), '.bouquet_scan_next'));");
+		try {
+			$rColumns = ['bouquet_channels', 'bouquet_movies', 'bouquet_radios', 'bouquet_series'];
+			$db->query('SELECT `id` FROM `bouquets` ORDER BY `bouquet_order` ASC;');
+			foreach (($db->get_rows() ?: []) as $rRow) {
+				// The lists are read and written back whole: the bouquet is held from the read to the write (BouquetService::lock()).
+				BouquetService::lock(intval($rRow['id']));
+				try {
+					$rBouquet = BouquetService::getById(intval($rRow['id']));
+					if (!$rBouquet) {
+						continue;
+					}
+					$rLists = [];
+					foreach ($rColumns as $rColumn) {
+						$rLists[$rColumn] = [];
+						$rIDs = json_decode((string) $rBouquet[$rColumn], true);
+						foreach ((is_array($rIDs) ? $rIDs : []) as $rID) {
+							if (0 < intval($rID)) {
+								$rLists[$rColumn][] = intval($rID);
+							}
+						}
+					}
+					// What exists is asked with the bouquet held: an item made since the scan began is in its list by now, and stays.
+					// ponytail: so the bouquet is held as long as the lookup takes, eight of lock()'s ten seconds at a million ids. Ask before taking it and re-ask only the ids that came since, if a bouquet ever grows near that.
+					$rExisting = [];
+					foreach (['streams' => array_merge($rLists['bouquet_channels'], $rLists['bouquet_movies'], $rLists['bouquet_radios']), 'streams_series' => $rLists['bouquet_series']] as $rTable => $rIDs) {
+						$rExisting[$rTable] = [];
+						if (0 < count($rIDs)) {
+							if (!$db->query('SELECT `id` FROM `' . $rTable . '` WHERE `id` IN (' . implode(',', $rIDs) . ');')) {
+								// What exists is not known: the bouquet stays as it is.
+								continue 2;
+							}
+							foreach (($db->get_rows() ?: []) as $rFound) {
+								$rExisting[$rTable][intval($rFound['id'])] = true;
+							}
+						}
+					}
+					$UpdateData = [];
+					foreach ($rColumns as $rColumn) {
+						$rExist = $rExisting[$rColumn == 'bouquet_series' ? 'streams_series' : 'streams'];
+						$UpdateData[] = json_encode(array_values(array_filter($rLists[$rColumn], static fn(int $rID): bool => isset($rExist[$rID]))));
+					}
+					// Written only when a list changes.
+					if ($UpdateData !== [$rBouquet['bouquet_channels'], $rBouquet['bouquet_movies'], $rBouquet['bouquet_radios'], $rBouquet['bouquet_series']]) {
+						$db->query('UPDATE `bouquets` SET `bouquet_channels` = ?, `bouquet_movies` = ?, `bouquet_radios` = ?, `bouquet_series` = ? WHERE `id` = ?;', $UpdateData[0], $UpdateData[1], $UpdateData[2], $UpdateData[3], $rBouquet['id']);
+					}
+				} finally {
+					BouquetService::unlock(intval($rRow['id']));
+				}
 			}
-		}
-		$db->query('SELECT * FROM `bouquets` ORDER BY `bouquet_order` ASC;');
-		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() as $rBouquet) {
-				$UpdateData = [[], [], [], []];
-				foreach ((json_decode($rBouquet['bouquet_channels'], true) ?: []) as $rID) {
-					if (0 < intval($rID) && in_array(intval($rID), $rStreamIDs[0])) {
-						$UpdateData[0][] = intval($rID);
-					}
-				}
-				foreach ((json_decode($rBouquet['bouquet_movies'], true) ?: []) as $rID) {
-					if (0 < intval($rID) && in_array(intval($rID), $rStreamIDs[0])) {
-						$UpdateData[1][] = intval($rID);
-					}
-				}
-				foreach ((json_decode($rBouquet['bouquet_radios'], true) ?: []) as $rID) {
-					if (0 < intval($rID) && in_array(intval($rID), $rStreamIDs[0])) {
-						$UpdateData[2][] = intval($rID);
-					}
-				}
-				foreach ((json_decode($rBouquet['bouquet_series'], true) ?: []) as $rID) {
-					if (0 < intval($rID) && in_array(intval($rID), $rStreamIDs[1])) {
-						$UpdateData[3][] = intval($rID);
-					}
-				}
-				$db->query('UPDATE `bouquets` SET `bouquet_channels` = ?, `bouquet_movies` = ?, `bouquet_radios` = ?, `bouquet_series` = ? WHERE `id` = ?;', json_encode(array_map('intval', $UpdateData[0])), json_encode(array_map('intval', $UpdateData[1])), json_encode(array_map('intval', $UpdateData[2])), json_encode(array_map('intval', $UpdateData[3])), $rBouquet['id']);
-			}
+		} finally {
+			$db->query("SELECT RELEASE_LOCK(CONCAT(DATABASE(), '.bouquet_scan'));");
 		}
 	}
 
@@ -536,6 +602,7 @@ class ToolsCommand implements CommandInterface {
 		$db->query('DELETE FROM `streams_logs` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `streams_options` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `streams_stats` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
+		$db->query('DELETE FROM `watch_refresh` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 		EventDispatcher::dispatch(new StreamsDeletedEvent($rIDs));
 		$db->query('DELETE FROM `lines_live` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `recordings` WHERE `created_id` IN (' . implode(',', $rIDs) . ') OR `stream_id` IN (' . implode(',', $rIDs) . ');');

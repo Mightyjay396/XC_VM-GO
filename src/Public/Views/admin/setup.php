@@ -4,6 +4,7 @@ use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Auth\SessionManager;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Http\RequestManager;
@@ -11,6 +12,8 @@ use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Localization\Translator;
+use XcVm\Cli\Commands\MigrateCommand;
+use XcVm\Domain\Server\SettingsService;
 use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
 
@@ -39,7 +42,7 @@ if (!RequestManager::has('update')):
     if (file_exists(TMP_PATH . '.migration.status') && file_exists(TMP_PATH . '.migration.pid')) {
         $rPID = file_get_contents(TMP_PATH . '.migration.pid');
 
-        if (file_exists('/proc/' . $rPID)) {
+        if (MigrateCommand::isRunning((int) $rPID)) {
             $rMigrating = true;
         }
     }
@@ -56,13 +59,15 @@ if (!RequestManager::has('update')):
         if (count($rMigrateOptions) != 0) {
             if (file_exists(TMP_PATH . '.migration.pid')) {
                 $rPID = intval(file_get_contents(TMP_PATH . '.migration.pid'));
-                exec('kill -9 ' . $rPID);
+                if (MigrateCommand::isRunning($rPID)) {
+                    posix_kill($rPID, SIGKILL);
+                }
             }
 
             file_put_contents(TMP_PATH . '.migration.options', json_encode($rMigrateOptions));
-            unlink(TMP_PATH . '.migration.status');
-            unlink(TMP_PATH . '.migration.pid');
-            unlink(TMP_PATH . '.migration.log');
+            @unlink(TMP_PATH . '.migration.status');
+            @unlink(TMP_PATH . '.migration.pid');
+            @unlink(TMP_PATH . '.migration.log');
             shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php migrate > ' . TMP_PATH . '.migration.log 2>&1 &');
             $rMigrating = true;
         } else {
@@ -95,6 +100,13 @@ if (!RequestManager::has('update')):
                     $_SESSION['verify'] = md5($rArray['username'] . '||' . $rArray['password']);
                     $db->query('UPDATE `servers` SET `server_ip` = ? WHERE `is_main` = 1 AND `server_type` = 0 LIMIT 1;', $_SERVER['SERVER_ADDR']);
                     $db->query('UPDATE `settings` SET `live_streaming_pass` = ? WHERE `id` = 1', AdminHelpers::generateString(25));
+                    // The panel's language, timezone, name and message of the day, from the same form.
+                    $rBasics = SettingsService::firstRunValues(RequestManager::getAll());
+                    if ($rBasics !== []) {
+                        $rPrepare = QueryHelper::prepareArray($rBasics);
+                        $db->query('UPDATE `settings` SET ' . $rPrepare['update'] . ' WHERE `id` = 1;', ...$rPrepare['data']);
+                        SettingsManager::clearCache();
+                    }
 
                     if ($_SESSION['code'] == 'setup') {
                         header('Location: ./codes');
@@ -123,9 +135,9 @@ if (!RequestManager::has('update')):
         $odb->query("SHOW TABLES LIKE 'access_codes';");
 
         if ($odb->num_rows() > 0) {
-            $rCount = array('access_codes' => array('Access Codes', 0), 'users' => array('Users & Resellers', 0), 'blocked_ips' => array('Blocked IP Addresses', 0), 'blocked_uas' => array('Blocked User-Agents', 0), 'blocked_isps' => array("Blocked ISP's", 0), 'bouquets' => array('Bouquets', 0), 'enigma2_devices' => array('Device Info - Engima2', 0), 'mag_devices' => array('Device Info - MAG', 0), 'epg' => array('EPG Providers ', 0), 'users_groups' => array('User Groups', 0), 'users_packages' => array('User Packages', 0), 'rtmp_ips' => array("RTMP IP's", 0), 'streams_series' => array('TV Series', 0), 'streams_episodes' => array('TV Episodes', 0), 'servers' => array('Servers - Load Balancers', 0), 'streams' => array('Streams - Live, Radio, Created & VOD', 0), 'streams_options' => array('Stream Options', 0), 'streams_servers' => array('Stream Servers', 0), 'streams_categories' => array('Stream Categories', 0), 'tickets' => array('Tickets', 0), 'tickets_replies' => array('Ticket Replies', 0), 'profiles' => array('Transcoding Profile', 0), 'providers' => array('Streaming Providers', 0), 'lines' => array('Lines - Standard, MAG & Enigma2 Devices', 0), 'watch_folders' => array('Watch Folders', 0));
+            $rCount = array('access_codes' => array('Access Codes', 0), 'users' => array('Users & Resellers', 0), 'blocked_ips' => array('Blocked IP Addresses', 0), 'blocked_uas' => array('Blocked User-Agents', 0), 'blocked_isps' => array("Blocked ISP's", 0), 'bouquets' => array('Bouquets', 0), 'enigma2_devices' => array('Device Info - Engima2', 0), 'mag_devices' => array('Device Info - MAG', 0), 'epg' => array('EPG Providers ', 0), 'users_groups' => array('User Groups', 0), 'users_packages' => array('User Packages', 0), 'rtmp_ips' => array("RTMP IP's", 0), 'streams_series' => array('TV Series', 0), 'streams_episodes' => array('TV Episodes', 0), 'servers' => array('Servers - Load Balancers', 0), 'streams' => array('Streams - Live, Radio, Created & VOD', 0), 'streams_options' => array('Stream Options', 0), 'streams_servers' => array('Stream Servers', 0), 'streams_categories' => array('Stream Categories', 0), 'tickets' => array('Tickets', 0), 'tickets_replies' => array('Ticket Replies', 0), 'profiles' => array('Transcoding Profile', 0), 'providers' => array('Streaming Providers', 0), 'lines' => array('Lines - Standard, MAG & Enigma2 Devices', 0));
         } else {
-            $rCount = array('reg_users' => array('Users & Resellers', 0), 'users' => array('Lines - Standard, MAG & Enigma2 Devices', 0), 'enigma2_devices' => array('Device Info - Engima2', 0), 'mag_devices' => array('Device Info - MAG', 0), 'user_output' => array('Line Output - HLS, MPEG-TS & RTMP', 0), 'streaming_servers' => array('Servers - Load Balancers', 0), 'series' => array('TV Series', 0), 'series_episodes' => array('TV Episodes', 0), 'streams' => array('Streams - Live, Radio, Created & VOD', 0), 'streams_sys' => array('Stream Servers', 0), 'streams_options' => array('Stream Options', 0), 'stream_categories' => array('Stream Categories', 0), 'bouquets' => array('Bouquets', 0), 'member_groups' => array('Member Groups', 0), 'packages' => array('Reseller Packages', 0), 'rtmp_ips' => array("RTMP IP's", 0), 'epg' => array('EPG Providers ', 0), 'blocked_ips' => array('Blocked IP Addresses', 0), 'blocked_user_agents' => array('Blocked User-Agents', 0), 'isp_addon' => array("Blocked ISP's", 0), 'tickets' => array('Tickets', 0), 'tickets_replies' => array('Ticket Replies', 0), 'transcoding_profiles' => array('Transcoding Profile', 0), 'watch_folders' => array('Watch Folders', 0), 'members' => array('Users & Resellers', 0), 'epg_sources' => array('EPG Providers', 0), 'blocked_isps' => array("Blocked ISP's", 0), 'categories' => array('Stream Categories', 0), 'groups' => array('Member Groups', 0), 'servers' => array('Servers - Load Balancers', 0), 'stream_servers' => array('Stream Servers', 0));
+            $rCount = array('reg_users' => array('Users & Resellers', 0), 'users' => array('Lines - Standard, MAG & Enigma2 Devices', 0), 'enigma2_devices' => array('Device Info - Engima2', 0), 'mag_devices' => array('Device Info - MAG', 0), 'user_output' => array('Line Output - HLS, MPEG-TS & RTMP', 0), 'streaming_servers' => array('Servers - Load Balancers', 0), 'series' => array('TV Series', 0), 'series_episodes' => array('TV Episodes', 0), 'streams' => array('Streams - Live, Radio, Created & VOD', 0), 'streams_sys' => array('Stream Servers', 0), 'streams_options' => array('Stream Options', 0), 'stream_categories' => array('Stream Categories', 0), 'bouquets' => array('Bouquets', 0), 'member_groups' => array('Member Groups', 0), 'packages' => array('Reseller Packages', 0), 'rtmp_ips' => array("RTMP IP's", 0), 'epg' => array('EPG Providers ', 0), 'blocked_ips' => array('Blocked IP Addresses', 0), 'blocked_user_agents' => array('Blocked User-Agents', 0), 'isp_addon' => array("Blocked ISP's", 0), 'tickets' => array('Tickets', 0), 'tickets_replies' => array('Ticket Replies', 0), 'transcoding_profiles' => array('Transcoding Profile', 0), 'members' => array('Users & Resellers', 0), 'epg_sources' => array('EPG Providers', 0), 'blocked_isps' => array("Blocked ISP's", 0), 'categories' => array('Stream Categories', 0), 'groups' => array('Member Groups', 0), 'servers' => array('Servers - Load Balancers', 0), 'stream_servers' => array('Stream Servers', 0));
         }
 
         foreach (array_keys($rCount) as $rTable) {
@@ -145,6 +157,22 @@ if (!RequestManager::has('update')):
             $rTotalCount += $rItemCount[1];
         }
         ksort($rCount);
+    }
+
+    // Backup tables the core does not own (MigrateCommand::moduleTables()): the
+    // migration saves them to Modules/migration/ for their modules. Listed so
+    // the operator knows before migrating.
+    $rModuleTables = [];
+    if (!$rMigrating && $rMigrateConnection) {
+        $odb->query('SHOW TABLES;');
+        $rBackupTables = array_map(static fn(array $rRow): string => (string) reset($rRow), $odb->get_rows());
+        foreach (MigrateCommand::moduleTables($rBackupTables, MigrateCommand::coreSchemaTables()) as $rTable) {
+            $odb->query('SELECT COUNT(*) AS `count` FROM `' . str_replace('`', '', $rTable) . '`;');
+            $rRows = (int) ($odb->get_row()['count'] ?? 0);
+            if ($rRows > 0) {
+                $rModuleTables[$rTable] = $rRows;
+            }
+        }
     }
 
     if (!($rFirstRun || PageAuthorization::checkPermissions())) {
@@ -202,6 +230,42 @@ if (!RequestManager::has('update')):
                                 <input type="text" class="form-control" id="email" name="email" value="">
                             </div>
                         </div>
+                        <hr class="my-4">
+                        <?php // The panel's basics, prefilled with what is stored: sent unchanged, nothing changes. ?>
+                        <div class="row mb-3">
+                            <label class="col-md-4 col-form-label" for="server_name"><?= $language::get('server_name') ?></label>
+                            <div class="col-md-8">
+                                <input type="text" class="form-control" id="server_name" name="server_name" maxlength="255"
+                                    value="<?= htmlspecialchars((string) ($rSettings['server_name'] ?? ''), ENT_QUOTES) ?>">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <label class="col-md-4 col-form-label" for="language"><?= $language::get('interface_language') ?></label>
+                            <div class="col-md-8">
+                                <select class="form-select" id="language" name="language">
+                                    <?php foreach (Translator::available() as $rLangCode): ?>
+                                        <option value="<?= htmlspecialchars($rLangCode, ENT_QUOTES) ?>" <?= ($rSettings['language'] ?? 'en') === $rLangCode ? 'selected' : '' ?>><?= htmlspecialchars(Translator::displayName($rLangCode)) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <label class="col-md-4 col-form-label" for="default_timezone"><?= $language::get('server_timezone') ?></label>
+                            <div class="col-md-8">
+                                <select class="form-select" id="default_timezone" name="default_timezone">
+                                    <?php foreach (AdminHelpers::TimeZoneList() as $rZone): ?>
+                                        <option value="<?= htmlspecialchars($rZone['zone'], ENT_QUOTES) ?>" <?= ($rSettings['default_timezone'] ?? '') === $rZone['zone'] ? 'selected' : '' ?>><?= htmlspecialchars($rZone['zone'] . ' ' . $rZone['diff_from_GMT']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <label class="col-md-4 col-form-label" for="message_of_day"><?= $language::get('message_of_the_day') ?></label>
+                            <div class="col-md-8">
+                                <input type="text" class="form-control" id="message_of_day" name="message_of_day" maxlength="2000"
+                                    value="<?= htmlspecialchars((string) ($rSettings['message_of_day'] ?? ''), ENT_QUOTES) ?>">
+                            </div>
+                        </div>
                         <div class="text-end">
                             <input name="new_user" type="submit" class="btn btn-primary" value="<?= htmlspecialchars($language::get('create'), ENT_QUOTES) ?>" />
                         </div>
@@ -246,6 +310,16 @@ if (!RequestManager::has('update')):
                                 </table>
                             </div>
                         <?php endif; ?>
+                        <?php if (!empty($rModuleTables)) { ?>
+                            <div class="alert alert-info" role="alert">
+                                <?= $language::get('setup_module_tables_intro') ?>
+                                <ul class="mb-0 mt-2">
+                                    <?php foreach ($rModuleTables as $rTable => $rRows) { ?>
+                                        <li><code><?= htmlspecialchars($rTable, ENT_QUOTES) ?></code> — <?= number_format($rRows, 0, '.', ' ') ?></li>
+                                    <?php } ?>
+                                </ul>
+                            </div>
+                        <?php } ?>
                         <div class="d-flex justify-content-between align-items-center">
                             <?php if ($rFirstRun) { ?>
                                 <a href="./setup?new"><button name="dont_migrate" class="btn btn-danger"
@@ -314,10 +388,10 @@ else:
         }
 
         if ($rStatus == 2) {
-            unlink(TMP_PATH . '.migration.options');
-            unlink(TMP_PATH . '.migration.status');
-            unlink(TMP_PATH . '.migration.pid');
-            unlink(TMP_PATH . '.migration.log');
+            @unlink(TMP_PATH . '.migration.options');
+            @unlink(TMP_PATH . '.migration.status');
+            @unlink(TMP_PATH . '.migration.pid');
+            @unlink(TMP_PATH . '.migration.log');
         }
 
         echo json_encode(array('result' => true, 'status' => $rStatus, 'data' =>

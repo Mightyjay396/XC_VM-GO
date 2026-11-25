@@ -11,6 +11,7 @@ use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Cluster\StreamAssign;
+use XcVm\Domain\Epg\CreatedChannelEpg;
 use XcVm\Domain\Vod\SeriesService;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -34,11 +35,15 @@ class ChannelService {
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
 	public static function process(array $rData) {
+		$rData = Authorization::dropFfmpegArguments($rData);
 		global $rSettings;
 		$db = self::db();
 		if (isset($rData['edit'])) {
 			if (Authorization::check('adv', 'edit_cchannel')) {
-				$rArray = AdminHelpers::overwriteData(StreamRepository::getById($rData['edit']), $rData);
+				// The edit starts from the stream as stored: the row cleaner's
+				// escaping would be written back into every field not sent.
+				$db->query('SELECT * FROM `streams` WHERE `id` = ?;', intval($rData['edit']));
+				$rArray = AdminHelpers::overwriteData($db->get_raw_row(), $rData);
 			} else {
 				exit();
 			}
@@ -96,7 +101,7 @@ class ChannelService {
 		if (0 < count($rArray['stream_source'])) {
 			$rBouquetCreate = [];
 
-			foreach (json_decode($rData['bouquet_create_list'], true) as $rBouquet) {
+			foreach (json_decode((string) ($rData['bouquet_create_list'] ?? ''), true) ?: [] as $rBouquet) {
 				$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 				$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
@@ -107,7 +112,7 @@ class ChannelService {
 			}
 			$rCategoryCreate = [];
 
-			foreach (json_decode($rData['category_create_list'], true) as $rCategory) {
+			foreach (json_decode((string) ($rData['category_create_list'] ?? ''), true) ?: [] as $rCategory) {
 				$rPrepare = QueryHelper::prepareArray(['category_type' => 'live', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 				$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
@@ -148,11 +153,18 @@ class ChannelService {
 				$rArray['order'] = StreamRepository::getNextOrder();
 			}
 
+			// NULL (not 0) when the reserved source is missing: 0 would never match a
+			// real AUTO_INCREMENT id, but NULL reads as "no EPG source" everywhere.
+			$rReservedEpg = CreatedChannelEpg::reservedSourceId();
+			$rArray['epg_id'] = $rReservedEpg > 0 ? $rReservedEpg : null;
+
 			$rPrepare = QueryHelper::prepareArray($rArray);
 			$rQuery = 'REPLACE INTO `streams`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 			if ($db->query($rQuery, ...$rPrepare['data'])) {
 				$rInsertID = $db->last_insert_id();
+				// The id of a new channel is only known after the insert.
+				$db->query('UPDATE `streams` SET `channel_id` = ? WHERE `id` = ?;', 'created_' . $rInsertID, $rInsertID);
 				$rStreamExists = [];
 
 				if (isset($rData['edit'])) {
@@ -197,7 +209,7 @@ class ChannelService {
 				}
 
 				if ($rRestart) {
-					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID]]);
+					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID], 'async' => true]);
 				}
 
 				foreach ($rBouquets as $rBouquet) {
@@ -407,7 +419,7 @@ class ChannelService {
 				ApiClient::request(['action' => 'stream', 'sub' => 'stop', 'stream_ids' => array_values($rStreamIDs)]);
 			} else {
 				if (isset($rData['restart_on_edit'])) {
-					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)]);
+					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs), 'async' => true]);
 				}
 			}
 		}

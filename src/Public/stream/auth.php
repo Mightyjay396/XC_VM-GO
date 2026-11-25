@@ -11,10 +11,10 @@ use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Cluster\ConnectionAdmission;
 use XcVm\Domain\Security\BlocklistService;
-use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Infrastructure\Cache\CacheReader;
 use XcVm\Infrastructure\Signal\SignalQueue;
-use XcVm\Streaming\Balancer\ProxySelector;
+use XcVm\Streaming\Auth\StreamAuthMiddleware;
 use XcVm\Streaming\Delivery\OffAirHandler;
 use XcVm\Streaming\Delivery\StreamRedirector;
 
@@ -117,11 +117,18 @@ if (isset($_GET['token']) && !ctype_xdigit($_GET['token'])) {
 if (isset($_GET['utc'])) {
 	$_GET['type'] = 'timeshift';
 	$_GET['start'] = $_GET['utc'];
-	$_GET['duration'] = 3600 * 6;
+	// Six hours from that start, in the minutes a duration is counted in.
+	$_GET['duration'] = 360;
 	unset($_GET['utc']);
 }
 
 $rType = (isset($_GET['type']) ? $_GET['type'] : 'live');
+
+// A stream and its extension are plain values: one sent as a list names no stream.
+if (is_array($_GET['stream'] ?? null) || is_array($_GET['extension'] ?? null)) {
+	generateError('INVALID_STREAM_ID');
+}
+
 $rStreamID = intval($_GET['stream']);
 $rExtension = (isset($_GET['extension']) ? strtolower(preg_replace('/[^A-Za-z0-9 ]/', '', trim($_GET['extension']))) : null);
 if (!$rExtension && in_array($rType, ['movie', 'series', 'subtitle'])) {
@@ -147,14 +154,14 @@ if ($rExtension) {
 				generateError('INVALID_CREDENTIALS');
 			}
 		} else {
-			if ((isset($_GET['username']) && isset($_GET['password']))) {
-				if ($rSettings['case_sensitive_line']) {
-					$rPath = LINES_TMP_PATH . 'line_c_' . $_GET['username'] . '_' . $_GET['password'];
-				} else {
-					$rPath = LINES_TMP_PATH . 'line_c_' . strtolower($_GET['username']) . '_' . strtolower($_GET['password']);
-				}
-
-				if (!file_exists($rPath)) {
+			// Only a plain name and password can be a cached line's: a list is left to the lookup's own read below.
+			if (is_string($_GET['username'] ?? null) && is_string($_GET['password'] ?? null)) {
+				// The lookup's name (UserRepository::credentialKey()), or the one it had
+				// before, until the next cache pass has renamed every line's.
+				$rSensitive = !empty($rSettings['case_sensitive_line']);
+				if (!file_exists(LINES_TMP_PATH . 'line_c_' . UserRepository::credentialKey($rSensitive, $_GET['username'], $_GET['password']))
+					&& !file_exists(LINES_TMP_PATH . 'line_c_' . UserRepository::legacyCredentialKey($rSensitive, $_GET['username'], $_GET['password']))
+				) {
 					generateError('INVALID_CREDENTIALS');
 				}
 			}
@@ -193,7 +200,7 @@ if ($rExtension) {
 						$rAvailableServers[] = $rServerID;
 					}
 				} else {
-					if ((($serverStream['on_demand'] == 1 && $serverStream['stream_status'] != 1) || ((int) $serverStream['pid'] > 0 && $serverStream['stream_status'] == 0)) && $serverStream['to_analyze'] == 0 && (int) $serverStream['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || ($rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1)) {
+					if ((($serverStream['on_demand'] == 1) || ((int) $serverStream['pid'] > 0 && $serverStream['stream_status'] == 0)) && $serverStream['to_analyze'] == 0 && (int) $serverStream['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || ($rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1)) {
 						$rAvailableServers[] = $rServerID;
 					}
 				}
@@ -237,7 +244,8 @@ if ($rExtension) {
 	$rUserAgent = (empty($_SERVER['HTTP_USER_AGENT']) ? '' : htmlentities(trim($_SERVER['HTTP_USER_AGENT'])));
 	$rDeny = true;
 	$rExternalDevice = null;
-	$rActivityStart = time();
+	// MAIN's clock, as every server that checks the token reads it (StreamAuthMiddleware::mainNow()).
+	$rActivityStart = StreamAuthMiddleware::mainNow($rServers);
 
 	if (!isset($rExpiry)) {
 		$rExpiry = null;
@@ -245,6 +253,13 @@ if ($rExtension) {
 
 	if (isset($rRequest['token'])) {
 		$rAccessToken = $rRequest['token'];
+
+		// A line's token is a plain value: one sent as a list is no line's.
+		if (is_array($rAccessToken)) {
+			generateError('INVALID_CREDENTIALS');
+		}
+
+		$rBouquets ??= CacheReader::get('bouquets') ?: [];
 		$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rAccessToken, null, false, false, $rIP);
 	} else {
 		if (isset($rRequest['hmac'])) {
@@ -256,7 +271,13 @@ if ($rExtension) {
 			$rIdentifier = (empty($rRequest['identifier']) ? '' : $rRequest['identifier']);
 			$rHMACIP = (empty($rRequest['ip']) ? '' : $rRequest['ip']);
 			$rMaxConnections = (isset($rRequest['max']) ? intval($rRequest['max']) : 0);
-			$rExpiry = (isset($rRequest['expiry']) ? $rRequest['expiry'] : null);
+			$rExpiry = (isset($rRequest['expiry']) ? $rRequest['expiry'] : '');
+
+			// The signature is over plain values (a link without an expiry signs
+			// an empty one): a parameter sent as a list is not one of them.
+			if (!is_string($rRequest['hmac']) || !is_string($rIdentifier) || !is_string($rHMACIP) || !is_string($rExpiry)) {
+				generateError('INVALID_CREDENTIALS');
+			}
 
 			if (($rExpiry && $rExpiry < time())) {
 				$rDeny = false;
@@ -279,6 +300,13 @@ if ($rExtension) {
 		} else {
 			$rUsername = $rRequest['username'];
 			$rPassword = $rRequest['password'];
+
+			// A line's name and password are plain values: one sent as a list is no line's.
+			if (is_array($rUsername) || is_array($rPassword)) {
+				generateError('INVALID_CREDENTIALS');
+			}
+
+			$rBouquets ??= CacheReader::get('bouquets') ?: [];
 			$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rUsername, $rPassword, false, false, $rIP);
 		}
 	}
@@ -482,7 +510,7 @@ if ($rExtension) {
 			}
 		}
 	} else {
-		BruteforceGuard::checkBruteforce($rIP, null, $rUsername);
+		BruteforceGuard::checkBruteforce($rIP, null, $rUsername, false, $rPassword ?? null);
 		DatabaseLogger::clientLog($rStreamID, 0, 'AUTH_FAILED', $rIP);
 		generateError('INVALID_CREDENTIALS');
 	}
@@ -506,14 +534,7 @@ if ($rExtension) {
 					generateError('NO_SERVERS_AVAILABLE');
 				}
 
-				if (($rServers[$rChannelInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))) {
-					$rProxies = ConnectionTracker::getProxies($rChannelInfo['redirect_id']);
-					$rProxyID = ProxySelector::availableProxy(array_keys($rProxies), $rCountryCode, $rUserInfo['con_isp_name']);
-
-					if (!$rProxyID) {
-						generateError('NO_SERVERS_AVAILABLE');
-					}
-
+				if (($rProxyID = \XcVm\Streaming\Routing\PlaybackRouter::select((int) ($rChannelInfo['redirect_id']), (int) ($rUserInfo['id'] ?? 0), (bool) (($rServers[$rChannelInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))), (string) $rCountryCode, (string) ($rUserInfo['con_isp_name'] ?? ''))) !== null) {
 					$rChannelInfo['originator_id'] = $rChannelInfo['redirect_id'];
 					$rChannelInfo['redirect_id'] = $rProxyID;
 				}
@@ -544,13 +565,12 @@ if ($rExtension) {
 										continue; // a variant with no server to serve it is left out of the master
 									}
 
-									if (($rServers[$rAdaptiveInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))) {
-										$rProxies = ConnectionTracker::getProxies($rAdaptiveInfo['redirect_id']);
-										$rProxyID = ProxySelector::availableProxy(array_keys($rProxies), $rCountryCode, $rUserInfo['con_isp_name']);
-										if (!$rProxyID) {
-											continue;
-										}
-
+									$rLegacyProxy = (bool) ($rServers[$rAdaptiveInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']));
+									$rProxyID = \XcVm\Streaming\Routing\PlaybackRouter::select((int) $rAdaptiveInfo['redirect_id'], (int) ($rUserInfo['id'] ?? 0), $rLegacyProxy, (string) $rCountryCode, (string) ($rUserInfo['con_isp_name'] ?? ''), null);
+									if ($rLegacyProxy && !\XcVm\Streaming\Routing\PlaybackRouter::active() && $rProxyID === null) {
+										continue;
+									}
+									if ($rProxyID !== null) {
 										$rAdaptiveInfo['originator_id'] = $rAdaptiveInfo['redirect_id'];
 										$rAdaptiveInfo['redirect_id'] = $rProxyID;
 									}
@@ -569,13 +589,14 @@ if ($rExtension) {
 									$rTokenData = ['stream_id' => $rAdaptiveID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'channel_info' => ['redirect_id' => $rAdaptiveInfo['redirect_id'], 'originator_id' => ($rAdaptiveInfo['originator_id'] ?? null), 'pid' => $rAdaptiveInfo['pid'], 'on_demand' => $rAdaptiveInfo['on_demand'], 'monitor_pid' => $rAdaptiveInfo['monitor_pid']], 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => ($rStreamInfo['codecs']['video']['codec_name'] ?? 'h264'), 'uuid' => $rUUID, 'adaptive' => [$rChannelInfo['redirect_id'], $rStreamID]];
 									$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
 									$rStreamURL = (string) $rURL . '/auth/' . ViewerKey::mint(json_encode($rTokenData), $rServers, (int) (($rAdaptiveInfo['originator_id'] ?? 0) ?: $rAdaptiveInfo['redirect_id']), $rSettings);
-									$rParts[$rBitrate] = '#EXT-X-STREAM-INF:BANDWIDTH=' . $rBitrate . ',RESOLUTION=' . $rWidth . 'x' . $rHeight . "\n" . $rStreamURL;
+									// A list per bitrate: two variants of the same bitrate both stay in.
+									$rParts[$rBitrate][] = '#EXT-X-STREAM-INF:BANDWIDTH=' . $rBitrate . ',RESOLUTION=' . $rWidth . 'x' . $rHeight . "\n" . $rStreamURL;
 								}
 							}
 
 							if (0 < count($rParts)) {
 								krsort($rParts);
-								$rM3U8 = "#EXTM3U\n" . implode("\n", array_values($rParts));
+								$rM3U8 = "#EXTM3U\n" . implode("\n", array_merge(...array_values($rParts)));
 								ob_end_clean();
 								header('Content-Type: application/x-mpegurl');
 								header('Content-Length: ' . strlen($rM3U8));
@@ -585,7 +606,7 @@ if ($rExtension) {
 								exit();
 							}
 
-							OffAirHandler::showVideoServer('show_not_on_air_video', 'not_on_air_video_path', 'ts', $rUserInfo, $rIP, $rCountryCode, $rUserInfo['con_isp_name'], ($rChannelInfo['originator_id'] ?? $rChannelInfo['redirect_id']), (!empty($rChannelInfo['originator_id']) ? $rChannelInfo['redirect_id'] : null));
+							OffAirHandler::showVideoServer('show_not_on_air_video', 'not_on_air_video_path', $rExtension, $rUserInfo, $rIP, $rCountryCode, $rUserInfo['con_isp_name'], ($rChannelInfo['originator_id'] ?? $rChannelInfo['redirect_id']), (!empty($rChannelInfo['originator_id']) ? $rChannelInfo['redirect_id'] : null));
 
 							exit();
 						} else {
@@ -643,14 +664,7 @@ if ($rExtension) {
 			$rChannelInfo = StreamRedirector::redirectStream($rCached, $rSettings, $rServers, $rStreamID, $rExtension, $rUserInfo, $rCountryCode, $rUserInfo['con_isp_name'], 'movie');
 
 			if ($rChannelInfo) {
-				if (($rServers[$rChannelInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))) {
-					$rProxies = ConnectionTracker::getProxies($rChannelInfo['redirect_id']);
-					$rProxyID = ProxySelector::availableProxy(array_keys($rProxies), $rCountryCode, $rUserInfo['con_isp_name']);
-
-					if (!$rProxyID) {
-						generateError('NO_SERVERS_AVAILABLE');
-					}
-
+				if (($rProxyID = \XcVm\Streaming\Routing\PlaybackRouter::select((int) ($rChannelInfo['redirect_id']), (int) ($rUserInfo['id'] ?? 0), (bool) (($rServers[$rChannelInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))), (string) $rCountryCode, (string) ($rUserInfo['con_isp_name'] ?? ''))) !== null) {
 					$rChannelInfo['originator_id'] = $rChannelInfo['redirect_id'];
 					$rChannelInfo['redirect_id'] = $rProxyID;
 				}
@@ -664,7 +678,7 @@ if ($rExtension) {
 				if (!$rIsHMAC) {
 					$rTokenData = ['stream_id' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'type' => $rType, 'pid' => $rPID, 'channel_info' => ['stream_id' => $rChannelInfo['stream_id'], 'bitrate' => $rChannelInfo['bitrate'], 'target_container' => $rChannelInfo['target_container'], 'redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'proxy' => ($rChannelInfo['direct_proxy'] ? json_decode($rChannelInfo['stream_source'], true)[0] : null)], 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'is_mag' => $rIsMag, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 				} else {
-					$rTokenData = ['stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'type' => $rType, 'pid' => $rPID, 'channel_info' => ['stream_id' => $rChannelInfo['stream_id'], 'bitrate' => $rChannelInfo['bitrate'], 'target_container' => $rChannelInfo['target_container'], 'redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'proxy_source' => ($rChannelInfo['direct_proxy'] ? json_decode($rChannelInfo['stream_source'], true)[0] : null)], 'user_info' => $rUserInfo, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'is_mag' => $rIsMag, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
+					$rTokenData = ['stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'type' => $rType, 'pid' => $rPID, 'channel_info' => ['stream_id' => $rChannelInfo['stream_id'], 'bitrate' => $rChannelInfo['bitrate'], 'target_container' => $rChannelInfo['target_container'], 'redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'proxy' => ($rChannelInfo['direct_proxy'] ? json_decode($rChannelInfo['stream_source'], true)[0] : null)], 'user_info' => $rUserInfo, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'is_mag' => $rIsMag, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 				}
 
 				if (isset($_GET['segment'])) {
@@ -702,21 +716,23 @@ if ($rExtension) {
 			// The archive server's proxies, as for live. (This read $rChannelInfo,
 			// which the timeshift path never sets, so catch-up always bypassed the
 			// proxy — and was refused by an archive server that requires one.)
-			if ((($rServers[$rRedirectID]['enable_proxy'] ?? 0) && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))) {
-				$rProxies = ConnectionTracker::getProxies($rRedirectID);
-				$rProxyID = ProxySelector::availableProxy(array_keys($rProxies), $rCountryCode, $rUserInfo['con_isp_name']);
-
-				if (!$rProxyID) {
-					generateError('NO_SERVERS_AVAILABLE');
-				}
-
+			if (($rProxyID = \XcVm\Streaming\Routing\PlaybackRouter::select((int) ($rRedirectID), (int) ($rUserInfo['id'] ?? 0), (bool) ((($rServers[$rRedirectID]['enable_proxy'] ?? 0) && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))), (string) $rCountryCode, (string) ($rUserInfo['con_isp_name'] ?? ''))) !== null) {
 				$rOriginatorID = $rRedirectID;
 				$rRedirectID = $rProxyID;
 			}
 
 			$rURL = StreamRedirector::getStreamingURL($rSettings, $rServers, $rRedirectID, ($rOriginatorID ?: null), $rForceHTTP, $rUserID);
-			$rStartDate = $rRequest['start'];
-			$rDuration = intval($rRequest['duration']);
+			// `start` goes into the token and the redirect as it came, so only the
+			// three forms timeshift.php reads pass: a unix time, YYYYMMDD-H, Y-m-d:H-i,
+			// with or without seconds.
+			$rStartDate = $rRequest['start'] ?? '';
+			if (!is_string($rStartDate) || !preg_match('/^(\d{1,10}|\d{8}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2}:\d{1,2}-\d{1,2}(?:[:-]\d{1,2})?)$/D', $rStartDate)) {
+				generateError('NO_TIMESTAMP');
+			}
+			// timeshift.php looks for one recording per minute of the duration.
+			// ponytail: one ceiling for every channel, 15 days of minutes; a
+			// channel's own archive length would be the tighter bound.
+			$rDuration = min(intval($rRequest['duration']), 3600 * 6);
 
 			switch ($rExtension) {
 				case 'm3u8':
@@ -743,7 +759,7 @@ if ($rExtension) {
 						generateError('TS_DISABLED');
 					}
 
-					$rActivityStart = time();
+					$rActivityStart = StreamAuthMiddleware::mainNow($rServers);
 					$rTokenData = ['stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 					$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
 					$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) ($rOriginatorID ?: $rRedirectID), $rSettings);
@@ -783,14 +799,7 @@ if ($rExtension) {
 			$rTokenData = ['stream' => $rStreamID, 'expires' => time() + 5];
 			$rOriginatorID = null;
 
-			if (($rServers[$rStreamInfo['info']['vframes_server_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))) {
-				$rProxies = ConnectionTracker::getProxies($rStreamInfo['info']['vframes_server_id']);
-				$rProxyID = ProxySelector::availableProxy(array_keys($rProxies), $rCountryCode, $rUserInfo['con_isp_name']);
-
-				if (!$rProxyID) {
-					generateError('THUMBNAILS_NOT_ENABLED');
-				}
-
+			if (($rProxyID = \XcVm\Streaming\Routing\PlaybackRouter::select((int) ($rStreamInfo['info']['vframes_server_id']), (int) ($rUserInfo['id'] ?? 0), (bool) (($rServers[$rStreamInfo['info']['vframes_server_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))), (string) $rCountryCode, (string) ($rUserInfo['con_isp_name'] ?? ''), 'THUMBNAILS_NOT_ENABLED')) !== null) {
 				$rOriginatorID = $rStreamInfo['info']['vframes_server_id'];
 				$rStreamInfo['info']['vframes_server_id'] = $rProxyID;
 			}
@@ -805,14 +814,7 @@ if ($rExtension) {
 			$rChannelInfo = StreamRedirector::redirectStream($rCached, $rSettings, $rServers, $rStreamID, 'srt', $rUserInfo, $rCountryCode, $rUserInfo['con_isp_name'], 'movie');
 
 			if ($rChannelInfo) {
-				if (($rServers[$rChannelInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))) {
-					$rProxies = ConnectionTracker::getProxies($rChannelInfo['redirect_id']);
-					$rProxyID = ProxySelector::availableProxy(array_keys($rProxies), $rCountryCode, $rUserInfo['con_isp_name']);
-
-					if (!$rProxyID) {
-						generateError('NO_SERVERS_AVAILABLE');
-					}
-
+				if (($rProxyID = \XcVm\Streaming\Routing\PlaybackRouter::select((int) ($rChannelInfo['redirect_id']), (int) ($rUserInfo['id'] ?? 0), (bool) (($rServers[$rChannelInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))), (string) $rCountryCode, (string) ($rUserInfo['con_isp_name'] ?? ''))) !== null) {
 					$rChannelInfo['originator_id'] = $rChannelInfo['redirect_id'];
 					$rChannelInfo['redirect_id'] = $rProxyID;
 				}

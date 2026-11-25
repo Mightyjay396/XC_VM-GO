@@ -97,6 +97,24 @@ class GitHubReleases {
 		return (bool) preg_match('/^\d+\.\d+\.\d+-dev\.\d+$/', $version);
 	}
 
+	/**
+	 * Whether a tag is a patch build (X.Y.Z-pN): release X.Y.Z with the fixes
+	 * made since, built and published by the build-patch workflow with no
+	 * release of its own. version_compare() puts it where it belongs:
+	 * X.Y.Z < X.Y.Z-p1 < X.Y.Z-p2 < the next version's nightlies and release.
+	 */
+	public static function isPatchVersion(string $version): bool {
+		return (bool) preg_match('/^\d+\.\d+\.\d+-p\d+\z/', $version);
+	}
+
+	/**
+	 * Whether a tag is a release or a patch build of one: what an update, a
+	 * pin and a rollback may name (a nightly is asked for apart).
+	 */
+	public static function isReleaseVersion(string $version): bool {
+		return (bool) preg_match('/^\d+\.\d+\.\d+(-p\d+)?\z/', $version);
+	}
+
 	private function repoFor(string $version): string {
 		return ($this->devRepo !== null && self::isDevVersion($version)) ? $this->devRepo : $this->repo;
 	}
@@ -206,26 +224,30 @@ class GitHubReleases {
 	 * mark beta builds.
 	 *
 	 * On the 'dev' channel the nightly builds of the dev repository are merged
-	 * in and the result is ordered by version, since the two repositories'
-	 * API orders do not interleave.
+	 * in. The result is ordered by version, not by the API's order, which is
+	 * by publication: the two repositories' orders do not interleave, and a
+	 * patch build of an older release (2.6.5-p3) is published after the
+	 * release that follows it (2.6.6), which it must not hide. Date tags
+	 * (the binaries' DDMMYYYY) have no version order: version_compare() put
+	 * 29062026 above 21102026, so they keep the API's newest-first order.
 	 *
 	 * @return array<int,array<string,mixed>> Filtered GitHub release objects.
 	 * @throws \Exception If the request fails.
 	 */
 	private function getFilteredReleases(): array {
 		$releases = array_values($this->filterReleasesByChannel($this->fetchRawReleases($this->repo, $this->cache_file)));
-		if ($this->channel !== 'dev' || $this->devRepo === null) {
-			return $releases;
+		if ($this->channel === 'dev' && $this->devRepo !== null) {
+			// A missing or unreachable dev repository must not cut the dev channel
+			// off the regular releases.
+			try {
+				$releases = array_merge($releases, $this->fetchRawReleases($this->devRepo, $this->devCacheFile()));
+			} catch (\Exception $e) {
+				error_log("Failed to fetch dev releases from {$this->devRepo}: " . $e->getMessage());
+			}
 		}
-
-		// A missing or unreachable dev repository must not cut the dev channel
-		// off the regular releases.
-		try {
-			$releases = array_merge($releases, $this->fetchRawReleases($this->devRepo, $this->devCacheFile()));
-		} catch (\Exception $e) {
-			error_log("Failed to fetch dev releases from {$this->devRepo}: " . $e->getMessage());
+		if (array_filter($releases, static fn($r) => !str_contains((string) ($r['tag_name'] ?? ''), '.')) === []) {
+			usort($releases, static fn($a, $b) => version_compare((string) ($b['tag_name'] ?? ''), (string) ($a['tag_name'] ?? '')));
 		}
-		usort($releases, static fn($a, $b) => version_compare((string) ($b['tag_name'] ?? ''), (string) ($a['tag_name'] ?? '')));
 
 		return $releases;
 	}
@@ -285,6 +307,27 @@ class GitHubReleases {
 			return null;
 		}
 
+		// A patch build (X.Y.Z-pN) ships only the delta since its base release
+		// X.Y.Z, so it is safe to overlay only on a panel already on X.Y.Z (or
+		// a patch of it). A panel below the base must take the full base release
+		// first — overlaying the patch delta on an older tree would stamp it
+		// X.Y.Z-pN while everything X.Y.Z added (migrations included) is still
+		// missing. So never hand a below-base panel a patch: give it the newest
+		// full (non-patch) release it can take instead, which it reaches with a
+		// full archive (safe from any version). It picks up the patch on the
+		// next check, once it is on the base.
+		if (self::isPatchVersion($latest)) {
+			$base = (string) preg_replace('/-p\d+$/', '', $latest);
+			if (version_compare($current_version, $base, '<')) {
+				foreach ($releases as $release) {
+					if (!self::isPatchVersion($release) && version_compare($release, $current_version, '>')) {
+						return $release;
+					}
+				}
+				return null;
+			}
+		}
+
 		return $latest;
 	}
 
@@ -334,8 +377,9 @@ class GitHubReleases {
 	public function getChangelog(string $version): array {
 		try {
 			// The dev repository carries no source tree, so nightly builds ship
-			// their changelog as a release asset instead.
-			$url = self::isDevVersion($version) && $this->devRepo !== null
+			// their changelog as a release asset instead. So does a patch build:
+			// the file in the tree at its tag is still the release's.
+			$url = (self::isDevVersion($version) && $this->devRepo !== null) || self::isPatchVersion($version)
 				? $this->assetUrl($version, 'changelog.json')
 				: "https://raw.githubusercontent.com/{$this->owner}/{$this->repo}/refs/tags/{$version}/changelog.json";
 			$response = $this->makeRequest($url);
@@ -508,7 +552,8 @@ class GitHubReleases {
 		$older = [];
 		foreach ($this->getFilteredReleases() as $rRelease) {
 			$tag = (string) ($rRelease['tag_name'] ?? '');
-			// Nightly builds are not rollback targets: the rollback flow accepts X.Y.Z only.
+			// Nightly builds are not rollback targets: the rollback flow takes a
+			// release or a patch build of one.
 			if ($tag !== '' && !self::isDevVersion($tag) && version_compare($tag, $current_version, '<')) {
 				$older[] = ['version' => $tag, 'beta' => !empty($rRelease['prerelease'])];
 			}

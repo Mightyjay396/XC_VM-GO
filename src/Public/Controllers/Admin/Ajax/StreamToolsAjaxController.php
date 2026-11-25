@@ -7,9 +7,11 @@ use XcVm\Core\Http\CurlClient;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Module\SourceDriverRegistry;
 use XcVm\Core\Process\ProcessRunner;
+use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamRepository;
+use XcVm\Domain\Stream\ProviderService;
 use XcVm\Streaming\Codec\FfmpegPaths;
 
 /**
@@ -167,6 +169,15 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		$this->requireXhr();
 		$this->gateAny([['adv', 'add_stream'], ['adv', 'edit_stream']]);
 
+		if (RequestManager::has('provider_id') || RequestManager::has('provider_stream_id')) {
+			$rSource = ProviderService::liveSourceUrl(intval(RequestManager::get('provider_id')), intval(RequestManager::get('provider_stream_id')));
+			if ($rSource === null) {
+				echo "<table class='table-data'><tbody><tr><td>Stream probe failed!</td></tr></tbody></table>";
+				exit();
+			}
+			RequestManager::update('url', $rSource);
+		}
+
 		global $rServers;
 		$rAnalyseDuration = abs(intval(SettingsManager::get('stream_max_analyze')));
 		$rTimeout = intval($rAnalyseDuration / 1000000) + SettingsManager::get('probe_extra_wait');
@@ -219,19 +230,19 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			$rInfo = ['width' => 0, 'height' => 0, 'vbitrate' => 0, 'vcodec' => '', 'fps' => 0, 'abitrate' => 0, 'acodec' => ''];
 
 			foreach ($rStreamInfo['streams'] as $rCodec) {
-				if ($rCodec['codec_type'] == 'video') {
+				if (($rCodec['codec_type'] ?? '') == 'video') {
 					$rInfo['width'] = intval($rCodec['width'] ?? 0);
 					$rInfo['height'] = intval($rCodec['height'] ?? 0);
 					$rInfo['vbitrate'] = intval($rCodec['bit_rate'] ?? 0);
-					$rInfo['vcodec'] = $rCodec['codec_name'] ?? '';
+					$rInfo['vcodec'] = self::probeText($rCodec['codec_name'] ?? '');
 					$rInfo['fps'] = intval(explode('/', $rCodec['r_frame_rate'] ?? '0/0')[0]);
 
 					if (!$rInfo['fps']) {
-						$rInfo['fps'] = intval(explode('/', $rCodec['avg_frame_rate'])[0]);
+						$rInfo['fps'] = intval(explode('/', $rCodec['avg_frame_rate'] ?? '0/0')[0]);
 					}
-				} elseif ($rCodec['codec_type'] == 'audio') {
+				} elseif (($rCodec['codec_type'] ?? '') == 'audio') {
 					$rInfo['abitrate'] = intval($rCodec['bit_rate'] ?? 0);
-					$rInfo['acodec'] = $rCodec['codec_name'] ?? '';
+					$rInfo['acodec'] = self::probeText($rCodec['codec_name'] ?? '');
 				}
 			}
 
@@ -274,11 +285,15 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		} else {
 			$rStream = StreamRepository::getById(RequestManager::get('stream'));
 			$rStreamOptions = StreamRepository::getOptions(RequestManager::get('stream'));
-			$rFetch = ((string) $rStreamOptions[1]['value'] !== '') ? ['-user_agent', (string) $rStreamOptions[1]['value']] : [];
+			// A stream with no streams_options rows has none of these argument ids
+			// (getOptions keys by argument_id), so guard each read.
+			$rUserAgent = (string) ($rStreamOptions[1]['value'] ?? '');
+			$rFetch = $rUserAgent !== '' ? ['-user_agent', $rUserAgent] : [];
 			if (RequestManager::has('cookie')) {
-				array_push($rFetch, '-cookies', StreamUtils::fixCookie($rStreamOptions[17]['value']));
+				array_push($rFetch, '-cookies', StreamUtils::fixCookie((string) ($rStreamOptions[17]['value'] ?? '')));
 			}
-			$rSource = (string) json_decode($rStream['stream_source'], true)[intval(RequestManager::get('id'))];
+			$rSources = (array) json_decode((string) ($rStream['stream_source'] ?? ''), true);
+			$rSource = (string) ($rSources[intval(RequestManager::get('id'))] ?? '');
 			$rProxy = (string) ($rStreamOptions[2]['value'] ?? '');
 		}
 		$rURL = StreamUtils::parseStreamURL($rSource, $rProxy);
@@ -312,19 +327,19 @@ class StreamToolsAjaxController extends BaseAjaxController {
 				$rInfo = [];
 
 				foreach ($rStreamInfo['streams'] as $rCodec) {
-					if ($rCodec['codec_type'] == 'video') {
+					if (($rCodec['codec_type'] ?? '') == 'video') {
 						$rInfo['width'] = intval($rCodec['width']);
 						$rInfo['height'] = intval($rCodec['height']);
 						$rInfo['vbitrate'] = intval($rCodec['bit_rate'] ?? 0);
-						$rInfo['vcodec'] = $rCodec['codec_name'];
+						$rInfo['vcodec'] = self::probeText($rCodec['codec_name'] ?? '');
 						$rInfo['fps'] = intval(explode('/', $rCodec['r_frame_rate'])[0]);
 
 						if (!$rInfo['fps']) {
-							$rInfo['fps'] = intval(explode('/', $rCodec['avg_frame_rate'])[0]);
+							$rInfo['fps'] = intval(explode('/', $rCodec['avg_frame_rate'] ?? '0/0')[0]);
 						}
-					} elseif ($rCodec['codec_type'] == 'audio') {
+					} elseif (($rCodec['codec_type'] ?? '') == 'audio') {
 						$rInfo['abitrate'] = intval($rCodec['bit_rate'] ?? 0);
-						$rInfo['acodec'] = $rCodec['codec_name'];
+						$rInfo['acodec'] = self::probeText($rCodec['codec_name'] ?? '');
 					}
 				}
 
@@ -399,24 +414,16 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		}
 
 		$rInput = [];
+		$rGuessit = SettingsManager::get('parse_type') == 'guessit';
 
-		if (SettingsManager::get('parse_type') == 'guessit') {
-			foreach ($rData as $rEpisodeID => $rName) {
-				$rInput[$rEpisodeID] = pathinfo($rName)['filename'];
-			}
-
-			$rCommand = MAIN_HOME . 'bin/guess ' . escapeshellarg(json_encode($rInput));
-		} else {
-			foreach ($rData as $rEpisodeID => $rName) {
-				$rInput[$rEpisodeID] = pathinfo(str_replace('-', '_', $rName))['filename'];
-			}
-
-			$rCommand = '/usr/bin/python3 ' . MAIN_HOME . 'bin/python/release.py ' . escapeshellarg(json_encode($rInput));
+		foreach ($rData as $rEpisodeID => $rName) {
+			$rInput[$rEpisodeID] = $rGuessit ? pathinfo($rName)['filename'] : pathinfo(str_replace('-', '_', $rName))['filename'];
 		}
 
-		$rEpisodes = json_decode(shell_exec($rCommand), true);
+		$rEpisodes = AdminHelpers::runReleaseParser($rGuessit ? 'guessit' : 'ptn', (string) json_encode($rInput));
 
-		foreach ($rEpisodes as $rEpisodeID => $rEpisode) {
+		// No answer (the parser failed): no episode found.
+		foreach (is_array($rEpisodes) ? $rEpisodes : [] as $rEpisodeID => $rEpisode) {
 			if (isset($rEpisode['episode'])) {
 				if (is_array($rEpisode['episode'])) {
 					$rReturn[] = [$rEpisodeID, intval($rEpisode['episode'][0])];
@@ -468,5 +475,14 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			$rUp = false;
 		}
 		return "<table style='width: 300px;' class='table-data' align='center'><tbody><tr><td colspan='4'>Module source " . ($rUp ? 'available' : 'unavailable') . '</td></tr></tbody></table>';
+	}
+
+	/**
+	 * A probe's text for the table this controller answers as HTML. A codec
+	 * name comes from ffprobe, or as it is from the source's own /probe (an
+	 * Xtream-style provider): whatever it holds is text, never markup.
+	 */
+	private static function probeText(mixed $rValue): string {
+		return htmlspecialchars(is_scalar($rValue) ? (string) $rValue : '', ENT_QUOTES, 'UTF-8');
 	}
 }

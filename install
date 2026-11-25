@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.request
 import zipfile
@@ -45,6 +46,8 @@ PACKAGES = {
         "v4l-utils",
         "certbot",
         "iptables-persistent",
+        "ipset",
+        "ipset-persistent",
         "libjpeg-dev",
         "libpng-dev",
         "libharfbuzz-dev",
@@ -93,6 +96,8 @@ PACKAGES = {
         "e2fsprogs",
         "certbot",
         "iptables-persistent",
+        "ipset",
+        "ipset-persistent",
         "libssh2-1",
         "libssh2-1-dev",
         "mariadb-server",
@@ -137,6 +142,7 @@ PACKAGES = {
         "v4l-utils",
         "e2fsprogs",
         "iptables-persistent",
+        "ipset",
         "certbot",
         "python3-certbot",
         "libssh2-1",
@@ -181,6 +187,8 @@ PACKAGES = {
         "certbot",
         "python3-certbot",
         "iptables-persistent",
+        "ipset",
+        "ipset-persistent",
         "libjpeg-dev",
         "libpng-dev",
         "libharfbuzz-dev",
@@ -241,6 +249,7 @@ PACKAGES = {
         "mcrypt",
         "libogg0",
         "libnuma1",
+        "ipset",
     ],
 }
 
@@ -455,7 +464,6 @@ def install_prerequisites(dist_info):
             printc("Prerequisites (sudo, curl) are already installed.", col.OKGREEN)
 
 
-
 def compute_md5(file_path):
     """Compute MD5 hash of a file"""
     md5 = hashlib.md5()
@@ -466,8 +474,11 @@ def compute_md5(file_path):
 
 
 def download_release_hash(repo, release_tag, file_name):
-    """Download hashes.md5 from a GitHub release and return the hash for file_name"""
-    hash_url = f"https://github.com/Vateron-Media/{repo}/releases/download/{release_tag}/hashes.md5"
+    """Download hashes.md5 from a GitHub release (the latest one when release_tag is None) and return the hash for file_name"""
+    release_path = f"download/{release_tag}" if release_tag else "latest/download"
+    hash_url = (
+        f"https://github.com/Mightyjay396/XC_VM-GO/releases/{release_path}/hashes.md5"
+    )
     try:
         req = urllib.request.Request(hash_url)
         req.add_header("User-Agent", "XC_VM-Installer/1.0")
@@ -478,7 +489,14 @@ def download_release_hash(repo, release_tag, file_name):
                 if not line:
                     continue
                 parts = line.split(None, 1)
-                if len(parts) == 2 and parts[1] == file_name:
+                if len(parts) != 2:
+                    continue
+                # The name as md5sum may write it ("*name", "./name"), as the
+                # updater and a node's install read it.
+                name = parts[1].lstrip("*")
+                if name.startswith("./"):
+                    name = name[2:]
+                if name == file_name:
                     return parts[0]
     except Exception as e:
         printc(f"Warning: Could not download hash file: {e}", col.WARNING)
@@ -564,10 +582,15 @@ def install_distribution_binaries(dist_id, version):
         return False
 
     remote_url = f"https://github.com/Vateron-Media/XC_VM_Binaries/releases/download/{release_tag}/{patch_name}"
-    temp_tar_file = f"/tmp/{patch_name}"
-    temp_extract_dir = f"/tmp/{patch_name.replace('.tar.gz', '_extract')}"
+    temp_dir = None
 
     try:
+        # A directory of root's own: no other user can put a file where the
+        # bundle is checked and unpacked.
+        temp_dir = tempfile.mkdtemp(prefix="xcvm.")
+        temp_tar_file = os.path.join(temp_dir, patch_name)
+        temp_extract_dir = os.path.join(temp_dir, "extract")
+
         # Always download fresh binaries from GitHub
         printc(
             f"Downloading {display_name} binaries from GitHub release {release_tag}...",
@@ -602,12 +625,20 @@ def install_distribution_binaries(dist_id, version):
         if expected_hash:
             actual_hash = compute_md5(temp_tar_file)
             if actual_hash != expected_hash:
-                printc(f"MD5 verification failed for {patch_name}: expected {expected_hash}, got {actual_hash}", col.FAIL)
+                printc(
+                    f"MD5 verification failed for {patch_name}: expected {expected_hash}, got {actual_hash}",
+                    col.FAIL,
+                )
                 os.remove(temp_tar_file)
                 return False
             printc(f"MD5 verification passed for {patch_name}", col.OKGREEN)
         else:
-            printc(f"Warning: Could not retrieve MD5 hash for {patch_name}, skipping verification", col.WARNING)
+            printc(
+                f"Could not retrieve MD5 hash for {patch_name}: not installed unverified",
+                col.FAIL,
+            )
+            os.remove(temp_tar_file)
+            return False
 
         file_size_mb = os.path.getsize(temp_tar_file) / (1024 * 1024)
         printc(
@@ -736,6 +767,9 @@ def install_distribution_binaries(dist_id, version):
             "/home/xc_vm/bin/php/sbin/php-fpm",
             "/home/xc_vm/bin/nginx/sbin/nginx",
             "/home/xc_vm/bin/nginx_rtmp/sbin/nginx_rtmp",
+            # As update_binaries.sh leaves them on an update.
+            "/home/xc_vm/bin/network",
+            "/home/xc_vm/bin/network.py",
         ]
         for exe_path in executables_to_chmod:
             if os.path.exists(exe_path):
@@ -771,140 +805,11 @@ def install_distribution_binaries(dist_id, version):
 
     except Exception as e:
         printc(f"Error installing {display_name} binaries: {e}", col.FAIL)
-        # Clean up archive files on error
-        if os.path.exists(temp_tar_file):
-            os.remove(temp_tar_file)
-        if os.path.exists(temp_extract_dir):
-            shutil.rmtree(temp_extract_dir)
         return False
-
-
-
-
-GO_VERSION = "1.22.10"
-GO_INSTALL_DIR = "/usr/local"
-
-def install_go_toolchain():
-    """Install Go toolchain if not already present. Required to build xc_ts_server."""
-    go_bin = os.path.join(GO_INSTALL_DIR, "go", "bin", "go")
-    if os.path.exists(go_bin):
-        result = subprocess.run([go_bin, "version"], capture_output=True, text=True)
-        if result.returncode == 0:
-            printc(f"Go already installed: {result.stdout.strip()}", col.OKGREEN)
-            return True
-
-    printc(f"Installing Go {GO_VERSION}...", col.OKBLUE)
-    import platform
-    arch = platform.machine()
-    if arch == "x86_64":
-        go_arch = "amd64"
-    elif arch == "aarch64":
-        go_arch = "arm64"
-    else:
-        printc(f"Unsupported architecture for Go: {arch}", col.WARNING)
-        return False
-
-    go_tar = f"go{GO_VERSION}.linux-{go_arch}.tar.gz"
-    go_url = f"https://go.dev/dl/{go_tar}"
-    temp_file = f"/tmp/{go_tar}"
-
-    try:
-        printc(f"Downloading {go_url}...", col.OKBLUE)
-        last_err = None
-        for attempt in range(1, 4):
-            try:
-                urllib.request.urlretrieve(go_url, temp_file)
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                printc(f"Download attempt {attempt}/3 failed: {e}", col.WARNING)
-                time.sleep(3)
-        if last_err is not None:
-            raise last_err
-
-        # Remove old Go installation
-        old_go = os.path.join(GO_INSTALL_DIR, "go")
-        if os.path.exists(old_go):
-            shutil.rmtree(old_go)
-
-        # Extract
-        with tarfile.open(temp_file, "r:gz") as tar:
-            tar.extractall(path=GO_INSTALL_DIR)
-
-        os.remove(temp_file)
-
-        # Verify
-        result = subprocess.run([go_bin, "version"], capture_output=True, text=True)
-        if result.returncode == 0:
-            printc(f"Go installed: {result.stdout.strip()}", col.OKGREEN)
-            return True
-        else:
-            printc("Go installation verification failed", col.FAIL)
-            return False
-
-    except Exception as e:
-        printc(f"Failed to install Go: {e}", col.FAIL)
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        return False
-
-
-def build_go_ts_server():
-    """Build the xc_ts_server Go binary for the current platform."""
-    go_src = "/home/xc_vm/bin/xc_ts_server"
-    go_binary = os.path.join(go_src, "xc_ts_server")
-    go_mod = os.path.join(go_src, "go.mod")
-    go_bin = os.path.join(GO_INSTALL_DIR, "go", "bin", "go")
-
-    # Check if source exists
-    if not os.path.exists(go_mod):
-        printc("xc_ts_server Go source not found, skipping build", col.OKBLUE)
-        return True
-
-    # Check if binary already exists and is executable
-    if os.path.exists(go_binary) and os.access(go_binary, os.X_OK):
-        printc("xc_ts_server binary already exists", col.OKGREEN)
-        return True
-
-    # Need Go toolchain
-    if not os.path.exists(go_bin):
-        printc("Go toolchain not found, installing...", col.OKBLUE)
-        if not install_go_toolchain():
-            printc("Cannot build xc_ts_server without Go toolchain", col.WARNING)
-            return False
-
-    printc("Building xc_ts_server...", col.OKBLUE)
-    env = os.environ.copy()
-    env["CGO_ENABLED"] = "0"
-    env["GOPATH"] = "/tmp/go-build-cache"
-    env["GOCACHE"] = "/tmp/go-cache"
-    env["PATH"] = os.path.join(GO_INSTALL_DIR, "go", "bin") + ":" + env.get("PATH", "")
-
-    result = subprocess.run(
-        [go_bin, "build", "-trimpath", "-ldflags=-s -w", "-o", "xc_ts_server", "."],
-        cwd=go_src,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-
-    if result.returncode != 0:
-        printc(f"Failed to build xc_ts_server: {result.stderr}", col.FAIL)
-        return False
-
-    # Set permissions
-    os.chmod(go_binary, 0o755)
-    run_command(f"chown xc_vm:xc_vm {go_binary}")
-
-    file_size_mb = os.path.getsize(go_binary) / (1024 * 1024)
-    printc(f"xc_ts_server built successfully ({file_size_mb:.1f} MB)", col.OKGREEN)
-
-    # Set ownership of entire directory
-    run_command(f"chown -R xc_vm:xc_vm {go_src}")
-
-    return True
+    finally:
+        # The archive and what was unpacked of it, however the step ended
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def detect_distribution():
@@ -1093,7 +998,7 @@ def download_xc_vm():
     try:
         # 1. Get latest version from GitHub API
         printc("Getting latest version from GitHub API...", col.OKBLUE)
-        api_url = "https://api.github.com/repos/Vateron-Media/XC_VM/releases/latest"
+        api_url = "https://api.github.com/repos/Mightyjay396/XC_VM-GO/releases/latest"
         req = urllib.request.Request(api_url)
         req.add_header("User-Agent", "XC_VM-Installer/1.0")
 
@@ -1103,7 +1008,7 @@ def download_xc_vm():
             printc(f"Latest version: {latest_version}", col.OKGREEN)
 
         # 2. Download XC_VM.zip directly from GitHub releases
-        download_url = f"https://github.com/Vateron-Media/XC_VM/releases/download/{latest_version}/XC_VM.zip"
+        download_url = f"https://github.com/Mightyjay396/XC_VM-GO/releases/download/{latest_version}/XC_VM.zip"
         printc(f"Downloading: {download_url}", col.OKBLUE)
 
         # Download using urllib
@@ -1119,12 +1024,20 @@ def download_xc_vm():
             if expected_hash:
                 actual_hash = compute_md5("XC_VM.zip")
                 if actual_hash != expected_hash:
-                    printc(f"MD5 verification failed for XC_VM.zip: expected {expected_hash}, got {actual_hash}", col.FAIL)
+                    printc(
+                        f"MD5 verification failed for XC_VM.zip: expected {expected_hash}, got {actual_hash}",
+                        col.FAIL,
+                    )
                     os.remove("XC_VM.zip")
                     return False
                 printc("MD5 verification passed for XC_VM.zip", col.OKGREEN)
             else:
-                printc("Warning: Could not retrieve MD5 hash for XC_VM.zip, skipping verification", col.WARNING)
+                printc(
+                    "Could not retrieve MD5 hash for XC_VM.zip: not used unverified",
+                    col.FAIL,
+                )
+                os.remove("XC_VM.zip")
+                return False
 
             # Validate ZIP file
             if is_valid_zip("XC_VM.zip"):
@@ -1146,16 +1059,26 @@ def download_xc_vm():
 
         # Alternative method: Direct download from latest
         try:
-            alt_url = "https://github.com/Vateron-Media/XC_VM/releases/latest/download/XC_VM.zip"
+            alt_url = "https://github.com/Mightyjay396/XC_VM-GO/releases/latest/download/XC_VM.zip"
             printc(f"Trying alternative: {alt_url}", col.OKBLUE)
             urllib.request.urlretrieve(alt_url, "XC_VM.zip")
 
-            if os.path.exists("XC_VM.zip") and is_valid_zip("XC_VM.zip"):
+            # Checked against the latest release's own hashes.md5, like the download above.
+            expected_hash = download_release_hash("XC_VM", None, "XC_VM.zip")
+            if (
+                expected_hash
+                and compute_md5("XC_VM.zip") == expected_hash
+                and is_valid_zip("XC_VM.zip")
+            ):
                 printc("Alternative download successful", col.OKGREEN)
                 return True
+            printc("Alternative download failed MD5 verification", col.FAIL)
         except Exception:
             pass
 
+        # Not left behind: the next run would take it for a local archive.
+        if os.path.exists("XC_VM.zip"):
+            os.remove("XC_VM.zip")
         return False
 
 
@@ -1297,7 +1220,11 @@ def secure_mariadb_installation(root_password, dist_info=None):
     ret, out, err = run_command(version_cmd, capture_output=True)
 
     mariadb_version = out.strip() if out else ""
-    is_mariadb_103 = ("10.3" in mariadb_version or "5.7" in mariadb_version or "5.6" in mariadb_version)
+    is_mariadb_103 = (
+        "10.3" in mariadb_version
+        or "5.7" in mariadb_version
+        or "5.6" in mariadb_version
+    )
 
     if is_mariadb_103:
         printc("MariaDB 10.3 detected, using legacy password syntax", col.OKBLUE)
@@ -1472,6 +1399,15 @@ def generate_mysql_config(total_ram_mb):
     printc(f"Thread pool max threads: {thread_pool_max_threads}", col.OKGREEN)
 
     return config
+
+
+def write_secret(path, text):
+    """Write a file only its owner may read: 0600 from the moment it exists
+    (a file left by an earlier run is closed too)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with io.open(fd, "w", encoding="utf-8") as rFile:
+        rFile.write(text)
+    os.chmod(path, 0o600)
 
 
 def generate_random_password(length=32):
@@ -1679,26 +1615,54 @@ _PACKAGE_KEY_MAP = {
 # Distros that need OpenSSL 3 compatibility library
 _NEEDS_OPENSSL3 = {"ubuntu_20"}
 
+# The package, the SHA-256 Ubuntu's signed index lists for it (jammy,
+# main/binary-amd64/Packages), and the library it puts in place.
+_OPENSSL3_DEB_URL = "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl3_3.0.2-0ubuntu1_amd64.deb"
+_OPENSSL3_DEB_SHA256 = (
+    "11a83260542e05aebbbafce9164d594287d2584be80972e08708528fe06f80d3"
+)
+_OPENSSL3_LIB = "/usr/lib/x86_64-linux-gnu/libssl.so.3"
+
 
 def _install_openssl3_compat(dist_id, major):
     """Download and install OpenSSL 3 compatibility .deb for older distros."""
     label = f"{dist_id}_{major}"
-    tmp_file = f"/tmp/libssl3_{label}.deb"
     printc("Installing OpenSSL 3 compatibility library for PHP binaries...", col.OKBLUE)
+    tmp_dir = None
     try:
+        # dpkg runs a package's scripts as root: it is handed this one only when
+        # it is the pinned build, from a directory no other user can write to.
+        tmp_dir = tempfile.mkdtemp(prefix="xcvm.")
+        tmp_file = os.path.join(tmp_dir, f"libssl3_{label}.deb")
+        run_command(f'wget -qO "{tmp_file}" "{_OPENSSL3_DEB_URL}"')
+        actual_hash = None
+        if os.path.exists(tmp_file):
+            with open(tmp_file, "rb") as f:
+                actual_hash = hashlib.sha256(f.read()).hexdigest()
+        if actual_hash != _OPENSSL3_DEB_SHA256:
+            printc(
+                "OpenSSL 3 library not installed: download failed or is not the expected package",
+                col.WARNING,
+            )
+            printc("PHP binaries may not work without libssl.so.3", col.WARNING)
+            return
         run_command(
-            f"wget -qO {tmp_file} "
-            '"http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl3_3.0.2-0ubuntu1_amd64.deb"'
+            f'dpkg --force-depends -i "{tmp_file}" 2>/dev/null '
+            f'|| dpkg -i "{tmp_file}" 2>/dev/null || true'
         )
-        run_command(
-            f"dpkg --force-depends -i {tmp_file} 2>/dev/null "
-            f"|| dpkg -i {tmp_file} 2>/dev/null || true"
-        )
-        run_command(f"rm -f {tmp_file}")
-        printc("OpenSSL 3 library installation completed", col.OKGREEN)
+        if os.path.exists(_OPENSSL3_LIB):
+            printc("OpenSSL 3 library installation completed", col.OKGREEN)
+        else:
+            printc(
+                "OpenSSL 3 library not installed: dpkg could not unpack it", col.WARNING
+            )
+            printc("PHP binaries may not work without libssl.so.3", col.WARNING)
     except Exception as e:
         printc(f"OpenSSL 3 installation warning: {e}", col.WARNING)
         printc("PHP binaries may not work without libssl.so.3", col.WARNING)
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _apt_install_framed(packages):
@@ -1768,9 +1732,7 @@ def install_deb_packages(dist_info):
         # Install MariaDB packages separately with fallback
         if db_packages:
             db_str = " ".join(db_packages)
-            printc(
-                f"Installing MariaDB packages: {db_str}", col.OKBLUE
-            )
+            printc(f"Installing MariaDB packages: {db_str}", col.OKBLUE)
             # No capture_output → apt's log is shown directly under the frame.
             ret, _, _ = run_command(
                 f"DEBIAN_FRONTEND=noninteractive apt-get -yq install {db_str}"
@@ -1829,7 +1791,10 @@ if __name__ == "__main__":
     # EOL: the binaries release no longer ships debian_11 assets, so the install
     # would fail halfway through.
     if dist_info["id"] == "debian" and dist_info["version"].split(".")[0] == "11":
-        printc("Debian 11 is end-of-life and no longer supported. Use Debian 12 or 13.", col.FAIL)
+        printc(
+            "Debian 11 is end-of-life and no longer supported. Use Debian 12 or 13.",
+            col.FAIL,
+        )
         sys.exit(1)
     if dist_info["family"] == "redhat":
         printc(
@@ -1978,7 +1943,9 @@ if __name__ == "__main__":
         install_deb_packages(dist_info)
 
         # Verify MariaDB was actually installed
-        ret, _, _ = run_command("dpkg -l mariadb-server 2>/dev/null | grep -q '^ii'", capture_output=True)
+        ret, _, _ = run_command(
+            "dpkg -l mariadb-server 2>/dev/null | grep -q '^ii'", capture_output=True
+        )
         if ret != 0:
             printc("MariaDB not installed after package step, retrying...", col.WARNING)
             run_command("apt-get update -y")
@@ -2069,9 +2036,7 @@ if __name__ == "__main__":
                 sys.exit(1)
 
         # Debian: 12, 13
-        elif dist_id == "debian" and any(
-            version.startswith(v) for v in ["12", "13"]
-        ):
+        elif dist_id == "debian" and any(version.startswith(v) for v in ["12", "13"]):
             if not install_distribution_binaries(dist_id, version):
                 printc(
                     f"FATAL: failed to install {dist_id} {version} binaries — the panel "
@@ -2090,18 +2055,6 @@ if __name__ == "__main__":
         printc(
             f"No patches available for {dist_id} {version}, using default binaries",
             col.OKBLUE,
-        )
-
-    ##################################################
-    # GO TS SERVER BUILD                             #
-    ##################################################
-
-    printc("Building Go TS delivery server", col.OKBLUE)
-    if not build_go_ts_server():
-        printc(
-            "xc_ts_server build failed — the Go delivery server will not be available. "
-            "PHP delivery remains functional as fallback.",
-            col.WARNING,
         )
 
     ##################################################
@@ -2181,8 +2134,8 @@ if __name__ == "__main__":
     printc("Writing XC_VM configuration", col.OKBLUE)
     os.makedirs(os.path.dirname(rConfigPath), exist_ok=True)
     rConfigData = rConfig % (rUsername, rPassword)
-    with io.open(rConfigPath, "w", encoding="utf-8") as rFile:
-        rFile.write(rConfigData)
+    # The database user and password: the panel's user only (chown -R below).
+    write_secret(rConfigPath, rConfigData)
 
     # Per-install OPENSSL_EXTRA secret — key material for Encryption (hmac_keys,
     # cached image filenames, proxy URL keys, stream tokens). Generated ONCE and
@@ -2381,10 +2334,19 @@ if __name__ == "__main__":
                 template_content = f.read()
 
             # Replace placeholders
+            # As AuthRepository::updateCodes() fills them: a placeholder left in
+            # (#ALIAS#, #ZONE#) makes nginx refuse the whole config.
+            nginx_conf_path = os.path.normpath(
+                os.path.join(rCodeDir, os.pardir, "nginx.conf")
+            )
+            with open(nginx_conf_path, "r") as f:
+                limit_zone = "panel" if "zone=panel:" in f.read() else "one"
             template_content = template_content.replace("#WHITELIST#", "")
             template_content = template_content.replace("#TYPE#", "admin")
             template_content = template_content.replace("#CODE#", admin_code)
             template_content = template_content.replace("#BURST#", "500")
+            template_content = template_content.replace("#ALIAS#", "Public/Views/admin")
+            template_content = template_content.replace("#ZONE#", limit_zone)
 
             code_conf_path = os.path.join(rCodeDir, f"{admin_code}.conf")
             with io.open(code_conf_path, "w", encoding="utf-8") as rFile:
@@ -2414,14 +2376,6 @@ if __name__ == "__main__":
     run_command("chmod +x /home/xc_vm/console.php")
     run_command("chmod +x /home/xc_vm/bin/nginx/sbin/nginx")
 
-    # Go TS server permissions
-    if os.path.exists("/home/xc_vm/bin/xc_ts_server/xc_ts_server"):
-        run_command("chmod +x /home/xc_vm/bin/xc_ts_server/xc_ts_server")
-    if os.path.exists("/home/xc_vm/bin/xc_ts_server/run.sh"):
-        run_command("chmod +x /home/xc_vm/bin/xc_ts_server/run.sh")
-    if os.path.exists("/home/xc_vm/bin/xc_ts_server/xc_ts_server.sh"):
-        run_command("chmod +x /home/xc_vm/bin/xc_ts_server/xc_ts_server.sh")
-
     # Check for RTMP nginx
     nginx_rtmp_path = "/home/xc_vm/bin/nginx_rtmp/sbin/nginx_rtmp"
     if os.path.exists(nginx_rtmp_path):
@@ -2443,22 +2397,28 @@ if __name__ == "__main__":
     printc("Saving credentials", col.OKBLUE)
 
     # Save to /root/credentials.txt
-    with io.open("/root/credentials.txt", "w", encoding="utf-8") as rFile:
-        rFile.write("MariaDB Root \n")
-        rFile.write("Username: root\n")
-        rFile.write(f"Password: {root_password}\n\n")
-        rFile.write(f"XC_VM Username: {rUsername}\n")
-        rFile.write(f"XC_VM Password: {rPassword}\n")
-        rFile.write(f"Database: {rDatabase}\n")
+    write_secret(
+        "/root/credentials.txt",
+        "MariaDB Root \n"
+        "Username: root\n"
+        f"Password: {root_password}\n\n"
+        f"XC_VM Username: {rUsername}\n"
+        f"XC_VM Password: {rPassword}\n"
+        f"Database: {rDatabase}\n",
+    )
 
-    # Also save to installer directory (like original install script)
+    # Also save to installer directory (like original install script). The
+    # installer may have been unpacked anywhere (/tmp, a home directory): the
+    # file is root's alone, as the one in /root.
     local_creds_path = os.path.join(rPath, "credentials.txt")
-    with io.open(local_creds_path, "w", encoding="utf-8") as rFile:
-        rFile.write(f"MariaDB Root Password: {root_password}\n")
-        rFile.write(f"MariaDB Username: {rUsername}\n")
-        rFile.write(f"MariaDB Password: {rPassword}\n")
-        rFile.write(f"Database: {rDatabase}\n")
-        rFile.write(f"Admin Access Code: {admin_code}\n")
+    write_secret(
+        local_creds_path,
+        f"MariaDB Root Password: {root_password}\n"
+        f"MariaDB Username: {rUsername}\n"
+        f"MariaDB Password: {rPassword}\n"
+        f"Database: {rDatabase}\n"
+        f"Admin Access Code: {admin_code}\n",
+    )
 
     # Remove the old mariadb_root_password.txt file if it exists
     if os.path.exists("/root/mariadb_root_password.txt"):
@@ -2495,15 +2455,26 @@ if __name__ == "__main__":
             f"/home/xc_vm/bin/php/bin/php {startup_cmd} startup >/dev/null 2>&1"
         )
 
+    # A new panel starts on the cluster API (ADR 0004): its root and the switch,
+    # so a load balancer installed from it enrols at its install and never runs
+    # the legacy link, then MAIN's own data-plane client (its agent from GitHub).
+    # Non-fatal: with an xcvm_core that has no cluster API the panel stays on
+    # the legacy link, as before; the switch is in Settings -> Cluster.
+    if os.path.exists(startup_cmd):
+        printc("Switching the cluster API on...", col.OKBLUE)
+        run_command(
+            f"/home/xc_vm/bin/php/bin/php {startup_cmd} cluster:init --enable && "
+            f"/home/xc_vm/bin/php/bin/php {startup_cmd} cluster:main-dataplane on"
+        )
+        run_command("chown -R xc_vm:xc_vm /home/xc_vm/config/")
+
     # Download GeoLite2 GeoIP databases (City/Country/ASN). They are no longer
-    # bundled in the repo/release archive, so fetch them from the XC_VM_Update
+    # bundled in the repo/release archive, so fetch them from the XC_VM_GeoLite
     # release on install. This also refreshes bin/maxmind/version.json.
     # Non-fatal: run_command never raises, so a download failure won't abort.
     if os.path.exists(startup_cmd):
         printc("Downloading GeoLite2 GeoIP databases...", col.OKBLUE)
-        run_command(
-            f"/home/xc_vm/bin/php/bin/php {startup_cmd} cron:maxmind --force"
-        )
+        run_command(f"/home/xc_vm/bin/php/bin/php {startup_cmd} cron:maxmind --force")
 
     # Download the proxy-node archive (proxy.tar.gz). Like GeoLite2 it is no longer
     # bundled in the release archive — fetch it from the XC_VM_Proxy release on
@@ -2521,9 +2492,8 @@ if __name__ == "__main__":
     # daily. Runs as xc_vm (owner of bin/ffmpeg_bin/); non-fatal, like the above.
     if os.path.exists(startup_cmd):
         printc("Downloading the ffmpeg builds...", col.OKBLUE)
-        run_command(
-            f"sudo -u xc_vm /home/xc_vm/bin/php/bin/php {startup_cmd} ffmpeg"
-        )
+        run_command("install -d -o xc_vm -g xc_vm -m 0755 /home/xc_vm/bin/ffmpeg_bin")
+        run_command(f"sudo -u xc_vm /home/xc_vm/bin/php/bin/php {startup_cmd} ffmpeg")
 
     time.sleep(3)
 
@@ -2550,4 +2520,3 @@ if __name__ == "__main__":
     printc("IMPORTANT: Move the credentials file to a secure location!", col.WARNING)
 
     printc("=" * 60, col.OKGREEN)
-

@@ -4,6 +4,8 @@ namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\SettingsAudit;
+use XcVm\Core\Gateway\GatewayPolicy;
+use XcVm\Core\Gateway\GatewayShadow;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -26,6 +28,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *                  ConnectAudit::MAX_SITE_LEN bytes) or "*": an integer >= 1;
  *                  at most ConnectAudit::MAX_SITES sites and "*"
  * connects_since   optional, unix seconds >= 1: when the node's connect audit began
+ * gateway          optional, the segment gateway (GatewayShadow::report): its
+ *                  mode, "<kind> <action> <reason>" counts and the shadow
+ *                  comparison (counts, since, last_disagree, samples)
  * ```
  *
  * A heartbeat without `audit` (today's agent), or with one whose
@@ -54,7 +59,7 @@ final class NodeAudit {
 	 * `streams_local` (does the node read its streams on itself:
 	 * SettingsAudit::publish) only as the boolean it is.
 	 *
-	 * @return array{settings_misses: array<string, int>, sql_connects?: int, redis_connects?: int, sites?: array<string, int>, connects_since?: int, streams_local?: bool}|null
+	 * @return array{settings_misses: array<string, int>, sql_connects?: int, redis_connects?: int, sites?: array<string, int>, connects_since?: int, streams_local?: bool, gateway?: array<string, mixed>}|null
 	 */
 	public static function normalise(mixed $rAudit): ?array {
 		if (!is_array($rAudit) || !is_array($rAudit['settings_misses'] ?? null) || strlen((string) json_encode($rAudit, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)) > self::MAX_BYTES) {
@@ -68,7 +73,58 @@ final class NodeAudit {
 			}
 		}
 		return ['settings_misses' => SettingsAudit::top($rMisses)] + self::connects($rAudit)
-			+ (is_bool($rAudit['streams_local'] ?? null) ? ['streams_local' => $rAudit['streams_local']] : []);
+			+ (is_bool($rAudit['streams_local'] ?? null) ? ['streams_local' => $rAudit['streams_local']] : [])
+			+ self::gateway($rAudit);
+	}
+
+	/**
+	 * The segment gateway's part of a heartbeat's `audit`, as MAIN keeps it,
+	 * or []: its mode (one GatewayPolicy::MODES), the counts of its verdicts
+	 * whose key is "<kind> <action> <reason>", and the shadow comparison
+	 * (non-negative integers; samples whose every field has its form).
+	 *
+	 * @param array<mixed> $rAudit
+	 * @return array{gateway?: array{mode: string, counts: array<string, int>, shadow: array<string, mixed>}}
+	 */
+	private static function gateway(array $rAudit): array {
+		$rGateway = $rAudit['gateway'] ?? null;
+		if (!is_array($rGateway) || !in_array($rGateway['mode'] ?? null, GatewayPolicy::MODES, true)) {
+			return [];
+		}
+		$rCounts = [];
+		foreach (is_array($rGateway['counts'] ?? null) ? $rGateway['counts'] : [] as $rKey => $rCount) {
+			if (is_int($rCount) && $rCount >= 0 && preg_match('/^(segment|key|live|other) (serve|deny|redirect|php) [a-z0-9-]{1,32}\z/', (string) $rKey)) {
+				$rCounts[(string) $rKey] = $rCount;
+			}
+		}
+		arsort($rCounts);
+		$rIn = is_array($rGateway['shadow'] ?? null) ? $rGateway['shadow'] : [];
+		$rShadow = [];
+		foreach (['since', 'agree', 'disagree', 'deferred', 'unmatched', 'last_disagree'] as $rKey) {
+			$rShadow[$rKey] = is_int($rIn[$rKey] ?? null) && $rIn[$rKey] >= 0 ? $rIn[$rKey] : 0;
+		}
+		$rShadow['samples'] = [];
+		foreach (array_slice(array_values(is_array($rIn['samples'] ?? null) ? $rIn['samples'] : []), -GatewayShadow::MAX_SAMPLES) as $rSample) {
+			if (is_array($rSample) && is_int($rSample['at'] ?? null) && in_array($rSample['kind'] ?? null, ['segment', 'key', 'live'], true)
+				&& is_string($rSample['gateway'] ?? null) && preg_match('/^(serve|deny|redirect) [a-z0-9-]{1,32}\z/', $rSample['gateway'])
+				&& is_string($rSample['php'] ?? null) && preg_match('/^(serve|deny|redirect|blocked|status-\d{1,3})\z/', $rSample['php'])
+				&& is_int($rSample['stream'] ?? null) && $rSample['stream'] >= 0
+			) {
+				$rShadow['samples'][] = ['at' => $rSample['at'], 'kind' => $rSample['kind'], 'gateway' => $rSample['gateway'], 'php' => $rSample['php'], 'stream' => $rSample['stream']];
+			}
+		}
+		return ['gateway' => ['mode' => $rGateway['mode'], 'counts' => array_slice($rCounts, 0, GatewayShadow::MAX_COUNTS, true), 'shadow' => $rShadow]];
+	}
+
+	/**
+	 * The segment gateway's report of a node (normalise()'s `gateway`), or
+	 * null when its last audit has none.
+	 *
+	 * @param array<string, mixed>|null $rReport one of reports()
+	 * @return array{mode: string, counts: array<string, int>, shadow: array<string, mixed>}|null
+	 */
+	public static function gatewayOf(?array $rReport): ?array {
+		return self::gateway(is_array($rReport) ? $rReport : [])['gateway'] ?? null;
 	}
 
 	/**
@@ -85,6 +141,9 @@ final class NodeAudit {
 		}
 		if (isset($rAudit['streams_local'])) {
 			$rDoc['streams_local'] = (bool) $rAudit['streams_local'];
+		}
+		if (isset($rAudit['gateway'])) {
+			$rDoc['gateway'] = ['mode' => $rAudit['gateway']['mode'], 'counts' => (object) $rAudit['gateway']['counts'], 'shadow' => $rAudit['gateway']['shadow']];
 		}
 		return (string) json_encode($rDoc, JSON_UNESCAPED_SLASHES);
 	}

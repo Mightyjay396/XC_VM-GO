@@ -4,6 +4,8 @@ namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Config\DomainResolver;
+use XcVm\Core\Config\Maintenance;
+use XcVm\Core\Logging\RefusalLog;
 use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Domain\Line\ActiveCodeService;
@@ -94,6 +96,12 @@ class PlayerApiController {
 		if ($rSettings['disable_player_api']) {
 			$this->deny = false;
 			$this->sendAuthError('Disabled', 'Player API has been disabled.');
+		}
+
+		// Maintenance mode: apps show user_info.message.
+		if (Maintenance::active($rSettings)) {
+			$this->deny = false;
+			$this->sendAuthError('Maintenance', Maintenance::message($rSettings));
 		}
 
 		if (strtolower(explode('.', ltrim(parse_url($_SERVER['REQUEST_URI'])['path'] ?? '', '/'))[0]) == 'panel_api') {
@@ -252,7 +260,22 @@ class PlayerApiController {
 			echo json_encode($output);
 			exit();
 		}
-		BruteforceGuard::checkBruteforce(null, null, $rUsername ?? '');
+		// A known activation code that has run out or been suspended is its
+		// subscriber's own: it is answered as such a line is, and not counted.
+		if (($actRes['status'] ?? '') === 'EXPIRED') {
+			$this->sendAuthError('Expired', 'Account has expired.');
+		}
+		if (($actRes['status'] ?? '') === 'DISABLED') {
+			$this->sendAuthError('Disabled', 'Account has been disabled.');
+		}
+
+		// A token nothing answers to is a guess, as a username is; so is the
+		// password a username came with (a token comes with none).
+		BruteforceGuard::checkBruteforce(null, null, $rUsername ?? $rToken ?? '', false, $rPassword ?? null);
+		// A refused sign-in counts against the address, as on the other client
+		// APIs (sendAuthError() leaves shutdown() nothing to count).
+		BruteforceGuard::checkFlood();
+		RefusalLog::record('INVALID_CREDENTIALS');
 		$this->sendAuthError('', 'Username or password is invalid.');
 	}
 
@@ -293,8 +316,49 @@ class PlayerApiController {
 			case 'get_vod_streams':
 				return $this->getVodStreams();
 			default:
-				return $this->getDefaultInfo();
+				return $this->getDefaultInfo() + ($this->panelAPI ? $this->getLegacyLists($rCategories) : []);
 		}
+	}
+
+	/**
+	 * What the legacy panel_api.php answers after the sign-in data: the line's
+	 * categories by type, and its channels, radios and movies by stream id.
+	 * Built from the lists player_api serves, so both follow the same bouquets,
+	 * order and category templates.
+	 *
+	 * @param array $rCategories The loaded categories.
+	 * @return array ['categories' => [type => rows], 'available_channels' => [stream id => row]]
+	 */
+	private function getLegacyLists(array $rCategories): array {
+		$rLists = ['series' => $this->getSeriesCategories($rCategories), 'movie' => $this->getVodCategories($rCategories), 'live' => $this->getLiveCategories($rCategories)];
+		$rNames = array_column(array_merge(...array_values($rLists)), 'category_name', 'category_id');
+		$rTypeNames = ['live' => 'Live Streams', 'movie' => 'Movies', 'created_live' => 'Created Live Channels', 'radio_streams' => 'Radio'];
+		$rChannels = [];
+
+		foreach (array_merge($this->getLiveStreams(), $this->getVodStreams()) as $rRow) {
+			// A stream listed under several categories is given once, under the first.
+			$rChannels[$rRow['stream_id']] ??= [
+				'num' => $rRow['num'],
+				'name' => $rRow['name'],
+				'stream_type' => $rRow['stream_type'],
+				'type_name' => $rTypeNames[$rRow['stream_type']] ?? '',
+				'stream_id' => strval($rRow['stream_id']),
+				'stream_icon' => $rRow['stream_icon'],
+				'epg_channel_id' => $rRow['epg_channel_id'] ?? null,
+				'added' => strval($rRow['added']),
+				'category_name' => $rNames[$rRow['category_id']] ?? null,
+				'category_id' => $rRow['category_id'],
+				'series_no' => null,
+				'live' => $rRow['stream_type'] === 'movie' ? '0' : '1',
+				'container_extension' => $rRow['container_extension'] ?? null,
+				'custom_sid' => $rRow['custom_sid'],
+				'tv_archive' => $rRow['tv_archive'] ?? 0,
+				'direct_source' => $rRow['direct_source'],
+				'tv_archive_duration' => $rRow['tv_archive_duration'] ?? 0,
+			];
+		}
+
+		return ['categories' => $rLists, 'available_channels' => $rChannels];
 	}
 
 	private function getEpg() {
@@ -473,7 +537,7 @@ class PlayerApiController {
 		if (count($this->userInfo['series_ids']) > 0) {
 			if ($rCached) {
 				if ($rSettings['vod_sort_newest']) {
-					$this->userInfo['series_ids'] = StreamSorter::sortSeries($this->userInfo['series_ids']);
+					$this->userInfo['series_ids'] = StreamSorter::sortSeries($this->userInfo['series_ids'], $this->userInfo);
 				}
 
 				foreach ($this->userInfo['series_ids'] as $rSeriesID) {
@@ -728,7 +792,7 @@ class PlayerApiController {
 
 		// Sort the whole list, then take the page: slicing first paged the
 		// unsorted ids, so a page did not follow the channel order.
-		$this->userInfo['live_ids'] = StreamSorter::sortChannels($this->userInfo['live_ids']);
+		$this->userInfo['live_ids'] = StreamSorter::sortChannels($this->userInfo['live_ids'], $this->userInfo);
 
 		if (!empty($this->limit)) {
 			$this->userInfo['live_ids'] = array_slice($this->userInfo['live_ids'], $this->offset, $this->limit);
@@ -748,14 +812,22 @@ class PlayerApiController {
 				$rWhere[] = '`t1`.`id` IN (' . implode(',', $this->userInfo['live_ids']) . ')';
 				$rWhereString = 'WHERE ' . implode(' AND ', $rWhere);
 
-				if ($rSettings['channel_number_type'] != 'manual') {
-					$rOrder = 'FIELD(`t1`.`id`,' . implode(',', $this->userInfo['live_ids']) . ')';
-				} else {
-					$rOrder = '`order`';
-				}
+				$rManual = ($rSettings['channel_number_type'] == 'manual');
 
-				$db->query('SELECT t1.id,t1.epg_id,t1.added,t1.allow_record,t1.year,t1.channel_id,t1.movie_properties,t1.stream_source,t1.tv_archive_server_id,t1.vframes_server_id,t1.tv_archive_duration,t1.stream_icon,t1.custom_sid,t1.category_id,t1.stream_display_name,t1.series_no,t1.direct_source,t2.type_output,t1.target_container,t2.live,t1.rtmp_output,t1.order,t2.type_key FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type ' . $rWhereString . ' ORDER BY ' . $rOrder . ';', ...$rWhereV);
+				$db->query('SELECT t1.id,t1.epg_id,t1.added,t1.allow_record,t1.year,t1.channel_id,t1.movie_properties,t1.stream_source,t1.tv_archive_server_id,t1.vframes_server_id,t1.tv_archive_duration,t1.stream_icon,t1.custom_sid,t1.category_id,t1.stream_display_name,t1.series_no,t1.direct_source,t2.type_output,t1.target_container,t2.live,t1.rtmp_output,t1.order,t2.type_key FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type ' . $rWhereString . ($rManual ? ' ORDER BY `order`' : '') . ';', ...$rWhereV);
 				$rChannels = $db->get_rows();
+				// The line's order, as FIELD(id, every id) gave it (each row once, at its first
+				// place) without MariaDB evaluating that list for every row.
+				if (!$rManual && $rChannels) {
+					$rRows = array_column($rChannels, null, 'id');
+					$rChannels = [];
+					foreach ($this->userInfo['live_ids'] as $rID) {
+						if (isset($rRows[$rID])) {
+							$rChannels[] = $rRows[$rID];
+							unset($rRows[$rID]);
+						}
+					}
+				}
 			}
 		} else {
 			$rChannels = $this->userInfo['live_ids'];
@@ -809,7 +881,7 @@ class PlayerApiController {
 							$rThumbURL = '';
 						}
 
-						$output[] = ['num' => ++$rLiveNum, 'name' => $rChannel['stream_display_name'], 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => $rStreamIcon, 'epg_channel_id' => $rChannel['channel_id'], 'added' => ($rChannel['added'] ?: ''), 'custom_sid' => strval($rChannel['custom_sid']), 'tv_archive' => $rTVArchive, 'direct_source' => $rURL, 'tv_archive_duration' => ($rTVArchive ? intval($rChannel['tv_archive_duration']) : 0), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'thumbnail' => $rThumbURL];
+						$output[] = ['num' => ++$rLiveNum, 'name' => $rChannel['stream_display_name'], 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => $rStreamIcon, 'epg_channel_id' => $rChannel['channel_id'], 'added' => strval($rChannel['added'] ?: ''), 'custom_sid' => strval($rChannel['custom_sid']), 'tv_archive' => $rTVArchive, 'direct_source' => $rURL, 'tv_archive_duration' => ($rTVArchive ? intval($rChannel['tv_archive_duration']) : 0), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'thumbnail' => $rThumbURL];
 					}
 
 					if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
@@ -902,7 +974,7 @@ class PlayerApiController {
 
 		// Sort the whole list, then take the page: slicing first paged the
 		// unsorted ids, so a page did not follow the channel order.
-		$this->userInfo['vod_ids'] = StreamSorter::sortChannels($this->userInfo['vod_ids']);
+		$this->userInfo['vod_ids'] = StreamSorter::sortChannels($this->userInfo['vod_ids'], $this->userInfo);
 
 		if (!empty($this->limit)) {
 			$this->userInfo['vod_ids'] = array_slice($this->userInfo['vod_ids'], $this->offset, $this->limit);
@@ -922,14 +994,22 @@ class PlayerApiController {
 				$rWhere[] = '`t1`.`id` IN (' . implode(',', $this->userInfo['vod_ids']) . ')';
 				$rWhereString = 'WHERE ' . implode(' AND ', $rWhere);
 
-				if ($rSettings['channel_number_type'] != 'manual') {
-					$rOrder = 'FIELD(`t1`.`id`,' . implode(',', $this->userInfo['vod_ids']) . ')';
-				} else {
-					$rOrder = '`order`';
-				}
+				$rManual = ($rSettings['channel_number_type'] == 'manual');
 
-				$db->query('SELECT t1.id,t1.epg_id,t1.added,t1.allow_record,t1.year,t1.channel_id,t1.movie_properties,t1.stream_source,t1.tv_archive_server_id,t1.vframes_server_id,t1.tv_archive_duration,t1.stream_icon,t1.custom_sid,t1.category_id,t1.stream_display_name,t1.series_no,t1.direct_source,t2.type_output,t1.target_container,t2.live,t1.rtmp_output,t1.order,t2.type_key FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type ' . $rWhereString . ' ORDER BY ' . $rOrder . ';', ...$rWhereV);
+				$db->query('SELECT t1.id,t1.epg_id,t1.added,t1.allow_record,t1.year,t1.channel_id,t1.movie_properties,t1.stream_source,t1.tv_archive_server_id,t1.vframes_server_id,t1.tv_archive_duration,t1.stream_icon,t1.custom_sid,t1.category_id,t1.stream_display_name,t1.series_no,t1.direct_source,t2.type_output,t1.target_container,t2.live,t1.rtmp_output,t1.order,t2.type_key FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type ' . $rWhereString . ($rManual ? ' ORDER BY `order`' : '') . ';', ...$rWhereV);
 				$rChannels = $db->get_rows();
+				// The line's order, as FIELD(id, every id) gave it (each row once, at its first
+				// place) without MariaDB evaluating that list for every row.
+				if (!$rManual && $rChannels) {
+					$rRows = array_column($rChannels, null, 'id');
+					$rChannels = [];
+					foreach ($this->userInfo['vod_ids'] as $rID) {
+						if (isset($rRows[$rID])) {
+							$rChannels[] = $rRows[$rID];
+							unset($rRows[$rID]);
+						}
+					}
+				}
 			}
 		} else {
 			$rChannels = $this->userInfo['vod_ids'];
@@ -945,12 +1025,8 @@ class PlayerApiController {
 			}
 
 			if ($rChannel['type_key'] == 'movie') {
-				$rProperties = json_decode((string) $rChannel['movie_properties'], true);
-
-				if (!is_array($rProperties)) {
-					$rProperties = [];
-				}
-
+				// Decoded once the movie is listed: a category filter skips most of them.
+				$rProperties = null;
 				$rCategoryIDs = json_decode($rChannel['category_id'], true);
 
 				foreach ($rCategoryIDs as $rCategoryID) {
@@ -958,6 +1034,12 @@ class PlayerApiController {
 						continue;
 					}
 					if (!$rCategoryIDSearch || $rCategoryIDSearch == $rCategoryID) {
+						if ($rProperties === null) {
+							$rProperties = json_decode((string) $rChannel['movie_properties'], true);
+							if (!is_array($rProperties)) {
+								$rProperties = [];
+							}
+						}
 						if ($rSettings['api_redirect']) {
 							$rEncData = 'movie/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rChannel['id'] . '/' . $rChannel['target_container'];
 							$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
@@ -998,10 +1080,6 @@ class PlayerApiController {
 			'max_connections' => strval($this->userInfo['max_connections'] ?? '1'),
 			'allowed_output_formats' => $this->getOutputFormats($this->userInfo['allowed_outputs'])
 		];
-
-		if (!empty($token)) {
-			$output['user_info']['token'] = $token;
-		}
 
 		$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
 			|| (!empty($_SERVER['REQUEST_SCHEME']) && strtolower($_SERVER['REQUEST_SCHEME']) === 'https')

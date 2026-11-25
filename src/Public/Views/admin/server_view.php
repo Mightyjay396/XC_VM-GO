@@ -26,6 +26,7 @@ use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\LayoutRenderer;
+use XcVm\Domain\Cluster\ClusterRoute;
 
 $rServerId    = intval(RequestManager::get('id'));
 $rIsMain      = ($rServer['server_type'] == 0);
@@ -43,6 +44,12 @@ $rDiskLabel   = (1099511627776 < ($rWatchdog['total_disk_space'] ?? 0))
         <small class="text-body-secondary ms-2"><?= htmlspecialchars((string) $rServer['server_ip']) ?></small>
     </h4>
 </div>
+
+<?php if (($rRootBlocked = ClusterRoute::rootBlocked($rServerId)) !== null): ?>
+    <div class="alert alert-warning" role="alert">
+        <?= $language::get('server_view_root_blocked') ?> (<?= htmlspecialchars($rRootBlocked) ?>)
+    </div>
+<?php endif; ?>
 
 <?php if (isset($B4a5f8dc1f8d260c) && defined('STATUS_CERTBOT') && $B4a5f8dc1f8d260c == STATUS_CERTBOT): ?>
     <div class="alert alert-success alert-dismissible fade show" role="alert">
@@ -64,8 +71,8 @@ $rDiskLabel   = (1099511627776 < ($rWatchdog['total_disk_space'] ?? 0))
         array('online_users', 'ti tabler-users', 'success', $language::get('users'), Authorization::check('adv', 'live_connections') ? 'live_connections?server_id=' . $rServerId : null),
     );
     if ($rIsMain) {
-        $rTiles[] = array('total_running_streams', 'ti tabler-player-play', 'info', $language::get('streams'), Authorization::check('adv', 'streams') ? 'streams?filter=1&server=' . $rServerId : null);
-        $rTiles[] = array('offline_streams', 'ti tabler-alert-triangle', 'danger', $language::get('down'), Authorization::check('adv', 'streams') ? 'streams?filter=2&server=' . $rServerId : null);
+        $rTiles[] = array('total_running_streams', 'ti tabler-player-play', 'info', $language::get('streams'), Authorization::check('adv', 'streams') ? 'streams?filter=1&server_id=' . $rServerId : null);
+        $rTiles[] = array('offline_streams', 'ti tabler-alert-triangle', 'danger', $language::get('down'), Authorization::check('adv', 'streams') ? 'streams?filter=2&server_id=' . $rServerId : null);
     }
     $rTileCol = $rIsMain ? 'col-sm-6 col-xl-3' : 'col-sm-6';
     foreach ($rTiles as list($rId, $rIcon, $rAccent, $rLabel, $rLink)):
@@ -335,11 +342,7 @@ LayoutRenderer::renderFooter('admin');
             return;
         }
         var $ = window.jQuery;
-        var esc = function(s) {
-            var d = document.createElement('div');
-            d.textContent = (s == null ? '' : String(s));
-            return d.innerHTML;
-        };
+        var esc = function(s) { return (s == null ? '' : String(s)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); };
         var toast = window.xcToast || function() {};
         var confirmBox = function(text) {
             return window.xcConfirm ? window.xcConfirm(text) : Promise.resolve(window.confirm(text));
@@ -701,10 +704,12 @@ LayoutRenderer::renderFooter('admin');
                     }
                 },
                 {
-                    data: 'player'
+                    data: 'player',
+                    render: esc
                 },
                 {
-                    data: 'isp'
+                    data: 'isp',
+                    render: esc
                 },
                 {
                     data: 'user_ip',
@@ -723,7 +728,8 @@ LayoutRenderer::renderFooter('admin');
                 },
                 {
                     data: 'container',
-                    className: 'text-center'
+                    className: 'text-center',
+                    render: esc
                 },
                 {
                     data: 'is_restreamer',
@@ -784,7 +790,7 @@ LayoutRenderer::renderFooter('admin');
                             d.id = 'streams';
                             d.server = serverId;
                             d.filter = 1;
-                            d.simple = true;
+                            d.single = true;
                         }
                     },
                     columns: [{

@@ -35,6 +35,34 @@ use XcVm\Streaming\Fanout\FanoutClient;
 class ConnectionTracker {
 	use DatabaseAware;
 
+	/** Seconds a viewer is placed by the servers' load as it was last counted. */
+	public const CAPACITY_SECONDS = 3;
+
+	/**
+	 * The servers' load for placing a viewer: getCapacity() as it was last
+	 * counted while that is no older than CAPACITY_SECONDS (the watchdog counts
+	 * every few seconds and leaves the file), else counted now. Each playback
+	 * start counted every server's viewers itself (in MySQL, a GROUP BY over
+	 * `lines_live`) and wrote a file that nothing read.
+	 *
+	 * @param bool $rProxy As getCapacity().
+	 * @return array<int, array{online_clients: int, capacity?: float}>
+	 */
+	public static function capacity(bool $rProxy = false): array {
+		if (defined('CACHE_TMP_PATH')) {
+			$rPath = CACHE_TMP_PATH . ($rProxy ? 'proxy_capacity' : 'servers_capacity');
+			clearstatcache(true, $rPath);
+			$rCounted = @filemtime($rPath);
+			if ($rCounted !== false && time() - $rCounted <= self::CAPACITY_SECONDS) {
+				$rRows = json_decode((string) @file_get_contents($rPath), true);
+				if (is_array($rRows)) {
+					return $rRows;
+				}
+			}
+		}
+		return self::getCapacity($rProxy);
+	}
+
 	/**
 	 * Calculate server/proxy load capacity.
 	 *
@@ -47,8 +75,13 @@ class ConnectionTracker {
 	 */
 	public static function getCapacity(bool $rProxy = false): array {
 		global $rSettings, $rServers;
+		// The cluster API sets no servers of its own: rtmp_auth places a load
+		// balancer's RTMP viewer through here (StreamRedirector).
+		if (!is_array($rServers)) {
+			$rServers = ServerRepository::getAll();
+		}
 		$db = self::db();
-		$rRedis = RedisManager::instance();
+		$rRedis = $rSettings['redis_handler'] ? RedisManager::instance() : null;
 		$rFile = ($rProxy ? 'proxy_capacity' : 'servers_capacity');
 		if ($rSettings['redis_handler'] && $rProxy && $rSettings['split_by'] == 'maxclients') {
 			$rSettings['split_by'] = 'guar_band';
@@ -162,12 +195,14 @@ class ConnectionTracker {
 	 * @param int|null $rServerID Server ID to filter by.
 	 * @param int|null $rUserID   User ID to filter by.
 	 * @param int|null $rStreamID Stream ID to filter by.
+	 * @param list<int> $rEndedOnMain Table-store nodes whose ended records are drained separately.
+	 * @param bool $rSkipRemoteEnded MAIN never loads remote ended history through its wide join.
 	 * @return array Connections: [keys[], data[]] for Redis or rows for MySQL.
 	 */
-	public static function getConnections(?int $rServerID = null, ?int $rUserID = null, ?int $rStreamID = null): array {
+	public static function getConnections(?int $rServerID = null, ?int $rUserID = null, ?int $rStreamID = null, array $rEndedOnMain = [], bool $rSkipRemoteEnded = false): array {
 		global $rSettings;
 		$db = self::db();
-		$rRedis = RedisManager::instance();
+		$rRedis = $rSettings['redis_handler'] ? RedisManager::instance() : null;
 		if ($rSettings['redis_handler'] && $rRedis) {
 			if ($rServerID) {
 				$rKeys = $rRedis->zRangeByScore('SERVER#' . $rServerID, '-inf', '+inf');
@@ -196,6 +231,12 @@ class ConnectionTracker {
 		}
 		if (!empty($rUserID)) {
 			$rWhere[] = 't1.user_id = ' . intval($rUserID);
+		}
+		if ($rEndedOnMain !== []) {
+			$rWhere[] = '(t1.hls_end = 0 OR t1.server_id NOT IN (' . implode(',', array_map('intval', $rEndedOnMain)) . '))';
+		}
+		if ($rSkipRemoteEnded) {
+			$rWhere[] = '(t1.hls_end = 0 OR t1.server_id = ' . (int) SERVER_ID . ')';
 		}
 		$rExtra = count($rWhere) ? 'WHERE ' . implode(' AND ', $rWhere) : '';
 		$rQuery = 'SELECT t2.*,t3.*,t5.bitrate,t1.*,t1.uuid AS `uuid` 
@@ -483,6 +524,10 @@ class ConnectionTracker {
 				return $rOldest ? (string) $rOldest['user_ip'] : null;
 			}
 		}
+		// A node in mode 2 has no other store: its agent did not answer.
+		if (NodeRole::refusesConnects()) {
+			self::refuseUnchecked();
+		}
 		if ($rSettings['redis_handler']) {
 			// The LINE# set holds connection keys; the oldest connection's IP is
 			// read from the rows behind them.
@@ -556,9 +601,12 @@ class ConnectionTracker {
 		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
-		$rMulti = $rRedis->multi();
+		// Reads need no transaction: a pipeline sends them in one round trip (a
+		// MULTI sends each command and waits for its QUEUED). And a count is the
+		// set's size, not its members read and counted here.
+		$rMulti = $rRedis->multi(\Redis::PIPELINE);
 		foreach ($rIDs as $rID) {
-			$rMulti->zRevRangeByScore($rPrefix . $rID, '+inf', '-inf');
+			$rCount ? $rMulti->zCard($rPrefix . $rID) : $rMulti->zRevRangeByScore($rPrefix . $rID, '+inf', '-inf');
 		}
 		$rGroups = $rMulti->exec();
 		$rConnectionMap = $rRedisKeys = [];
@@ -567,8 +615,8 @@ class ConnectionTracker {
 		}
 		foreach ($rGroups as $rGroupID => $rKeys) {
 			if ($rCount) {
-				$rConnectionMap[$rIDs[$rGroupID]] = count($rKeys);
-			} else {
+				$rConnectionMap[$rIDs[$rGroupID]] = (int) $rKeys;
+			} elseif (is_array($rKeys)) {
 				if (0 < count($rKeys)) {
 					$rRedisKeys = array_merge($rRedisKeys, $rKeys);
 				}
@@ -577,9 +625,11 @@ class ConnectionTracker {
 		$rRedisKeys = array_unique($rRedisKeys);
 		if (!$rKeysOnly) {
 			if (!$rCount && $rRedisKeys !== []) {
-				foreach ($rRedis->mGet($rRedisKeys) as $rRow) {
-					$rRow = igbinary_unserialize($rRow);
-					$rConnectionMap[$rRow[$rGroupField]][] = $rRow;
+				// In batches, and a record gone since its set was read is none.
+				foreach (self::records($rRedis, array_values($rRedisKeys)) ?? [] as $rRow) {
+					if (is_array($rRow)) {
+						$rConnectionMap[$rRow[$rGroupField]][] = $rRow;
+					}
 				}
 			}
 			return $rConnectionMap;
@@ -617,11 +667,60 @@ class ConnectionTracker {
 		if ($rRedisKeys === []) {
 			return $rConnectionMap;
 		}
-		foreach ($rRedis->mGet(array_unique($rRedisKeys)) as $rRow) {
-			$rRow = igbinary_unserialize($rRow);
-			$rConnectionMap[$rRow['user_id']] = $rRow;
+		$rRows = $rRedis->mGet(array_unique($rRedisKeys));
+		if (!is_array($rRows)) {
+			return $rConnectionMap;
+		}
+		foreach ($rRows as $rRow) {
+			// A vanished key reads as false and a corrupt payload decodes to a
+			// non-array; skip both rather than offset-on-bool, as every sibling
+			// reader (records(), getLineConnectionRows) already does.
+			$rRow = is_string($rRow) ? igbinary_unserialize($rRow) : false;
+			if (is_array($rRow) && isset($rRow['user_id'])) {
+				$rConnectionMap[$rRow['user_id']] = $rRow;
+			}
 		}
 		return $rConnectionMap;
+	}
+
+	/**
+	 * How many of each stream's viewers a server serves, in Redis mode: stream
+	 * id => count. The streams' sets and the server's are read as uuids, in one
+	 * round trip, and intersected here: the on-demand watcher read and decoded
+	 * every viewer's record of every running stream, each pass, to learn which
+	 * streams had none.
+	 *
+	 * @param int[] $rStreamIDs
+	 * @return array<int, int>|null Null when Redis did not answer: nothing is known, which is not "no viewers".
+	 */
+	public static function streamViewerCounts(array $rStreamIDs, int $rServerID): ?array {
+		$rRedis = RedisManager::instance();
+		if (!$rRedis instanceof \Redis) {
+			return null;
+		}
+		$rStreamIDs = array_values($rStreamIDs);
+		try {
+			$rPipe = $rRedis->multi(\Redis::PIPELINE);
+			$rPipe->zRange('SERVER#' . $rServerID, 0, -1);
+			foreach ($rStreamIDs as $rStreamID) {
+				$rPipe->zRange('STREAM#' . $rStreamID, 0, -1);
+			}
+			$rSets = $rPipe->exec();
+		} catch (\RedisException) {
+			return null;
+		}
+		if (!is_array($rSets) || count($rSets) !== count($rStreamIDs) + 1 || !is_array($rSets[0])) {
+			return null;
+		}
+		$rHere = array_flip($rSets[0]);
+		$rCounts = [];
+		foreach ($rStreamIDs as $rIndex => $rStreamID) {
+			if (!is_array($rSets[$rIndex + 1])) {
+				return null;
+			}
+			$rCounts[$rStreamID] = count(array_intersect_key(array_flip($rSets[$rIndex + 1]), $rHere));
+		}
+		return $rCounts;
 	}
 
 	/**
@@ -658,8 +757,13 @@ class ConnectionTracker {
 			}
 		}
 		if (!$rCount && $rRedisKeys !== []) {
-			foreach ($rRedis->mGet(array_unique($rRedisKeys)) as $rRow) {
-				$rRow = igbinary_unserialize($rRow);
+			$rRows = $rRedis->mGet(array_unique($rRedisKeys));
+			foreach (is_array($rRows) ? $rRows : [] as $rRow) {
+				// Skip vanished (false) keys and corrupt payloads, as records() does.
+				$rRow = is_string($rRow) ? igbinary_unserialize($rRow) : false;
+				if (!is_array($rRow) || !isset($rRow['stream_id'])) {
+					continue;
+				}
 				if ($rGroup) {
 					$rConnectionMap[$rRow['stream_id']][] = $rRow;
 				} else {
@@ -773,10 +877,16 @@ class ConnectionTracker {
 		}
 
 		if (0 < count($rKeys)) {
-			foreach ($rRedis->mGet(array_unique($rKeys)) as $rRow) {
-				$rRow = igbinary_unserialize($rRow);
+			$rRows = $rRedis->mGet(array_unique($rKeys));
+			foreach (is_array($rRows) ? $rRows : [] as $rRow) {
+				// A record gone since the zRange read is false; skip it rather than
+				// offset-on-bool (the identity() call below already allowed for it).
+				$rRow = is_string($rRow) ? igbinary_unserialize($rRow) : false;
+				if (!is_array($rRow)) {
+					continue;
+				}
 				if ((!$rServerID || $rServerID == $rRow['server_id']) && (!$rStreamID || $rStreamID == $rRow['stream_id']) && (!$rUserID || $rUserID == $rRow['user_id']) && (!$rHLSOnly || $rRow['container'] != 'hls')) {
-					$rUUID = StoredConnections::identity(is_array($rRow) ? $rRow : []); // a record gone since the zRange reads as false
+					$rUUID = StoredConnections::identity($rRow);
 					if ($rCountOnly) {
 						$rReturn[0]++;
 						$rUniqueUsers[] = $rUUID;
@@ -829,6 +939,8 @@ class ConnectionTracker {
 	 * or players (user-agents) stay distinct connections — preserving multiple
 	 * streams from one IP and multi-device counting — while the same player
 	 * re-requesting the same channel from the same IP collapses to one.
+	 * The variants of an adaptive master are one viewer: the caller keys them by
+	 * the master's stream (the token's `adaptive` [redirect id, master id]).
 	 *
 	 * @param int|null    $rIsHMAC     HMAC id, or null for a regular line.
 	 * @param string|null $rIdentifier HMAC identifier (null/'' for a regular line).
@@ -845,11 +957,31 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * Is the viewer of an adaptive master already connected, on any of its
+	 * variants? A player switches variant long after the master was issued: that
+	 * is a viewer admitted then, so starting the variant on demand is not the
+	 * replay of a stale token the create_expiration window guards against.
+	 *
+	 * @param array<string, mixed> $rTokenData The variant's token.
+	 */
+	public static function adaptiveViewerOpen(array $rSettings, array $rTokenData, string $rIp, string $rUserAgent): bool {
+		if (!isset($rTokenData['adaptive'][1], $rTokenData['user_info']['id']) || ($rTokenData['extension'] ?? '') !== 'm3u8') {
+			return false;
+		}
+		self::openStore($rSettings);
+		$rUserId = $rTokenData['user_info']['id'];
+		$rUuid = self::hlsConnectionKey(null, null, $rUserId, intval($rTokenData['adaptive'][1]), $rIp, $rUserAgent);
+
+		return self::lookupLive($rSettings, ['uuid' => $rUuid, 'user_id' => $rUserId, 'adaptive' => true], 'hls', false, true, true) !== null;
+	}
+
+	/**
 	 * Create a new connection in Redis.
 	 *
-	 * Atomically (MULTI/EXEC) adds UUID to all sorted sets:
-	 * LINE#, LINE_ALL#, STREAM#, SERVER#, SERVER_LINES#, PROXY#,
-	 * CONNECTIONS, LIVE, and stores igbinary-serialized data.
+	 * Atomically (MULTI/EXEC) adds UUID to its sorted sets (LINE#, STREAM#,
+	 * SERVER#, SERVER_LINES#, PROXY#, LIVE) and stores igbinary-serialized
+	 * data. LINE_ALL# and CONNECTIONS are no longer written: nothing read
+	 * them. They are still cleared on removal, for what an older node wrote.
 	 *
 	 * @param array $rData Connection data (uuid, identity, stream_id, server_id, etc.).
 	 * @return array|false MULTI/EXEC result.
@@ -865,7 +997,6 @@ class ConnectionTracker {
 		// close and delete this fresh connection as the old ended one.
 		$rMulti->sRem('ENDED', $rData['uuid']);
 		$rMulti->zAdd('LINE#' . $rData['identity'], $rData['date_start'], $rData['uuid']);
-		$rMulti->zAdd('LINE_ALL#' . $rData['identity'], $rData['date_start'], $rData['uuid']);
 		$rMulti->zAdd('STREAM#' . $rData['stream_id'], $rData['date_start'], $rData['uuid']);
 		$rMulti->zAdd('SERVER#' . $rData['server_id'], $rData['date_start'], $rData['uuid']);
 		if ($rData['user_id']) {
@@ -874,7 +1005,6 @@ class ConnectionTracker {
 		if ($rData['proxy_id']) {
 			$rMulti->zAdd('PROXY#' . $rData['proxy_id'], $rData['date_start'], $rData['uuid']);
 		}
-		$rMulti->zAdd('CONNECTIONS', $rData['date_start'], $rData['uuid']);
 		$rMulti->zAdd('LIVE', $rData['date_start'], $rData['uuid']);
 		$rMulti->set($rData['uuid'], igbinary_serialize($rData));
 		return $rMulti->exec();
@@ -887,6 +1017,17 @@ class ConnectionTracker {
 	 */
 	private static function store(): object {
 		return DatabaseFactory::get() ?? self::db();
+	}
+
+	/**
+	 * Refuse the request on a node in mode 2 whose agent did not answer a read
+	 * a check depends on (this viewer's record, the line's other address): the
+	 * agent is its only store, and an unchecked request is not let through.
+	 * The endpoint's answer to a failed write.
+	 */
+	private static function refuseUnchecked(): never {
+		generateError('LINE_CREATE_FAIL');
+		exit();
 	}
 
 	/** Why the node's agent refused the viewer of the last openRecord(), or null. */
@@ -924,7 +1065,6 @@ class ConnectionTracker {
 	public static function openRecord(array $rSettings, array $rRecord, array $rDbRow, ?array $rToken = null, int $rTimeOffset = 0) {
 		self::$rRefused = null;
 		if (AgentConnections::enabled()) {
-			$rAdmission = $rToken === null ? null : AgentConnections::admission($rToken, $rRecord, time() - $rTimeOffset);
 			// An HLS viewer is recorded under its playlist key, not the token's
 			// uuid MAIN reserved at mint: name the reservation, so MAIN releases
 			// it with the viewer (ConnectionIngest).
@@ -932,6 +1072,15 @@ class ConnectionTracker {
 			if (is_array($rToken['adm'] ?? null) && $rReserved !== '' && $rReserved !== (string) $rRecord['uuid']) {
 				$rRecord['adm_uuid'] = $rReserved;
 			}
+			// MAIN's proof that it minted the token for this viewer (`prf`), kept
+			// in the record as `mint` for the record's life: the agent mirrors it
+			// to MAIN, which stores a new record only with it under
+			// cluster_conn_binding = enforce. It names the token's uuid.
+			$rProof = $rToken['prf'] ?? null;
+			if (is_array($rProof) && is_int($rProof['iat'] ?? null) && $rProof['iat'] > 0 && is_string($rProof['p'] ?? null) && preg_match('/^[0-9a-f]{32}\z/', $rProof['p']) && preg_match(AgentConnections::CONN_UUID, $rReserved)) {
+				$rRecord['mint'] = $rReserved . '.' . $rProof['iat'] . '.' . $rProof['p'];
+			}
+			$rAdmission = $rToken === null ? null : AgentConnections::admission($rToken, $rRecord, time() - $rTimeOffset);
 			$rOut = AgentConnections::register((string) $rRecord['uuid'], $rRecord, $rAdmission);
 			if ($rOut === true) {
 				return true; // the node's agent holds it and tells MAIN
@@ -940,7 +1089,11 @@ class ConnectionTracker {
 				self::$rRefused = $rOut;
 				return false;
 			}
-			unset($rRecord['adm_uuid']);
+			unset($rRecord['adm_uuid'], $rRecord['mint']);
+		}
+		// A node in mode 2 has no other store: its agent did not answer.
+		if (NodeRole::refusesConnects()) {
+			return false;
 		}
 		if ($rSettings['redis_handler']) {
 			return self::createConnection($rRecord);
@@ -969,6 +1122,10 @@ class ConnectionTracker {
 				return $rFound ?: null;
 			}
 		}
+		// A node in mode 2 has no other store: its agent did not answer.
+		if (NodeRole::refusesConnects()) {
+			self::refuseUnchecked();
+		}
 		if ($rSettings['redis_handler']) {
 			$rConnection = self::getConnection($rUUID);
 			return is_array($rConnection) ? $rConnection : null;
@@ -986,6 +1143,22 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * Open the store a stream endpoint records its viewer in: MAIN's Redis
+	 * with the Redis connection handler, else the database (lazily). Not
+	 * Redis on a node in mode 2, which may not open it: its viewers are its
+	 * agent's, which every store path here asks first.
+	 *
+	 * @param array<string, mixed> $rSettings Settings (reads redis_handler).
+	 */
+	public static function openStore(array $rSettings): void {
+		if ($rSettings['redis_handler'] && !NodeRole::refusesConnects()) {
+			RedisManager::ensureConnected();
+		} else {
+			DatabaseFactory::connectLazy();
+		}
+	}
+
+	/**
 	 * A long-running viewer's periodic check-in: refresh `hls_last_read` and
 	 * read back what the store now says (null when the connection is gone).
 	 * A connection that has ended (closed by the limiter, an admin or the
@@ -997,18 +1170,33 @@ class ConnectionTracker {
 	 * @return array<string, mixed>|null The Redis record, or `pid` and `hls_end` on the table path.
 	 */
 	public static function heartbeat(array $rSettings, string $rUUID, int $rLastRead): ?array {
+		self::$rStoreSilent = false;
 		if (AgentConnections::enabled()) {
 			$rTouched = AgentConnections::touch($rUUID, $rLastRead);
 			if ($rTouched !== null) {
 				return $rTouched ?: null;
 			}
 		}
+		// A node in mode 2 has no other store: its agent did not answer.
+		if (NodeRole::refusesConnects()) {
+			self::$rStoreSilent = true;
+			return null;
+		}
 		$rConnection = null;
 		if ($rSettings['redis_handler']) {
-			RedisManager::ensureConnected();
-			$rExisting = self::getConnection($rUUID);
-			if ($rExisting) {
-				$rConnection = self::ended($rExisting) ? $rExisting : self::updateConnection($rExisting, ['hls_last_read' => $rLastRead]);
+			// Not reached, or lost on the way: the store said nothing of the viewer.
+			try {
+				if (!RedisManager::ensureConnected()) {
+					self::$rStoreSilent = true;
+					return null;
+				}
+				$rExisting = self::getConnection($rUUID);
+				if ($rExisting) {
+					$rConnection = self::ended($rExisting) ? $rExisting : self::updateConnection($rExisting, ['hls_last_read' => $rLastRead]);
+				}
+			} catch (\RedisException) {
+				self::$rStoreSilent = true;
+				$rConnection = null;
 			}
 			RedisManager::closeInstance();
 			return $rConnection ?: null;
@@ -1016,12 +1204,52 @@ class ConnectionTracker {
 		DatabaseFactory::connectLazy();
 		$db = self::store();
 		$db->query('UPDATE `lines_live` SET `hls_last_read` = ? WHERE `uuid` = ?', $rLastRead, $rUUID);
-		$db->query('SELECT `pid`, `hls_end` FROM `lines_live` WHERE `uuid` = ?', $rUUID);
-		if ($db->num_rows() == 1) {
+		// A read the database refused is no answer either.
+		if ($db->query('SELECT `pid`, `hls_end` FROM `lines_live` WHERE `uuid` = ?', $rUUID) === false) {
+			self::$rStoreSilent = true;
+		} elseif ($db->num_rows() == 1) {
 			$rConnection = $db->get_row();
 		}
 		DatabaseFactory::close();
 		return $rConnection;
+	}
+
+	/** Whether the last heartbeat() could not ask the store (not: asked, and the connection is gone). */
+	private static bool $rStoreSilent = false;
+
+	/** Check-ins in a row that could not ask the store. */
+	private static int $rSilentCheckIns = 0;
+
+	/** A check-in that could not ask the store is made again after this many seconds. */
+	public const CHECK_IN_RETRY = 30;
+
+	/** After this many such check-ins in a row (ten minutes) the worker stops, as for a connection that is gone. */
+	public const CHECK_IN_TRIES = 20;
+
+	/**
+	 * A streaming worker's check-in every five minutes: heartbeat(), and
+	 * whether the worker goes on. It does while its connection is open and its
+	 * own. A store that could not be asked (Redis restarting or out of reach,
+	 * a silent agent, a refused query) says nothing about the viewer: the
+	 * worker goes on and asks again in CHECK_IN_RETRY seconds, CHECK_IN_TRIES
+	 * times. It stopped at once, so a Redis restart ended every stream whose
+	 * check-in fell in it.
+	 *
+	 * @param array<string, mixed> $rSettings Settings (reads redis_handler).
+	 * @param int $rPID       The worker's pid: the connection is its own while the record names it.
+	 * @param int $rLastCheck When the caller made this check-in (it asks again 300 s later): moved back for an early retry.
+	 */
+	public static function checkIn(array $rSettings, string $rUUID, int $rLastRead, int $rPID, int &$rLastCheck): bool {
+		$rConnection = self::heartbeat($rSettings, $rUUID, $rLastRead);
+		if ($rConnection === null && self::$rStoreSilent) {
+			if (++self::$rSilentCheckIns > self::CHECK_IN_TRIES) {
+				return false;
+			}
+			$rLastCheck = time() - 300 + self::CHECK_IN_RETRY;
+			return true;
+		}
+		self::$rSilentCheckIns = 0;
+		return is_array($rConnection) && $rConnection['hls_end'] == 0 && $rConnection['pid'] == $rPID;
 	}
 
 	/**
@@ -1047,7 +1275,9 @@ class ConnectionTracker {
 			"stream_id" => $rCtx["stream_id"],
 			"server_id" => $rCtx["server_id"],
 			"proxy_id" => $rCtx["proxy_id"],
-			"user_agent" => $rCtx["user_agent"],
+			// As the table holds it (varchar(255)): a record took the whole header,
+			// and a viewer sending a new long one each time filled Redis with them.
+			"user_agent" => substr((string) $rCtx["user_agent"], 0, 255),
 			"user_ip" => $rCtx["user_ip"],
 			"container" => $rContainer,
 			"pid" => $rPid,
@@ -1110,6 +1340,10 @@ class ConnectionTracker {
 				return $rFound !== false && self::liveMatches($rFound, $rCtx, $rContainer, $rOpenOnly, $rAllowAdaptive) ? $rFound : null;
 			}
 		}
+		// A node in mode 2 has no other store: its agent did not answer.
+		if (NodeRole::refusesConnects()) {
+			self::refuseUnchecked();
+		}
 		if ($rSettings["redis_handler"]) {
 			$rConnection = self::getConnection($rCtx["uuid"]);
 			// Same meaning as `hls_end = 0` on the table path: a connection that was
@@ -1124,7 +1358,7 @@ class ConnectionTracker {
 		}
 
 		$db = self::db();
-		$rCols = $rWithPid ? "`activity_id`, `pid`, `user_ip`" : "`activity_id`, `user_ip`";
+		$rCols = $rWithPid ? "`activity_id`, `pid`, `user_ip`, `hls_end`" : "`activity_id`, `user_ip`";
 		$rOpen = $rOpenOnly ? " AND `hls_end` = 0" : "";
 
 		if ($rAllowAdaptive && !empty($rCtx["adaptive"])) {
@@ -1177,10 +1411,17 @@ class ConnectionTracker {
 		// identity included): refresh it there, re-opened.
 		if (AgentConnections::enabled() && isset($rConnection['identity'], $rConnection['uuid'])) {
 			$rUpdated = array_merge($rConnection, $rChanges, ['hls_end' => 0]);
+			if (!empty($rConnection['hls_end'])) {
+				$rUpdated['retire_token'] = bin2hex(random_bytes(16));
+			}
 			if (AgentConnections::put((string) $rConnection['uuid'], $rUpdated)) {
 				$rConnection = $rUpdated;
 				return true;
 			}
+		}
+		// A node in mode 2 has no other store: its agent did not answer.
+		if (NodeRole::refusesConnects()) {
+			return false;
 		}
 		if ($rSettings["redis_handler"]) {
 			$rUpdated = self::updateConnection($rConnection, $rChanges, "open");
@@ -1255,7 +1496,7 @@ class ConnectionTracker {
 	 * @param list<string> $rKeys
 	 * @return list<array<string, mixed>|false>|null
 	 */
-	private static function records(\Redis $rRedis, array $rKeys): ?array {
+	public static function records(\Redis $rRedis, array $rKeys): ?array {
 		$rData = [];
 		foreach (array_chunk($rKeys, self::READ_CHUNK) as $rChunk) {
 			$rPart = $rRedis->mGet($rChunk);
@@ -1344,6 +1585,20 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * The token an RTMP viewer is recorded with (openRecord), which has no
+	 * stream token: its line's limit, and on a load balancer what MAIN minted
+	 * for it with `rtmp_auth` (its uuid, admission and proof, as an HTTP
+	 * viewer's token carries them). MAIN's own check mints nothing.
+	 *
+	 * @param array<string, mixed> $rAuth The passed check: RtmpViewerAuth::check()'s answer, or MAIN's to rtmp_auth.
+	 * @return array<string, mixed>
+	 */
+	public static function rtmpToken(array $rAuth): array {
+		$rMinted = is_array($rAuth['token'] ?? null) ? array_intersect_key($rAuth['token'], array_flip(['uuid', 'adm', 'adm_uuid', 'prf'])) : [];
+		return ['user_info' => ['max_connections' => (int) ($rAuth['user']['max_connections'] ?? 0)]] + $rMinted;
+	}
+
+	/**
 	 * An RTMP viewer's uuid, from nginx-rtmp's client id (which play_done
 	 * closes it by). nginx numbers its clients from 1 in each process, so
 	 * the id alone named two servers' viewers alike, and in Redis mode the
@@ -1379,16 +1634,31 @@ class ConnectionTracker {
 	 * @param array|string $rActivityInfo Connection data or UUID/activity_id.
 	 * @param bool         $rRemove       Remove connection from Redis/MySQL.
 	 * @param bool         $rEnd          Mark HLS connection as ended.
+	 * @param bool         $rKill         End the PHP worker that serves it (TS, VOD). Not from the
+	 *                                    sweep: a connection it closes for silence was left by a
+	 *                                    worker that could not write its close, and PHP-FPM has
+	 *                                    given that worker, its pid, to someone else since.
 	 * @return bool True on successful close, false otherwise.
 	 */
-	public static function closeConnection(array|string $rActivityInfo, bool $rRemove = true, bool $rEnd = true): bool {
+
+	/**
+	 * A connection as a request names it, for closeConnection(): its uuid (the
+	 * Redis handler's key and the `uuid` column) or its row id in `lines_live`.
+	 * Anything else, the names of the index sets included, names none ('').
+	 */
+	public static function reference(mixed $rID): string {
+		$rID = is_scalar($rID) ? (string) $rID : '';
+		return preg_match(AgentConnections::CONN_UUID, $rID) === 1 ? $rID : '';
+	}
+
+	public static function closeConnection(array|string $rActivityInfo, bool $rRemove = true, bool $rEnd = true, bool $rKill = true): bool {
 		if (!empty($rActivityInfo)) {
 			global $rSettings, $rServers;
 			$db = self::db();
 			if ($rSettings['redis_handler'] && !is_object(RedisManager::instance())) {
 				RedisManager::ensureConnected();
 			}
-			$rRedisObj = RedisManager::instance();
+			$rRedisObj = $rSettings['redis_handler'] ? RedisManager::instance() : null;
 			if (!$rRedisObj && $rSettings['redis_handler']) {
 				return false;
 			}
@@ -1409,6 +1679,11 @@ class ConnectionTracker {
 				// Before the defaults below, which read a missing hls_end as ended.
 				$rEnded = self::ended($rActivityInfo);
 				$rActivityInfo += ['server_id' => 0, 'pid' => 0, 'activity_id' => null, 'stream_id' => 0, 'uuid' => '', 'hls_end' => 1];
+				// Another node's viewer, closed by MAIN: before the store changes, so
+				// an upsert of it already on its way cannot open it again.
+				if ($rActivityInfo['server_id'] != SERVER_ID && class_exists(ClusterRoute::class)) {
+					ClusterRoute::tombstone(intval($rActivityInfo['server_id']), (string) $rActivityInfo['uuid'], intval($rActivityInfo['date_start'] ?? 0), $rActivityInfo['retire_token'] ?? null);
+				}
 				if (($rActivityInfo['container'] ?? '') == 'rtmp') {
 					// An ended one's client is gone (play_done): nginx may have given its id to another.
 					if (!$rEnded && $rActivityInfo['server_id'] == SERVER_ID) {
@@ -1441,12 +1716,12 @@ class ConnectionTracker {
 					} else {
 						if (intval($rActivityInfo['pid']) === 0) {
 							self::dropDaemonViewer($rActivityInfo);
-						} elseif (!$rEnded && $rActivityInfo['server_id'] == SERVER_ID) {
+						} elseif (!$rEnded && $rKill && $rActivityInfo['server_id'] == SERVER_ID) {
 							// An ended connection's worker ended with it and now serves someone else (self::ended).
 							if ($rActivityInfo['pid'] != getmypid() && is_numeric($rActivityInfo['pid']) && 0 < $rActivityInfo['pid']) {
 								posix_kill(intval($rActivityInfo['pid']), 9);
 							}
-						} elseif (!$rEnded) {
+						} elseif (!$rEnded && $rKill) {
 							if ($rSettings['redis_handler']) {
 								self::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 0);
 							} else {
@@ -1468,7 +1743,10 @@ class ConnectionTracker {
 						$db->query('DELETE FROM `lines_live` WHERE `activity_id` = ?', $rActivityInfo['activity_id']);
 					}
 				}
-				if ($rRemove || ($rEnd && ($rActivityInfo['container'] ?? '') == 'hls')) {
+				// A sweep passes remove=false/end=false and batches the store deletion
+				// itself. Its close must still reach the registry: a dead PHP TS
+				// worker cannot run its shutdown handler to remove that entry.
+				if ($rRemove || !$rEnd || ($rActivityInfo['container'] ?? '') == 'hls') {
 					if ($rActivityInfo['server_id'] == SERVER_ID) {
 						// This node's own connection: its agent's registry follows the
 						// close just made in MAIN's store.
@@ -1601,15 +1879,10 @@ class ConnectionTracker {
 			$rCount = 0;
 
 			if ($rProxy) {
-				$rParentIDs = ServerRepository::getAll()[$rServerID]['parent_id'];
-
-				foreach ($rParentIDs as $rParentID) {
-					foreach (self::getRedisConnections(null, $rParentID, null, true, false, false) as $rConnection) {
-						if ($rConnection['proxy_id'] == $rServerID) {
-							$rCount++;
-						}
-					}
-				}
+				// The proxy's own set, which getCapacity() counts too: every record of
+				// its parent servers was read and decoded for this one number.
+				$rRedis = RedisManager::instance();
+				$rCount = $rRedis instanceof \Redis ? (int) $rRedis->zCard('PROXY#' . $rServerID) : 0;
 			} else {
 				list($rCount) = self::getRedisConnections(null, $rServerID, null, true, true, false);
 			}

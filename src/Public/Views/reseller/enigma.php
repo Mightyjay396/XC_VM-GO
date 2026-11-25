@@ -127,7 +127,8 @@ $rStatusMessages = [
                             <input type="text" class="form-control" id="mac" name="mac" value="<?= isset($rDevice) ? htmlspecialchars((string) $rDevice['mac'], ENT_QUOTES) : ''; ?>">
                         </div>
 
-                        <?php if (count($rPermissions['all_reports']) > 0): ?>
+                        <?php // A new trial is held by the reseller that makes it: there is no owner to pick.
+                        if (count($rPermissions['all_reports']) > 0 && ($rIsEdit || !$rIsTrial)): ?>
                             <div class="mb-6">
                                 <label class="form-label" for="member_id">Owner</label>
                                 <select name="member_id" id="member_id" class="form-select select2">
@@ -153,6 +154,10 @@ $rStatusMessages = [
                                         </optgroup>
                                     <?php endif; ?>
                                 </select>
+                                <?php // A trial stays with its holder: the owner picked applies once a package makes the device official.
+                                if (isset($rLine) && $rLine['is_trial']): ?>
+                                    <div class="form-text small"><?= $language::get('trial_owner_kept'); ?></div>
+                                <?php endif; ?>
                             </div>
                         <?php endif; ?>
 
@@ -197,6 +202,11 @@ $rStatusMessages = [
                         <div class="mb-6">
                             <label class="form-label" for="exp_date">Expiration Date</label>
                             <input readonly type="text" class="form-control" id="exp_date" name="exp_date" value="<?= isset($rLine) && !is_null($rLine['exp_date']) ? date('Y-m-d H:i', (int) $rLine['exp_date']) : ''; ?>">
+                        </div>
+
+                        <div class="mb-6">
+                            <label class="form-label" for="telegram">Telegram <i title="<?= htmlspecialchars($language::get('line_telegram_tooltip'), ENT_QUOTES); ?>" class="icon-base ti tabler-brand-telegram text-info"></i></label>
+                            <input type="text" class="form-control" id="telegram" name="telegram" maxlength="64" placeholder="@username" value="<?= isset($rDevice) ? htmlspecialchars((string) ($rLine['telegram'] ?? ''), ENT_QUOTES) : ''; ?>">
                         </div>
 
                         <div class="mb-2">
@@ -285,7 +295,7 @@ $rStatusMessages = [
                     <?php endif; ?>
 
                     <div class="tab-pane fade" id="tab-review" role="tabpanel">
-                        <div class="alert alert-danger d-flex align-items-center" role="alert" style="display:none;" id="no-credits">
+                        <div class="alert alert-danger" role="alert" style="display:none;" id="no-credits">
                             <i class="icon-base ti tabler-ban me-2"></i> You do not have enough credits to complete this transaction!
                         </div>
                         <div class="table-responsive mb-4">
@@ -345,7 +355,7 @@ LayoutRenderer::renderFooter('reseller');
         var errText = <?= json_encode($language::get('error_occured')); ?>;
         var statusMessages = <?= json_encode($rStatusMessages); ?>;
 
-        var ownerCredits = <?= (int) $rUserInfo['credits']; ?>;
+        var ownerCredits = <?= (float) $rUserInfo['credits']; ?>;
         var allowChangeBouquets = <?= $rAllowChange ? 'true' : 'false'; ?>;
         var userPackage = <?= isset($rLine) ? (intval($rLine['package_id']) ?: 'null') : 'null'; ?>;
         var userBouquet = <?= isset($rLine) ? json_encode(array_map('intval', json_decode((string) $rLine['bouquet'], true) ?: [])) : '[]'; ?>;

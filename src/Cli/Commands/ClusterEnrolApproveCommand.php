@@ -58,7 +58,10 @@ class ClusterEnrolApproveCommand implements CommandInterface {
 		try {
 			$rResult = EnrolCodeService::approve($rCrypto, $rServerID, $rSas, SettingsManager::getAll(), $rServers[SERVER_ID] ?? []);
 		} catch (ClusterRefusedException $rE) {
-			echo ($rE->reason() === 'LICENCE' ? 'CLUSTER_LICENCE_REQUIRED' : 'Cluster token refused: ' . $rE->reason()) . ". The request stays pending.\n";
+			echo match ($rE->reason()) {
+				'LICENCE' => 'CLUSTER_LICENCE_REQUIRED',
+				default => 'Cluster token refused: ' . $rE->reason(),
+			} . ". The request stays pending.\n";
 			return 1;
 		}
 		echo match ($rResult) {

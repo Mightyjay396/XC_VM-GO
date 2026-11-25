@@ -2,7 +2,7 @@
 
 /**
  * Reseller Lines (Bootstrap 5). Full-parity port of admin/lines.php adapted to the
- * reseller contract: clean-JSON keyed serverSide DataTable (ResellerTableRenderer
+ * reseller contract: clean-JSON keyed serverSide DataTable (ResellerTableController
  * ::handleLines emits data-only rows), with the status badge, online/trial/
  * restreamer dots, connection badges, expiration/last-connection cells and the
  * per-row action dropdown all rendered client-side.
@@ -39,12 +39,25 @@ $rSiteUrl = rtrim((string) (ServerRepository::getAll()[SERVER_ID]['site_url'] ??
 if (empty($rSiteUrl)) {
     $rSiteUrl = rtrim((string) DomainResolver::resolve(SERVER_ID), '/');
 }
+// A reseller's download/EPG links use the reseller's own domain (the first of its
+// reseller_dns list), not the server's, keeping the server base's scheme and port.
+// A reseller_dns that already carries a scheme is trusted as-is.
+$rResellerDomains = array_filter(array_map('trim', explode(',', (string) ($rUserInfo['reseller_dns'] ?? ''))));
+if ($rResellerDomains !== []) {
+    $rResellerHost = (string) reset($rResellerDomains);
+    if (preg_match('#^https?://#i', $rResellerHost)) {
+        $rSiteUrl = rtrim($rResellerHost, '/');
+    } else {
+        $rParts = parse_url($rSiteUrl);
+        $rSiteUrl = ($rParts['scheme'] ?? 'http') . '://' . $rResellerHost . (isset($rParts['port']) ? ':' . (int) $rParts['port'] : '');
+    }
+}
 
 // Deep-link owner filter (?owner=ID) — pre-selects the matching static option.
 $rSelectedOwner = RequestManager::has('owner') ? (string) RequestManager::get('owner') : '';
 $rSelectedFilter = RequestManager::has('filter') ? (int) RequestManager::get('filter') : (RequestManager::has('trial') && RequestManager::get('trial') == 1 ? 5 : 0);
 
-// Reseller status filter values handled by ResellerTableRenderer::handleLines.
+// Reseller status filter values handled by ResellerTableController::handleLines.
 $rStatusFilters = [1 => 'Active', 2 => 'Disabled', 3 => 'Banned', 4 => 'Expired', 5 => 'Trial'];
 
 $rDirectReports = (array) ($rPermissions['direct_reports'] ?? []);
@@ -397,7 +410,7 @@ LayoutRenderer::renderFooter('reseller');
                     className: 'text-center',
                     render: function(d, t, row) {
                         var badge = '<span class="badge bg-label-' + (d > 0 ? 'info' : 'secondary') + '">' + (d || 0) + '</span>';
-                        return (d > 0 && canLive) ? '<a href="live_connections?line=' + encodeURIComponent(row.id) + '">' + badge + '</a>' : badge;
+                        return (d > 0 && canLive) ? '<a href="live_connections?user_id=' + encodeURIComponent(row.id) + '">' + badge + '</a>' : badge;
                     }
                 },
                 { data: 'max_connections', className: 'text-center', render: function(d) { return '<span class="badge bg-label-dark">' + (d == 0 ? '&infin;' : d) + '</span>'; } },
@@ -440,6 +453,7 @@ LayoutRenderer::renderFooter('reseller');
                             ? '<a class="dropdown-item js-act" href="javascript:void(0);" data-sub="disable" data-id="' + esc(row.id) + '">' + esc(lang.disable) + '</a>'
                             : '<a class="dropdown-item js-act" href="javascript:void(0);" data-sub="enable" data-id="' + esc(row.id) + '">' + esc(lang.enable) + '</a>';
                         items += '<a class="dropdown-item text-danger js-act" href="javascript:void(0);" data-sub="delete" data-id="' + esc(row.id) + '">' + esc(lang.del) + '</a>';
+                        items += '<a class="dropdown-item text-danger js-refund" href="javascript:void(0);" data-id="' + esc(row.id) + '">' + esc(RC_LABEL) + '</a>'; // REFUNDCREDIT_PATCH
                         return '<div class="dropdown"><button class="btn btn-sm btn-icon btn-label-secondary" data-bs-toggle="dropdown" aria-expanded="false"><i class="icon-base ti tabler-dots-vertical"></i></button><div class="dropdown-menu dropdown-menu-end">' + items + '</div></div>';
                     }
                 }
@@ -463,6 +477,30 @@ LayoutRenderer::renderFooter('reseller');
                 .then(function(r) { return r.json(); })
                 .then(function(dt) { if (!dt || dt.result !== true) { throw new Error('fail'); } });
         };
+        // REFUNDCREDIT_PATCH: delete & refund (module refundcredit).
+        var RC_FR = <?= json_encode(stripos((string) $language::get('delete'), 'suppr') !== false); ?>;
+        var RC_LABEL = RC_FR ? 'Supprimer et rembourser' : 'Delete & Refund';
+        var rcFetch = function(url, opt) {
+            return fetch(url, Object.assign({ headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' }, opt || {})).then(function(r) { return r.json(); });
+        };
+        jQuery('#lines-table tbody').on('click', '.js-refund', function() {
+            var id = this.getAttribute('data-id');
+            rcFetch('./refundcredit/calculate?user_id=' + encodeURIComponent(id)).then(function(c) {
+                if (!c || c.result !== true) { xcToast((c && c.error) || lang.error, 'error'); return; }
+                var msg = RC_FR
+                    ? 'Supprimer la ligne ' + c.username + ' ? Crédits payés : ' + c.credits_paid + ' — mois utilisés : ' + c.months_used + ' / ' + c.months_total + ' — crédits remboursés au revendeur : ' + c.credits_refund
+                    : 'Delete line ' + c.username + '? Credits paid: ' + c.credits_paid + ' — months used: ' + c.months_used + ' / ' + c.months_total + ' — credits refunded to reseller: ' + c.credits_refund;
+                xcConfirm(msg).then(function(ok) {
+                    if (!ok) { return; }
+                    rcFetch('./refundcredit/delete?user_id=' + encodeURIComponent(id), { method: 'POST' }).then(function(d) {
+                        if (d && d.result === true) {
+                            xcToast((RC_FR ? 'Ligne supprimée — crédits remboursés : ' : 'Line deleted — credits refunded: ') + (d.credits_refunded || 0), 'success');
+                            table.ajax.reload(null, false);
+                        } else { xcToast((d && d.message) || lang.error, 'error'); }
+                    }).catch(function() { xcToast(lang.error, 'error'); });
+                });
+            }).catch(function() { xcToast(lang.error, 'error'); });
+        });
         jQuery('#lines-table tbody').on('click', '.js-act', function() {
             var sub = this.getAttribute('data-sub'), id = this.getAttribute('data-id');
             var go = function() { rowApi(id, sub).then(function() { table.ajax.reload(null, false); }).catch(function() { xcToast(lang.error, 'error'); }); };

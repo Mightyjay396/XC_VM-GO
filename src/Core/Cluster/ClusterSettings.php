@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Gateway\GatewayPolicy;
 use XcVm\Domain\Cluster\DbAllowlist;
 
 /**
@@ -18,7 +19,8 @@ use XcVm\Domain\Cluster\DbAllowlist;
  * - `cluster_transport = https_required` without working HTTPS (the
  *   self-probe, and every active node reporting HTTPS);
  * - `cluster_api_enabled = 1` without the extension's cluster API;
- * - `lb_new_node_mode = api` before Phase 9;
+ * - `lb_new_node_mode = api` with the cluster API off, the Redis connection handler on, or an
+ *   extension that cannot pack a credential-free config;
  * - a scan root that is not an absolute, normalised path;
  * - a database allowlist entry that is not an IP or CIDR.
  *
@@ -41,7 +43,10 @@ final class ClusterSettings {
 		'cluster_ingest_concurrency' => [6, 1, 64],
 		'servers_stats_retention_days' => [30, 1, 365],
 		'cluster_audit_retention_days' => [30, 1, 365],
+		'lb_binary_canary_server' => [0, 0, 2147483647],
+		'lb_binary_canary_hours' => [24, 1, 720],
 		'cluster_db_allowlist' => [0, 0, 1],
+		'cluster_auto_mode_down_min' => [0, 0, 1440],
 	];
 
 	/**
@@ -56,7 +61,13 @@ final class ClusterSettings {
 		'cluster_transport' => ['auto', ['auto', 'http', 'https_preferred', 'https_required']],
 		'lb_revocation_mode' => ['graceful', ['graceful', 'hard']],
 		'lb_offline_admission' => ['local', ['allow', 'local', 'deny']],
-		'lb_new_node_mode' => ['legacy', ['legacy', 'api']],
+		'lb_new_node_mode' => ['legacy', ['legacy', 'api', 'serve_only']],
+		// A node's viewer records must prove MAIN's mint (ConnectionAdmission): counted
+		// under observe, refused under enforce where MAIN withholds the node's secret.
+		'cluster_conn_binding' => ['observe', ['observe', 'enforce']],
+		// The segment gateway (Phase 12, GatewayPolicy::MODES): serving by default on a
+		// new panel. A node that has not heard the setting stays off (GatewayPolicy::mode()).
+		'gateway_mode' => ['segments+playlist', GatewayPolicy::MODES],
 	];
 
 	public const DEFAULT_SCAN_ROOTS = ['/home/xc_vm/content', '/mnt', '/media'];
@@ -88,7 +99,7 @@ final class ClusterSettings {
 	 * @param array<string, mixed> $rNew     Submitted values (only cluster keys present are touched).
 	 * @param array<string, mixed> $rMain    The main server's `servers` row (ports).
 	 * @param array<string, mixed> $rCurrent The stored settings.
-	 * @param array{https_ok?: bool, nodes_https_ok?: bool, extension_ok?: bool, api_mode_allowed?: bool, credential_free_config?: bool} $rEnv
+	 * @param array{https_ok?: bool, nodes_https_ok?: bool, extension_ok?: bool, credential_free_config?: bool} $rEnv
 	 * @return array{0: array<string, mixed>, 1: list<array{0: string, 1: string}>} [values to store, errors as [key, code]]
 	 */
 	public static function normalize(array $rNew, array $rMain, array $rCurrent, array $rEnv = []): array {
@@ -162,10 +173,14 @@ final class ClusterSettings {
 			$rErrors[] = ['cluster_api_enabled', 'cluster_error_extension'];
 			unset($rOut['cluster_api_enabled']);
 		}
-		if (($rOut['lb_new_node_mode'] ?? null) === 'api' && empty($rEnv['api_mode_allowed'])) {
-			$rErrors[] = ['lb_new_node_mode', 'cluster_error_api_mode'];
+		// serve_only is an API-mode flavour (credential-free, no DB) that also
+		// drops PHP, so it carries the same two prerequisites as api.
+		if (self::isApiMode($rOut['lb_new_node_mode'] ?? null) && empty($rOut['cluster_api_enabled'] ?? $rCurrent['cluster_api_enabled'] ?? 0)) {
+			// Mode 2 is the cluster API's: with it off (as this save leaves it), a
+			// new node installs in legacy mode whatever is stored (newNodesInApiMode()).
+			$rErrors[] = ['lb_new_node_mode', 'cluster_error_api_mode_api_off'];
 			unset($rOut['lb_new_node_mode']);
-		} elseif (($rOut['lb_new_node_mode'] ?? null) === 'api' && empty($rEnv['credential_free_config'])) {
+		} elseif (self::isApiMode($rOut['lb_new_node_mode'] ?? null) && empty($rEnv['credential_free_config'])) {
 			// An API-mode node is installed without MAIN's credentials: an
 			// extension that cannot pack such a config would hand them over.
 			$rErrors[] = ['lb_new_node_mode', 'cluster_error_api_mode_extension'];
@@ -179,13 +194,35 @@ final class ClusterSettings {
 	 * Is a new load balancer installed in API mode (plan, section 12: mode 2
 	 * from its first boot, no DB grant, a credential-free config.enc)? Only
 	 * with the cluster API on and `lb_new_node_mode = api` — which normalize()
-	 * refuses until the cutover (`api_mode_allowed`) and without an extension
-	 * that packs such a config (CredentialFreeConfig).
+	 * refuses with the cluster API off and without an extension that packs such a config (CredentialFreeConfig).
 	 *
 	 * @param array<string, mixed> $rSettings
 	 */
 	public static function newNodesInApiMode(array $rSettings): bool {
-		return !empty($rSettings['cluster_api_enabled']) && self::enum('lb_new_node_mode', $rSettings['lb_new_node_mode'] ?? null) === 'api';
+		return !empty($rSettings['cluster_api_enabled']) && self::isApiMode(self::enum('lb_new_node_mode', $rSettings['lb_new_node_mode'] ?? null));
+	}
+
+	/**
+	 * Does an `lb_new_node_mode` value mean an API-mode node (mode 2,
+	 * credential-free)? Both `api` and its PHP-free `serve_only` flavour do;
+	 * `legacy` does not. The single place that classifies the enum, so adding a
+	 * flavour is one edit here — not at every `=== 'api'` caller (enrolment mode,
+	 * cluster:init, the install guard, normalize).
+	 */
+	public static function isApiMode(?string $rMode): bool {
+		return in_array($rMode, ['api', 'serve_only'], true);
+	}
+
+	/**
+	 * Is a new load balancer installed serve-only (the API-mode flavour that
+	 * also runs PHP-free: one Go binary, no http-nginx — server:install
+	 * --serve-only)? A subset of newNodesInApiMode(): every serve-only node is
+	 * credential-free, but an api-mode node keeps PHP.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function newNodesServeOnly(array $rSettings): bool {
+		return !empty($rSettings['cluster_api_enabled']) && self::enum('lb_new_node_mode', $rSettings['lb_new_node_mode'] ?? null) === 'serve_only';
 	}
 
 	/** Why a cluster API port is refused, or null when it is usable (0 = share http_broadcast_port). */
@@ -222,6 +259,32 @@ final class ClusterSettings {
 			return false;
 		}
 		return (bool) preg_match('/^(?=.{1,253}\z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\z/', $rHost);
+	}
+
+	/**
+	 * The folders the file browser shows at $rDir when $rDir lies above the
+	 * scan roots: the next path segment toward each root below it. The browser
+	 * opens at "/", which no node lists (pathAllowed()), so without this it
+	 * showed an empty folder with no way in; now "/" offers `home`, `mnt`,
+	 * `media`, and ".." walks back up the same way. Null when $rDir is inside
+	 * a root (the node lists it, and checks it) or leads to none of them.
+	 *
+	 * @param list<string> $rRoots scanRoots()'s roots
+	 * @return list<string>|null
+	 */
+	public static function dirsTowardRoots(string $rDir, array $rRoots): ?array {
+		$rDir = '/' . trim($rDir, '/');
+		$rPrefix = $rDir === '/' ? '/' : $rDir . '/';
+		$rOut = [];
+		foreach ($rRoots as $rRoot) {
+			if ($rRoot === $rDir || str_starts_with($rDir . '/', $rRoot . '/')) {
+				return null;
+			}
+			if (str_starts_with($rRoot, $rPrefix)) {
+				$rOut[] = explode('/', substr($rRoot, strlen($rPrefix)))[0];
+			}
+		}
+		return $rOut === [] ? null : array_values(array_unique($rOut));
 	}
 
 	/**

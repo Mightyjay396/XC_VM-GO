@@ -5,9 +5,11 @@ namespace XcVm\Public\Controllers\Admin\Ajax;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
+use XcVm\Domain\Cluster\PlacementAdvice;
+use XcVm\Domain\Cluster\RollingUpdate;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
@@ -19,7 +21,8 @@ use XcVm\Streaming\Health\ProcessChecker;
  * rollback_versions, server, proxy, fingerprint, restart_all_services,
  * restart_services, reboot_server, update_binaries, server_view, server_stats,
  * rtmp_kill, install_status, reinstall_server, fpm_status, update_all_servers,
- * update_all_binaries.
+ * update_all_binaries, rolling_update_start, rolling_update_cancel,
+ * rolling_update_status, placement_advice.
  *
  * Note: rtmp_kill echoes the raw {@see NodeRpc::request()} response
  * rather than a JSON envelope.
@@ -52,7 +55,7 @@ class ServerAjaxController extends BaseAjaxController {
 		// Optional base version (a specific server's version); defaults to
 		// the MAIN panel version. Previous releases are resolved relative to it.
 		$rBaseVersion = trim((string) RequestManager::get('version'));
-		if (!preg_match('/^\d+\.\d+\.\d+$/', $rBaseVersion)) {
+		if (!GitHubReleases::isReleaseVersion($rBaseVersion)) {
 			$rBaseVersion = XC_VM_VERSION;
 		}
 		$rVersions = [];
@@ -90,25 +93,27 @@ class ServerAjaxController extends BaseAjaxController {
 		}
 
 		if ($rSub == 'update') {
+			$rSent = true;
 			foreach ($this->normalizeServerIds() as $rID) {
-				NodeActions::update(intval($rID), $db);
+				$rSent = NodeActions::update(intval($rID), $db) && $rSent;
 			}
 
-			$this->ok();
+			$this->sent($rSent);
 		}
 
 		if ($rSub == 'rollback') {
 			$rVersion = trim((string) RequestManager::get('version'));
 
-			if (!preg_match('/^\d+\.\d+\.\d+$/', $rVersion) || version_compare($rVersion, XC_VM_VERSION, '>=')) {
+			if (!GitHubReleases::isReleaseVersion($rVersion) || version_compare($rVersion, XC_VM_VERSION, '>=')) {
 				$this->fail(['error' => 'invalid_version']);
 			}
 
+			$rSent = true;
 			foreach ($this->normalizeServerIds() as $rID) {
-				NodeActions::rollback(intval($rID), $rVersion, $db);
+				$rSent = NodeActions::rollback(intval($rID), $rVersion, $db) && $rSent;
 			}
 
-			$this->ok();
+			$this->sent($rSent);
 		}
 
 		if ($rSub == 'enable') {
@@ -161,7 +166,7 @@ class ServerAjaxController extends BaseAjaxController {
 			}
 
 			if (0 < count($rStreamIDs)) {
-				ApiClient::request(['action' => 'stream', 'sub' => $rSignalSub, 'stream_ids' => array_values($rStreamIDs), 'servers' => [intval(RequestManager::get('server_id'))]]);
+				$this->controlResponse(['action' => 'stream', 'sub' => $rSignalSub, 'stream_ids' => array_values($rStreamIDs), 'servers' => [intval(RequestManager::get('server_id'))]]);
 			}
 
 			$this->ok();
@@ -189,7 +194,7 @@ class ServerAjaxController extends BaseAjaxController {
 		}
 
 		if ($rSub == 'disable') {
-			$db->query('UPDATE `servers` SET `enabled` = 0 WHERE `id` = ?;', RequestManager::get('server_id'));
+			$db->query('UPDATE `servers` SET `enabled` = 0 WHERE `id` = ? AND `is_main` = 0;', RequestManager::get('server_id'));
 			$this->ok();
 		}
 
@@ -307,13 +312,14 @@ class ServerAjaxController extends BaseAjaxController {
 
 		global $db, $rServers;
 
+		$rSkipped = [];
 		foreach ($rServers as $rServer) {
-			if ($rServer['server_online']) {
-				NodeActions::restartServices(intval($rServer['id']), $db);
+			if ($rServer['server_online'] && !NodeActions::restartServices(intval($rServer['id']), $db)) {
+				$rSkipped[] = (string) $rServer['server_name'];
 			}
 		}
 
-		$this->ok();
+		$this->okSkipping($rSkipped);
 	}
 
 	/** action=restart_services — restart services on the selected servers. */
@@ -323,11 +329,12 @@ class ServerAjaxController extends BaseAjaxController {
 
 		global $db;
 
+		$rSent = true;
 		foreach ($this->normalizeServerIds() as $rID) {
-			NodeActions::restartServices(intval($rID), $db);
+			$rSent = NodeActions::restartServices(intval($rID), $db) && $rSent;
 		}
 
-		$this->ok();
+		$this->sent($rSent);
 	}
 
 	/** action=reboot_server — reboot the selected servers. */
@@ -337,11 +344,12 @@ class ServerAjaxController extends BaseAjaxController {
 
 		global $db;
 
+		$rSent = true;
 		foreach ($this->normalizeServerIds() as $rID) {
-			NodeActions::reboot(intval($rID), $db);
+			$rSent = NodeActions::reboot(intval($rID), $db) && $rSent;
 		}
 
-		$this->ok();
+		$this->sent($rSent);
 	}
 
 	/** action=update_binaries — update binaries on the selected servers. */
@@ -351,11 +359,12 @@ class ServerAjaxController extends BaseAjaxController {
 
 		global $db;
 
+		$rSent = true;
 		foreach ($this->normalizeServerIds() as $rID) {
-			NodeActions::updateBinaries(intval($rID), $db);
+			$rSent = NodeActions::updateBinaries(intval($rID), $db) && $rSent;
 		}
 
-		$this->ok();
+		$this->sent($rSent);
 	}
 
 	/** action=server_view — summary statistics for a server/proxy. */
@@ -474,6 +483,19 @@ class ServerAjaxController extends BaseAjaxController {
 			$rTail = isset($rParams['http_broadcast_port'])
 				? [(string) intval($rParams['http_broadcast_port']), (string) intval($rParams['https_broadcast_port'])]
 				: [];
+			// Reinstall keeps the node's recorded mode: re-arm --serve-only for a
+			// serve-only LB so its reinstall stays the PHP-free Go node.
+			if ($rType === 2 && !empty($rServers[$rServerID]['serve_only'])) {
+				// --serve-only is a positional argument that follows the broadcast
+				// ports; if the saved metadata carried none, the tail would be empty
+				// and ServerInstallCommand would parse --serve-only as the HTTP port
+				// (intval 0). Fall back to the node's recorded ports so the flag is
+				// always last, never first.
+				if ($rTail === []) {
+					$rTail = [(string) intval($rServers[$rServerID]['http_broadcast_port']), (string) intval($rServers[$rServerID]['https_broadcast_port'])];
+				}
+				$rTail[] = '--serve-only';
+			}
 			$rCommand = InstallCredentials::command($rType, intval($rServerID), intval($rParams['ssh_port']), (string) $rParams['root_username'], $rPassword, $rTail, (string) RequestManager::get('expected_hostkey'), !empty(RequestManager::get('forget_hostkey')));
 
 			shell_exec($rCommand);
@@ -512,13 +534,44 @@ class ServerAjaxController extends BaseAjaxController {
 
 		global $db, $rServers;
 
+		$rSkipped = [];
 		foreach ($rServers as $rServer) {
-			if ($rServer['server_online']) {
-				NodeActions::update(intval($rServer['id']), $db);
+			if ($rServer['server_online'] && !NodeActions::update(intval($rServer['id']), $db)) {
+				$rSkipped[] = (string) $rServer['server_name'];
 			}
 		}
 
+		$this->okSkipping($rSkipped);
+	}
+
+	/** action=rolling_update_start — update the load balancers one at a time (RollingUpdate). */
+	public function rollingUpdateStart(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'servers');
+		$this->json(['result' => RollingUpdate::start()]);
+	}
+
+	/** action=rolling_update_cancel — stop the rolling update before its next look. */
+	public function rollingUpdateCancel(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'servers');
+		RollingUpdate::cancel();
 		$this->ok();
+	}
+
+	/** action=rolling_update_status — the rolling update's progress, for the Servers page. */
+	public function rollingUpdateStatus(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'servers');
+		$rState = RollingUpdate::state();
+		$this->json(['result' => true, 'state' => $rState, 'running' => RollingUpdate::running($rState)]);
+	}
+
+	/** action=placement_advice — busy servers and where their busiest streams could also run (advice only). */
+	public function placementAdvice(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'servers');
+		$this->json(['result' => true] + PlacementAdvice::current());
 	}
 
 	/** action=update_all_binaries — signal 'update_binaries' to every online server. */
@@ -528,13 +581,32 @@ class ServerAjaxController extends BaseAjaxController {
 
 		global $db, $rServers;
 
+		$rSkipped = [];
 		foreach ($rServers as $rServer) {
-			if ($rServer['server_online']) {
-				NodeActions::updateBinaries(intval($rServer['id']), $db);
+			if ($rServer['server_online'] && !NodeActions::updateBinaries(intval($rServer['id']), $db)) {
+				$rSkipped[] = (string) $rServer['server_name'];
 			}
 		}
 
-		$this->ok();
+		$this->okSkipping($rSkipped);
+	}
+
+	/**
+	 * A bulk action's answer: done, naming the servers that took none of it
+	 * (`not_sent`), which the page shows with what to do.
+	 *
+	 * @param list<string> $rSkipped
+	 */
+	private function okSkipping(array $rSkipped): never {
+		$this->ok($rSkipped === [] ? [] : ['not_sent' => $rSkipped]);
+	}
+
+	/**
+	 * A root action's answer: `not_sent` when a node took none of it (a node
+	 * in mode 2 that takes no root command, ClusterRoute::root).
+	 */
+	private function sent(bool $rSent): never {
+		$rSent ? $this->ok() : $this->fail(['error' => 'not_sent']);
 	}
 
 	/**

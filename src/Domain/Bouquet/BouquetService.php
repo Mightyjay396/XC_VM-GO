@@ -40,7 +40,10 @@ class BouquetService {
 				exit();
 			}
 
-			$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
+			// The edit starts from the bouquet as stored: the row cleaner's
+			// escaping would be written back into every field not sent.
+			$db->query('SELECT * FROM `bouquets` WHERE `id` = ?;', intval($rData['edit']));
+			$rArray = AdminHelpers::overwriteData($db->get_raw_row(), $rData);
 		} else {
 			if (!Authorization::check('adv', 'add_bouquet')) {
 				exit();
@@ -55,7 +58,7 @@ class BouquetService {
 			$rBouquetStreams = $rBouquetData['stream'];
 			$rBouquetMovies = $rBouquetData['movies'];
 			$rBouquetRadios = $rBouquetData['radios'];
-			$rBouquetSeries = $rBouquetData['series'];
+			$rBouquetSeries = AdminHelpers::confirmIDs($rBouquetData['series']);
 			$rRequiredIDs = AdminHelpers::confirmIDs(array_merge($rBouquetStreams, $rBouquetMovies, $rBouquetRadios));
 			$rStreams = [];
 
@@ -95,11 +98,23 @@ class BouquetService {
 		$rPrepare = QueryHelper::prepareArray($rArray);
 		$rQuery = 'REPLACE INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-		if ($db->query($rQuery, ...$rPrepare['data'])) {
-			$rInsertID = $db->last_insert_id();
-			self::scan();
+		// An edit replaces the lists another writer may be changing: see lock().
+		if (isset($rData['edit'])) {
+			self::lock((int) $rData['edit']);
+		}
 
-			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
+		try {
+			if ($db->query($rQuery, ...$rPrepare['data'])) {
+				// Read before the bouquet is given back: any later statement resets it.
+				$rInsertID = $db->last_insert_id();
+				self::scan();
+
+				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
+			}
+		} finally {
+			if (isset($rData['edit'])) {
+				self::unlock((int) $rData['edit']);
+			}
 		}
 
 		return ['status' => STATUS_FAILURE, 'data' => $rData];
@@ -118,7 +133,13 @@ class BouquetService {
 		$rOrder['series'] = AdminHelpers::confirmIDs($rOrder['series']);
 		$rOrder['movie'] = AdminHelpers::confirmIDs($rOrder['movie']);
 		$rOrder['radio'] = AdminHelpers::confirmIDs($rOrder['radio']);
-		$db->query('UPDATE `bouquets` SET `bouquet_channels` = ?, `bouquet_series` = ?, `bouquet_movies` = ?, `bouquet_radios` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rOrder['stream'])) . ']', '[' . implode(',', array_map('intval', $rOrder['series'])) . ']', '[' . implode(',', array_map('intval', $rOrder['movie'])) . ']', '[' . implode(',', array_map('intval', $rOrder['radio'])) . ']', $rData['reorder']);
+		self::lock((int) $rData['reorder']);
+
+		try {
+			$db->query('UPDATE `bouquets` SET `bouquet_channels` = ?, `bouquet_series` = ?, `bouquet_movies` = ?, `bouquet_radios` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rOrder['stream'])) . ']', '[' . implode(',', array_map('intval', $rOrder['series'])) . ']', '[' . implode(',', array_map('intval', $rOrder['movie'])) . ']', '[' . implode(',', array_map('intval', $rOrder['radio'])) . ']', $rData['reorder']);
+		} finally {
+			self::unlock((int) $rData['reorder']);
+		}
 
 		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rData['reorder']]];
 	}
@@ -237,6 +258,41 @@ class BouquetService {
 
 	private static int $rMapEntriesMtime = 0;
 
+	/** The marker of the bouquet map's shards: its mtime is when the last complete set was written. */
+	public const MAP_SHARDS = 'bouquet_map_shards';
+
+	/** A shard holds the ids with the same id >> MAP_SHARD_BITS: 1,024 of them. */
+	private const MAP_SHARD_BITS = 10;
+
+	/**
+	 * Write the bouquet map again as shards, bouquet_map_<id >> 10>, after the whole
+	 * map. A range without a stream loses its file; the marker is written last, and
+	 * removed when a shard could not be written, so readers then use the whole map.
+	 *
+	 * @param array<int, array> $rMap The whole map, as just written.
+	 * @return bool Whether every shard and the marker were written
+	 */
+	public static function writeMapShards(FileCache $rCache, array $rMap): bool {
+		$rShards = [];
+		foreach ($rMap as $rStreamID => $rEntry) {
+			$rShards[intval($rStreamID) >> self::MAP_SHARD_BITS][$rStreamID] = $rEntry;
+		}
+		$rWritten = true;
+		foreach ($rShards as $rShard => $rEntries) {
+			$rWritten = $rCache->set('bouquet_map_' . $rShard, $rEntries) && $rWritten;
+		}
+		foreach (glob(CACHE_TMP_PATH . 'bouquet_map_*') ?: [] as $rFile) {
+			if (preg_match('/^bouquet_map_(-?\d+)$/', basename($rFile), $rMatch) && !isset($rShards[(int) $rMatch[1]])) {
+				@unlink($rFile);
+			}
+		}
+		if (!$rWritten) {
+			@unlink(CACHE_TMP_PATH . self::MAP_SHARDS);
+			return false;
+		}
+		return $rCache->set(self::MAP_SHARDS, time());
+	}
+
 	/**
 	 * Get the bouquet-map entry for a stream.
 	 *
@@ -253,6 +309,21 @@ class BouquetService {
 		}
 		if (array_key_exists($rStreamID, self::$rMapEntries)) {
 			return self::$rMapEntries[$rStreamID];
+		}
+
+		// The stream's shard, while the shards are at least as new as the whole map
+		// (writeMapShards() writes its marker last): one small file instead of all of it.
+		$rMarker = CACHE_TMP_PATH . self::MAP_SHARDS;
+		clearstatcache(true, $rMarker);
+		if (0 < $rMtime && $rMtime <= (int) @filemtime($rMarker)) {
+			$rShard = CACHE_TMP_PATH . 'bouquet_map_' . ($rStreamID >> self::MAP_SHARD_BITS);
+			if (!file_exists($rShard)) {
+				return self::$rMapEntries[$rStreamID] = [];
+			}
+			$rData = @igbinary_unserialize((string) @file_get_contents($rShard));
+			if (is_array($rData)) {
+				return self::$rMapEntries[$rStreamID] = ($rData[$rStreamID] ?? []);
+			}
 		}
 
 		$rBouquetMap = [];
@@ -445,6 +516,33 @@ class BouquetService {
 	}
 
 	/**
+	 * Hold a bouquet for one writer. Changing one of its lists reads the list
+	 * and writes it back whole, so of two writers at once (a folder import
+	 * runs several) the later write would drop the other's change: each takes
+	 * the bouquet before it reads and gives it back with unlock() after it
+	 * wrote. A save that replaces the lists (process(), reorder()) takes it
+	 * for its write, so that it does not land between another writer's read
+	 * and write. A writer waits its turn for ten seconds, then goes on without
+	 * it; a connection that ends gives back what it held.
+	 *
+	 * @param int $rBouquetID Bouquet id.
+	 * @return void
+	 */
+	public static function lock(int $rBouquetID) {
+		self::db()->query("SELECT GET_LOCK(CONCAT(DATABASE(), '.bouquet_', ?), 10);", $rBouquetID);
+	}
+
+	/**
+	 * Give a bouquet taken with lock() back to the other writers.
+	 *
+	 * @param int $rBouquetID Bouquet id.
+	 * @return void
+	 */
+	public static function unlock(int $rBouquetID) {
+		self::db()->query("SELECT RELEASE_LOCK(CONCAT(DATABASE(), '.bouquet_', ?));", $rBouquetID);
+	}
+
+	/**
 	 * Add items of a given type to a bouquet.
 	 *
 	 * @param string $rType      Item type (stream/movie/series/radio).
@@ -459,34 +557,42 @@ class BouquetService {
 			$rIDs = [$rIDs];
 		}
 
-		$rBouquet = self::getById($rBouquetID);
+		self::lock($rBouquetID);
 
-		if (!$rBouquet) {
-			return;
-		}
+		try {
+			$rBouquet = self::getById($rBouquetID);
 
-		if ($rType == 'stream') {
-			$rColumn = 'bouquet_channels';
-		} elseif ($rType == 'movie') {
-			$rColumn = 'bouquet_movies';
-		} elseif ($rType == 'radio') {
-			$rColumn = 'bouquet_radios';
-		} else {
-			$rColumn = 'bouquet_series';
-		}
-
-		$rChanged = false;
-		$rChannels = AdminHelpers::confirmIDs(json_decode($rBouquet[$rColumn], true));
-
-		foreach ($rIDs as $rID) {
-			if (0 < intval($rID) && !in_array($rID, $rChannels)) {
-				$rChannels[] = $rID;
-				$rChanged = true;
+			if (!$rBouquet) {
+				return;
 			}
-		}
 
-		if ($rChanged) {
-			$db->query('UPDATE `bouquets` SET `' . $rColumn . '` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rChannels)) . ']', $rBouquetID);
+			if ($rType == 'stream') {
+				$rColumn = 'bouquet_channels';
+			} elseif ($rType == 'movie') {
+				$rColumn = 'bouquet_movies';
+			} elseif ($rType == 'radio') {
+				$rColumn = 'bouquet_radios';
+			} else {
+				$rColumn = 'bouquet_series';
+			}
+
+			$rChanged = false;
+			// A column that is empty or holds no list is a list with nothing in it.
+			$rChannels = json_decode((string) $rBouquet[$rColumn], true);
+			$rChannels = AdminHelpers::confirmIDs(is_array($rChannels) ? $rChannels : []);
+
+			foreach ($rIDs as $rID) {
+				if (0 < intval($rID) && !in_array($rID, $rChannels)) {
+					$rChannels[] = $rID;
+					$rChanged = true;
+				}
+			}
+
+			if ($rChanged) {
+				$db->query('UPDATE `bouquets` SET `' . $rColumn . '` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rChannels)) . ']', $rBouquetID);
+			}
+		} finally {
+			self::unlock($rBouquetID);
 		}
 	}
 
@@ -505,34 +611,42 @@ class BouquetService {
 			$rIDs = [$rIDs];
 		}
 
-		$rBouquet = self::getById($rBouquetID);
+		self::lock($rBouquetID);
 
-		if (!$rBouquet) {
-			return;
-		}
+		try {
+			$rBouquet = self::getById($rBouquetID);
 
-		if ($rType == 'stream') {
-			$rColumn = 'bouquet_channels';
-		} elseif ($rType == 'movie') {
-			$rColumn = 'bouquet_movies';
-		} elseif ($rType == 'radio') {
-			$rColumn = 'bouquet_radios';
-		} else {
-			$rColumn = 'bouquet_series';
-		}
-
-		$rChanged = false;
-		$rChannels = AdminHelpers::confirmIDs(json_decode($rBouquet[$rColumn], true));
-
-		foreach ($rIDs as $rID) {
-			if (($rKey = array_search($rID, $rChannels)) !== false) {
-				unset($rChannels[$rKey]);
-				$rChanged = true;
+			if (!$rBouquet) {
+				return;
 			}
-		}
 
-		if ($rChanged) {
-			$db->query('UPDATE `bouquets` SET `' . $rColumn . '` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rChannels)) . ']', $rBouquetID);
+			if ($rType == 'stream') {
+				$rColumn = 'bouquet_channels';
+			} elseif ($rType == 'movie') {
+				$rColumn = 'bouquet_movies';
+			} elseif ($rType == 'radio') {
+				$rColumn = 'bouquet_radios';
+			} else {
+				$rColumn = 'bouquet_series';
+			}
+
+			$rChanged = false;
+			// A column that is empty or holds no list is a list with nothing in it.
+			$rChannels = json_decode((string) $rBouquet[$rColumn], true);
+			$rChannels = AdminHelpers::confirmIDs(is_array($rChannels) ? $rChannels : []);
+
+			foreach ($rIDs as $rID) {
+				if (($rKey = array_search($rID, $rChannels)) !== false) {
+					unset($rChannels[$rKey]);
+					$rChanged = true;
+				}
+			}
+
+			if ($rChanged) {
+				$db->query('UPDATE `bouquets` SET `' . $rColumn . '` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rChannels)) . ']', $rBouquetID);
+			}
+		} finally {
+			self::unlock($rBouquetID);
 		}
 	}
 }

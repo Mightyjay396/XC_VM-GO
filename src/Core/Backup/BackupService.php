@@ -3,6 +3,7 @@
 namespace XcVm\Core\Backup;
 
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Database\Database;
 use XcVm\Core\Storage\DropboxClient;
 use XcVm\Domain\Cluster\DbCredentials;
 
@@ -21,6 +22,14 @@ use XcVm\Domain\Cluster\DbCredentials;
 
 class BackupService {
 	private static array $ignoreTables = [
+		// Runtime transport state: a restore must not replay old commands or
+		// revive expired viewer reservations. The dump keeps table schemas.
+		'cluster_commands',
+		'cluster_nonces',
+		'cluster_reservations',
+		// Audit history and old connection lifecycles are not restore state.
+		'cluster_audit',
+		'connection_retirements',
 		'detect_restream_logs',
 		'epg_data',
 		'lines_activity',
@@ -43,29 +52,76 @@ class BackupService {
 		'watch_logs',
 	];
 
+	/** Automatic backup schedules and their periods in seconds; anything else is off. */
+	public const PERIODS = ['hourly' => 3600, 'daily' => 86400, 'weekly' => 604800, 'monthly' => 2419200];
+
+	/** Prefix of the dump a restore takes of the live database first: the way back, which retention leaves alone. */
+	public const PRE_RESTORE = 'pre_restore_';
+
 	/**
 	 * Create a full database backup (structure + data, excluding large log tables).
 	 * Credentials are never exposed to PHP — delegated to \XC_VM::db_dump().
 	 *
 	 * @param string $filename Output SQL file path
+	 * @return bool Whether the dump finished; one that did not leaves no file
 	 */
-	public static function create(string $filename) {
-		\XC_VM::db_dump($filename, self::$ignoreTables);
+	public static function create(string $filename): bool {
+		$rDumped = (bool) \XC_VM::db_dump($filename, self::$ignoreTables);
+		clearstatcache(true, $filename);
+		if ($rDumped && is_file($filename) && 0 < filesize($filename)) {
+			return true;
+		}
+		@unlink($filename);
+		return false;
 	}
 
 	/**
-	 * Restore a database backup (drops + recreates DB, then imports).
-	 * After a successful import the backup file is refreshed with a clean dump.
+	 * Dump the database to backups/<name>_<date>.sql from a command that holds a
+	 * connection: it is closed for the dump and opened again after it.
+	 *
+	 * @return string|null The file, or null when the dump failed (it leaves none)
+	 */
+	public static function dumpFor(Database $db, string $rName): ?string {
+		$rFile = MAIN_HOME . 'backups/' . $rName . '_' . date('Y-m-d_H-i-s') . '.sql';
+		$db->close_mysql();
+		$rDumped = self::create($rFile);
+		$db->db_connect();
+		return $rDumped ? $rFile : null;
+	}
+
+	/** Bytes the dumped tables hold: a dump comes to about this size. */
+	public static function estimateSize(Database $db): int {
+		$db->query('SELECT COALESCE(SUM(`data_length`), 0) FROM `information_schema`.`tables` WHERE `table_schema` = DATABASE() AND `table_name` NOT IN (' . implode(', ', array_fill(0, count(self::$ignoreTables), '?')) . ');', ...self::$ignoreTables);
+		return (int) $db->get_col();
+	}
+
+	/** Room for a dump of $rNeed bytes: twice over (the migrations copy tables too), plus 512 MiB for the update's own files. */
+	public static function roomForDump(int $rNeed, float $rFree): bool {
+		return 2 * $rNeed + 512 * 1024 * 1024 <= $rFree;
+	}
+
+	/** Remove every <prefix>*.sql in $rDir but $rKeep. */
+	public static function keepOnly(string $rDir, string $rPrefix, string $rKeep): void {
+		foreach (glob($rDir . $rPrefix . '*.sql') ?: [] as $rFile) {
+			if (basename($rFile) !== basename($rKeep)) {
+				@unlink($rFile);
+			}
+		}
+	}
+
+	/**
+	 * Restore a database backup (drops + recreates DB, then imports). The live
+	 * database is dumped to backups/pre_restore_<date>.sql first; when it cannot
+	 * be, nothing is touched unless $rForce. The file restored from is left as it is.
 	 *
 	 * @param string $filename SQL file path to restore
-	 * @return bool Whether the import succeeded
+	 * @return bool|null true: restored. false: the import failed. null: refused, the live database could not be dumped first.
 	 */
-	public static function restore(string $filename) {
-		if (!\XC_VM::db_restore($filename)) {
-			return false;
+	public static function restore(string $filename, bool $rForce = false): ?bool {
+		if (!$rForce && !self::create(MAIN_HOME . 'backups/' . self::PRE_RESTORE . date('Y-m-d_H:i:s') . '.sql')) {
+			return null;
 		}
-		\XC_VM::db_dump($filename, self::$ignoreTables);
-		return true;
+		return (bool) \XC_VM::db_restore($filename);
 	}
 
 	/**
@@ -96,28 +152,66 @@ class BackupService {
 	}
 
 	/**
-	 * List local SQL backups with metadata.
+	 * List local SQL backups with metadata, oldest first.
 	 *
+	 * @param string|null $rDir Directory to scan, with or without a trailing
+	 *                          slash; null uses MAIN_HOME.'backups/'. A blank or
+	 *                          slash-only value lists nothing (never the FS root).
 	 * @return array[] Each entry: filename, timestamp, date, filesize.
 	 */
-	public static function getLocal() {
+	public static function getLocal(?string $rDir = null) {
 		$rBackups = [];
+		$rDir = rtrim($rDir ?? MAIN_HOME . 'backups', '/');
+		// null resolves to the default above; an empty or slash-only argument
+		// trims to '' here — treat that as "nothing", never a scan of the
+		// filesystem root (which is_dir('/') would otherwise accept).
+		if ($rDir === '') {
+			return $rBackups;
+		}
+		$rDir .= '/';
+		if (!is_dir($rDir)) {
+			return $rBackups;
+		}
 
-		foreach (scandir(MAIN_HOME . 'backups/') as $rBackup) {
-			$rInfo = pathinfo(MAIN_HOME . 'backups/' . $rBackup);
+		foreach (scandir($rDir) as $rBackup) {
+			// scandir() lists '.', '..' and any sub-directories; none has a
+			// '.sql' extension, and a name without one makes pathinfo() omit the
+			// 'extension' key — reaching for it raised an undefined-key E_WARNING
+			// on PHP 8 (AlertsCronJob reads the newest backup every minute).
+			if ($rBackup === '.' || $rBackup === '..' || is_dir($rDir . $rBackup)) {
+				continue;
+			}
 
-			if ($rInfo['extension'] == 'sql') {
-				$rBackups[] = ['filename' => $rBackup, 'timestamp' => filemtime(MAIN_HOME . 'backups/' . $rBackup), 'date' => date('Y-m-d H:i:s', filemtime(MAIN_HOME . 'backups/' . $rBackup)), 'filesize' => filesize(MAIN_HOME . 'backups/' . $rBackup)];
+			if (pathinfo($rBackup, PATHINFO_EXTENSION) === 'sql') {
+				$rBackups[] = ['filename' => $rBackup, 'timestamp' => filemtime($rDir . $rBackup), 'date' => date('Y-m-d H:i:s', filemtime($rDir . $rBackup)), 'filesize' => filesize($rDir . $rBackup)];
 			}
 		}
 		usort(
 			$rBackups,
 			function ($a, $b) {
-				return $a['timestamp'];
+				return $a['timestamp'] <=> $b['timestamp'];
 			}
 		);
 
 		return $rBackups;
+	}
+
+	/**
+	 * The newest backup a backup run made (backup_*.sql, scheduled or manual), and
+	 * whether its Dropbox upload failed (the .error file beside it).
+	 *
+	 * @return array{timestamp: int, upload_failed: bool, filename: string}|null null when there is none
+	 */
+	public static function newestBackup(): ?array {
+		if (!is_dir(MAIN_HOME . 'backups/')) {
+			return null;
+		}
+		$rRuns = array_values(array_filter(self::getLocal(), static fn(array $rBackup): bool => str_starts_with($rBackup['filename'], 'backup_')));
+		if ($rRuns === []) {
+			return null;
+		}
+		$rNewest = end($rRuns);
+		return ['timestamp' => (int) $rNewest['timestamp'], 'upload_failed' => is_file(MAIN_HOME . 'backups/' . $rNewest['filename'] . '.error'), 'filename' => (string) $rNewest['filename']];
 	}
 
 	/**
@@ -156,7 +250,7 @@ class BackupService {
 
 		foreach ($rFiles as $rFile) {
 			try {
-				if (!$rFile->isDir && strtolower(pathinfo($rFile->name)['extension']) == 'sql' && 0 < $rFile->size) {
+				if (!$rFile->isDir && strtolower(pathinfo($rFile->name, PATHINFO_EXTENSION)) === 'sql' && 0 < $rFile->size) {
 					$rJSON = json_decode(json_encode($rFile, JSON_UNESCAPED_UNICODE), true);
 					$rJSON['time'] = strtotime($rFile->server_modified);
 					$rBackups[] = $rJSON;

@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Events\Stream\StreamsDeletedEvent;
+use XcVm\Core\Reference\StatusBadge;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Server\ServerRepository;
@@ -24,6 +25,118 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class StreamRepository {
 	use DatabaseAware;
+
+	/** Events one logSince() call returns at most; the rest stay past its `last` for the next. */
+	private const LOG_PAGE = 500;
+
+	/** How far below `last` a missing id is reported as a hole, and how many holes are taken back. */
+	private const LOG_HOLE_SPAN = 200;
+
+	/** Count every event in the time window, independently of the displayed row limit. */
+	public static function logEventSummary(int $rSince, ?int $rUntil = null): ?array {
+		$rUntil ??= time();
+		$db = self::db();
+		if (!$db->query('SELECT `action`, COUNT(*) AS `count` FROM `streams_logs` WHERE `date` BETWEEN ? AND ? GROUP BY `action` ORDER BY `count` DESC, `action` ASC;', $rSince, $rUntil)) {
+			return null;
+		}
+		return array_map(static function (array $rRow): array {
+			$rAction = (string) $rRow['action'];
+			return ['action' => $rAction, 'label' => StatusBadge::streamLog($rAction) ?: $rAction, 'count' => (int) $rRow['count']];
+		}, $db->get_raw_rows());
+	}
+
+	/** Recent dashboard stream events, newest first. Null on database failure. */
+	public static function latestLogEvents(int $rLimit = 4): ?array {
+		$rLimit = max(1, min(200, $rLimit));
+		$db = self::db();
+		if (!$db->query('SELECT `l`.`id`, `l`.`stream_id`, `l`.`action`, `l`.`date`, `s`.`stream_display_name`, `v`.`server_name` FROM `streams_logs` `l` LEFT JOIN `streams` `s` ON `s`.`id` = `l`.`stream_id` LEFT JOIN `servers` `v` ON `v`.`id` = `l`.`server_id` ORDER BY `l`.`date` DESC, `l`.`id` DESC LIMIT ' . $rLimit . ';')) {
+			return null;
+		}
+		return array_map(static function (array $rRow): array {
+			$rAction = (string) $rRow['action'];
+			return [
+				'id' => (int) $rRow['id'],
+				'stream_id' => (int) $rRow['stream_id'],
+				'action' => $rAction,
+				'label' => StatusBadge::streamLog($rAction) ?: $rAction,
+				'stream' => (string) ($rRow['stream_display_name'] ?? '#' . $rRow['stream_id']),
+				'server' => (string) ($rRow['server_name'] ?? ''),
+				'time' => (int) $rRow['date'],
+			];
+		}, $db->get_raw_rows());
+	}
+
+	/**
+	 * The stream log past $rAfter, for the panel's toasts (start, stop, a
+	 * failed start…, from every server: a load balancer's entries reach MAIN
+	 * within a minute), oldest first, each with its label and the stream's and
+	 * server's names.
+	 *
+	 * - At most LOG_PAGE new entries: `last` is then the last one returned, and
+	 *   the rest come next time, so nothing is passed over unread.
+	 * - Ids missing near `last` come back as `holes` (a row whose insert
+	 *   commits after a higher one's, or one rolled back): the caller sends
+	 *   them back as $rHoles, and a row that has appeared since is returned once.
+	 * - A cursor past where the log stands means it was emptied since (its ids
+	 *   start over): read from its start. A negative one only learns where the
+	 *   log stands, so a page shows what happens from then on.
+	 *
+	 * Null when the database does not answer: the caller must keep its cursor.
+	 *
+	 * @param list<int> $rHoles
+	 * @return array{last: int, events: list<array{id: int, stream_id: int, action: string, label: string, stream: string, server: string}>, holes: list<int>}|null
+	 */
+	public static function logSince(int $rAfter, array $rHoles = []): ?array {
+		$db = self::db();
+		if (!$db->query('SELECT MAX(`id`) AS `id` FROM `streams_logs`;')) {
+			return null;
+		}
+		$rTop = (int) ($db->get_row()['id'] ?? 0);
+		if ($rAfter < 0) {
+			return ['last' => $rTop, 'events' => [], 'holes' => []];
+		}
+		if ($rAfter > $rTop) {
+			$rAfter = 0;
+			$rHoles = [];
+		}
+		$rHoles = array_slice(array_values(array_unique(array_filter(array_map('intval', $rHoles), static fn(int $rID): bool => $rID > 0 && $rID <= $rAfter))), -self::LOG_HOLE_SPAN);
+		$rWhere = '(`l`.`id` > ? AND `l`.`id` <= ?)' . ($rHoles !== [] ? ' OR `l`.`id` IN (' . implode(',', $rHoles) . ')' : '');
+		if (!$db->query('SELECT `l`.`id`, `l`.`stream_id`, `l`.`action`, `s`.`stream_display_name`, `v`.`server_name` FROM `streams_logs` `l` LEFT JOIN `streams` `s` ON `s`.`id` = `l`.`stream_id` LEFT JOIN `servers` `v` ON `v`.`id` = `l`.`server_id` WHERE ' . $rWhere . ' ORDER BY `l`.`id` ASC LIMIT ' . (self::LOG_PAGE + count($rHoles)) . ';', $rAfter, $rTop)) {
+			return null;
+		}
+		$rEvents = [];
+		$rRead = [];
+		$rNew = 0;
+		$rLast = $rTop;
+		foreach ($db->get_raw_rows() as $rRow) {
+			$rID = (int) $rRow['id'];
+			$rRead[$rID] = true;
+			$rAction = (string) $rRow['action'];
+			$rEvents[] = [
+				'id' => $rID,
+				'stream_id' => (int) $rRow['stream_id'],
+				'action' => $rAction,
+				'label' => StatusBadge::streamLog($rAction) ?: $rAction,
+				'stream' => (string) ($rRow['stream_display_name'] ?? '#' . $rRow['stream_id']),
+				'server' => (string) ($rRow['server_name'] ?? ''),
+			];
+			if ($rID > $rAfter && ++$rNew === self::LOG_PAGE) {
+				$rLast = $rID;
+			}
+		}
+		$rMissing = [];
+		for ($i = max($rAfter, $rLast - self::LOG_HOLE_SPAN) + 1; $i <= $rLast; $i++) {
+			if (!isset($rRead[$i])) {
+				$rMissing[] = $i;
+			}
+		}
+		foreach ($rHoles as $rID) {
+			if (!isset($rRead[$rID])) {
+				$rMissing[] = $rID;
+			}
+		}
+		return ['last' => $rLast, 'events' => $rEvents, 'holes' => array_values(array_unique($rMissing))];
+	}
 
 	/**
 	 * Fetch recent error-log entries for a stream.
@@ -234,9 +347,10 @@ class StreamRepository {
 	 * @param int  $rServerID          Restrict deletion to a server (-1 for all).
 	 * @param bool $rDeleteFiles       Also remove on-disk stream files.
 	 * @param bool $f2d619cb38696890   Internal flag controlling cascade behavior.
+	 * @param bool $rScan              Start the bouquet scan; false for a caller that deletes several streams and starts one scan after the last.
 	 * @return bool True on success.
 	 */
-	public static function deleteStream(int $rID, int $rServerID = -1, bool $rDeleteFiles = true, bool $f2d619cb38696890 = true) {
+	public static function deleteStream(int $rID, int $rServerID = -1, bool $rDeleteFiles = true, bool $f2d619cb38696890 = true, bool $rScan = true) {
 		$db = self::db();
 		$db->query('SELECT `id`, `type` FROM `streams` WHERE `id` = ?;', $rID);
 
@@ -261,6 +375,7 @@ class StreamRepository {
 			$db->query('DELETE FROM `streams_logs` WHERE `stream_id` = ?;', $rID);
 			$db->query('DELETE FROM `streams_options` WHERE `stream_id` = ?;', $rID);
 			$db->query('DELETE FROM `streams_stats` WHERE `stream_id` = ?;', $rID);
+			$db->query('DELETE FROM `watch_refresh` WHERE `stream_id` = ?;', $rID);
 			EventDispatcher::dispatch(new StreamsDeletedEvent([$rID]));
 			$db->query('DELETE FROM `recordings` WHERE `created_id` = ? OR `stream_id` = ?;', $rID, $rID);
 			$db->query('UPDATE `lines_activity` SET `stream_id` = 0 WHERE `stream_id` = ?;', $rID);
@@ -288,7 +403,10 @@ class StreamRepository {
 
 		$db->query('DELETE FROM `streams_servers` WHERE `parent_id` IS NOT NULL AND `parent_id` > 0 AND `parent_id` NOT IN (SELECT `id` FROM `servers` WHERE `server_type` = 0);');
 		StreamProcess::updateStream($rID);
-		BouquetService::scan();
+
+		if ($rScan) {
+			BouquetService::scan();
+		}
 
 		return true;
 	}
@@ -313,6 +431,7 @@ class StreamRepository {
 			$db->query('DELETE FROM `streams_logs` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			$db->query('DELETE FROM `streams_options` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			$db->query('DELETE FROM `streams_stats` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
+			$db->query('DELETE FROM `watch_refresh` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			EventDispatcher::dispatch(new StreamsDeletedEvent($rIDs));
 			$db->query('DELETE FROM `lines_live` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			$db->query('DELETE FROM `recordings` WHERE `created_id` IN (' . implode(',', $rIDs) . ') OR `stream_id` IN (' . implode(',', $rIDs) . ');');

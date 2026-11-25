@@ -15,6 +15,7 @@ use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Validation\InputValidator;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\ConnectionIngest;
+use XcVm\Domain\Cluster\ConnectionRetirement;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Redis\RedisManager;
@@ -59,6 +60,13 @@ class UsersCronJob implements CommandInterface {
 
 		$rSync = null;
 		$this->rServers = ServerRepository::getAll();
+		if (!empty($this->rServers[SERVER_ID]['is_main']) && class_exists(ConnectionRetirement::class)) {
+			try {
+				ConnectionRetirement::cleanupCompleted();
+			} catch (\Throwable) {
+				error_log('Connection retirement history cleanup failed; user processing continues.');
+			}
+		}
 
 		if (!empty($rArgs[0]) && $this->rServers[SERVER_ID]['is_main']) {
 			// Just enabled (the Cache page): the watchdog starts Redis within seconds.
@@ -70,6 +78,13 @@ class UsersCronJob implements CommandInterface {
 				$rSync = intval($rArgs[0]);
 
 				if ($rSync == 1) {
+					// The handler was off until now (the Cache page says so): the viewers
+					// are lines_live's, and what Redis holds is its snapshot from when it
+					// was last on. Left there, the sweep closed those connections as
+					// silent ones and killed the pids they named.
+					if (($rArgs[1] ?? '') === 'fresh') {
+						RedisManager::instance()?->flushAll();
+					}
 					$rDeSync = $rRedisUsers = $rRedisUpdate = $rRedisSet = [];
 					$db->query('SELECT * FROM `lines_live` WHERE `hls_end` = 0;');
 					$rRows = $db->get_rows();
@@ -92,36 +107,39 @@ class UsersCronJob implements CommandInterface {
 							}
 						}
 
-						$rRedis = RedisManager::instance()->multi();
+						// The rows leave MySQL only once Redis has them: the transaction's
+						// answer was not looked at, so a Redis restarting just then lost
+						// every viewer from both stores.
+						$rManager = RedisManager::instance();
+						$rRedis = $rManager instanceof \Redis ? $rManager->multi() : false;
+						if ($rRedis instanceof \Redis) {
+							foreach ($rRows as $rRow) {
+								echo 'Resynchronising UUID: ' . $rRow['uuid'] . "\n";
 
-						foreach ($rRows as $rRow) {
-							echo 'Resynchronising UUID: ' . $rRow['uuid'] . "\n";
+								$rRow['identity'] = StoredConnections::identity($rRow);
 
-							$rRow['identity'] = StoredConnections::identity($rRow);
+								$rRow['on_demand'] = ($rOnDemand[$rRow['stream_id']][$rRow['server_id']]);
+								$rRedis->zAdd('LINE#' . $rRow['identity'], $rRow['date_start'], $rRow['uuid']);
+								$rRedis->zAdd('STREAM#' . $rRow['stream_id'], $rRow['date_start'], $rRow['uuid']);
+								$rRedis->zAdd('SERVER#' . $rRow['server_id'], $rRow['date_start'], $rRow['uuid']);
 
-							$rRow['on_demand'] = ($rOnDemand[$rRow['stream_id']][$rRow['server_id']]);
-							$rRedis->zAdd('LINE#' . $rRow['identity'], $rRow['date_start'], $rRow['uuid']);
-							$rRedis->zAdd('LINE_ALL#' . $rRow['identity'], $rRow['date_start'], $rRow['uuid']);
-							$rRedis->zAdd('STREAM#' . $rRow['stream_id'], $rRow['date_start'], $rRow['uuid']);
-							$rRedis->zAdd('SERVER#' . $rRow['server_id'], $rRow['date_start'], $rRow['uuid']);
+								if ($rRow['user_id']) {
+									$rRedis->zAdd('SERVER_LINES#' . $rRow['server_id'], $rRow['user_id'], $rRow['uuid']);
+								}
 
-							if ($rRow['user_id']) {
-								$rRedis->zAdd('SERVER_LINES#' . $rRow['server_id'], $rRow['user_id'], $rRow['uuid']);
+								if ($rRow['proxy_id']) {
+									$rRedis->zAdd('PROXY#' . $rRow['proxy_id'], $rRow['date_start'], $rRow['uuid']);
+								}
+
+								$rRedis->zAdd('LIVE', $rRow['date_start'], $rRow['uuid']);
+								$rRedis->set($rRow['uuid'], igbinary_serialize($rRow));
+								$rDeSync[] = $rRow['uuid'];
 							}
-
-							if ($rRow['proxy_id']) {
-								$rRedis->zAdd('PROXY#' . $rRow['proxy_id'], $rRow['date_start'], $rRow['uuid']);
+							if (is_array($rRedis->exec()) && count($rDeSync) > 0) {
+								$db->query("DELETE FROM `lines_live` WHERE `uuid` IN ('" . implode("','", $rDeSync) . "');");
 							}
-
-							$rRedis->zAdd('CONNECTIONS', $rRow['date_start'], $rRow['uuid']);
-							$rRedis->zAdd('LIVE', $rRow['date_start'], $rRow['uuid']);
-							$rRedis->set($rRow['uuid'], igbinary_serialize($rRow));
-							$rDeSync[] = $rRow['uuid'];
-						}
-						$rRedis->exec();
-
-						if (count($rDeSync) > 0) {
-							$db->query("DELETE FROM `lines_live` WHERE `uuid` IN ('" . implode("','", $rDeSync) . "');");
+						} else {
+							echo 'Redis is not reachable: the connections stay in lines_live.' . "\n";
 						}
 					}
 				}
@@ -237,9 +255,15 @@ class UsersCronJob implements CommandInterface {
 	 * @param array<string, mixed> $rConnection
 	 * @param array<int, array<string, mixed>> $rServers
 	 */
-	private static function orphaned(array $rConnection, array $rServers, int $rNow): bool {
+	private static function orphaned(array $rConnection, array $rServers, int $rNow, bool $rRegistryOwned = false): bool {
 		if (!isset($rServers[(int) ($rConnection['server_id'] ?? 0)])) {
 			return true;
+		}
+		// API nodes own their viewer liveness. Their P2 touches may live
+		// only on the bus, so MAIN's old last_read is not a dead viewer.
+		// HlsReaping's node-level orphan purge handles an actually silent node.
+		if ($rRegistryOwned) {
+			return false;
 		}
 		$rChecksIn = ($rConnection['container'] ?? '') == 'hls' || (($rConnection['container'] ?? '') != 'rtmp' && intval($rConnection['pid'] ?? 0) !== 0);
 		return $rChecksIn && $rNow - intval($rConnection['hls_last_read'] ?? 0) >= self::ORPHAN_AFTER;
@@ -536,7 +560,7 @@ class UsersCronJob implements CommandInterface {
 		// ahead or behind by its time_offset, and HLS goes stale in 30 s.
 		$rStartTime = time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0);
 		$rLiveKeys = [];
-		if ($rServers[SERVER_ID]['is_main']) {
+		if (($rServers[SERVER_ID]['is_main'] ?? 0)) {
 			// Nodes whose agent ends its own idle HLS viewers, and the orphan
 			// purge: a silent CONNECTIONS node's rows leave MAIN's store.
 			HlsReaping::begin($rStartTime, ClusterSettings::int('cluster_orphan_conn_ttl_sec', SettingsManager::get('cluster_orphan_conn_ttl_sec')));
@@ -555,7 +579,7 @@ class UsersCronJob implements CommandInterface {
 			HlsReaping::beginLocal($rStartTime);
 		}
 
-		if (!$rRedis || $rServers[SERVER_ID]['is_main']) {
+		if (!$rRedis || ($rServers[SERVER_ID]['is_main'] ?? 0)) {
 			$rAutoKick = SettingsManager::getInt('user_auto_kick_hours') * 3600;
 			$rLiveKeys = $rDelete = $rDeleteStream = $rRetired = [];
 			$rRedisDelete = ['line' => [], 'server' => [], 'server_lines' => [], 'proxy' => [], 'stream' => [], 'uuid' => [], 'count' => 0];
@@ -581,7 +605,11 @@ class UsersCronJob implements CommandInterface {
 				}
 				unset($rConnections);
 			} else {
-				$rUsers = ConnectionTracker::getConnections(($rServers[SERVER_ID]['is_main'] ? null : SERVER_ID));
+				$rEndedOnMain = ($rServers[SERVER_ID]['is_main'] ?? 0) ? HlsReaping::sweptServers() : [];
+				if ($rEndedOnMain !== [] && class_exists(ConnectionIngest::class)) {
+					ConnectionIngest::sweepEnded($rEndedOnMain, $rStartTime);
+				}
+				$rUsers = ConnectionTracker::getConnections((($rServers[SERVER_ID]['is_main'] ?? 0) ? null : SERVER_ID), null, null, $rEndedOnMain, !empty($rServers[SERVER_ID]['is_main']) && HlsReaping::registryUnavailable());
 			}
 
 			$rRestreamerArray = $rMaxConnectionsArray = $rExpDateArray = [];
@@ -597,7 +625,7 @@ class UsersCronJob implements CommandInterface {
 				}
 			}
 
-			if ($rRedis && $rServers[SERVER_ID]['is_main']) {
+			if ($rRedis && ($rServers[SERVER_ID]['is_main'] ?? 0)) {
 				foreach (ConnectionTracker::getEnded() as $rConnection) {
 					if (is_array($rConnection)) {
 						$rConnection['identity'] = $this->connectionIdentity($rConnection);
@@ -609,7 +637,7 @@ class UsersCronJob implements CommandInterface {
 
 						if ($rClose) {
 							echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-							ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
+							ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false, false); // QC-NOKILL-ENDED : connexion deja terminee, ne pas tuer un PID reutilise
 							$rRedisDelete['count']++;
 							$rRedisDelete['line'][$rConnection['identity']][] = $rConnection['uuid'];
 							$rRedisDelete['stream'][$rConnection['stream_id']][] = $rConnection['uuid'];
@@ -644,7 +672,7 @@ class UsersCronJob implements CommandInterface {
 								if ($rConnection['container'] == 'hls') {
 									if ($this->hlsEnded($rConnection, $rStartTime)) {
 										echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-										ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
+										ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false, false); // QC-NOKILL-HLS-ENDED : PID d une requete HLS deja reutilise
 
 										if ($rRedis) {
 											$rRedisDelete['count']++;
@@ -681,7 +709,9 @@ class UsersCronJob implements CommandInterface {
 
 										if (self::workerGone($rConnection, $rIsRunning, $rStartTime)) {
 											echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-											ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
+											// No kill: its worker is gone, or left it without a close and
+											// serves another viewer under the same pid now (workerGone()).
+											ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false, false);
 
 											if ($rRedis) {
 												$rRedisDelete['count']++;
@@ -706,7 +736,7 @@ class UsersCronJob implements CommandInterface {
 								}
 							} else {
 								echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-								ConnectionTracker::closeConnection($rConnection, false, false);
+								ConnectionTracker::closeConnection($rConnection, false, false, time() - intval($rConnection['hls_last_read'] ?? 0) < 900); // QC-KILL-ACTIVE-ONLY
 
 								if ($rRedis) {
 									$rRedisDelete['count']++;
@@ -729,7 +759,7 @@ class UsersCronJob implements CommandInterface {
 							}
 						} else {
 							echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-							ConnectionTracker::closeConnection($rConnection, false, false);
+							ConnectionTracker::closeConnection($rConnection, false, false, time() - intval($rConnection['hls_last_read'] ?? 0) < 900); // QC-KILL-ACTIVE-ONLY
 
 							if ($rRedis) {
 								$rRedisDelete['count']++;
@@ -750,7 +780,7 @@ class UsersCronJob implements CommandInterface {
 								$rDeleteStream[$rConnection['stream_id']] = $rDelete[$rConnection['server_id']];
 							}
 						}
-					} elseif ($rServers[SERVER_ID]['is_main'] && $rConnection['container'] == 'hls' && $rConnection['hls_end'] == 1 && HlsReaping::sweptByMain((int) $rConnection['server_id']) && class_exists(ConnectionIngest::class)) {
+					} elseif (($rServers[SERVER_ID]['is_main'] ?? 0) && $rConnection['container'] == 'hls' && $rConnection['hls_end'] == 1 && HlsReaping::sweptByMain((int) $rConnection['server_id']) && class_exists(ConnectionIngest::class)) {
 						// MySQL mode: each server sweeps its own rows, and a node in mode 2
 						// has no database to sweep them in. MAIN closes what such a node's
 						// agent said has ended, as it does for every server in Redis mode:
@@ -759,10 +789,13 @@ class UsersCronJob implements CommandInterface {
 						if (ConnectionIngest::retireEnded($rConnection, self::lastHeard($rConnection, $rStartTime), false)) {
 							echo 'Close connection: ' . $rConnection['uuid'] . "\n";
 							// Not $rDelete: its DELETE goes by uuid, and would take the row another node may open under it.
-							$rRetired[(int) $rConnection['server_id']][] = ['type' => 'delete_con', 'uuid' => (string) $rConnection['uuid']];
+							// API retirement owns its durable, generation-fenced notification.
+							if (!SettingsManager::getBool('cluster_api_enabled')) {
+								$rRetired[(int) $rConnection['server_id']][] = ['type' => 'delete_con', 'uuid' => (string) $rConnection['uuid']];
+							}
 						}
 						continue;
-					} elseif ($rServers[SERVER_ID]['is_main'] && self::orphaned($rConnection, $rServers, $rStartTime)) {
+					} elseif (($rServers[SERVER_ID]['is_main'] ?? 0) && self::orphaned($rConnection, $rServers, $rStartTime, HlsReaping::sweptByMain((int) $rConnection['server_id']))) {
 						// MySQL mode: each server sweeps its own rows, so a deleted one's,
 						// or a crashed one's, stayed open for good. MAIN closes them, as
 						// ended: nothing is left to kill.
@@ -773,16 +806,16 @@ class UsersCronJob implements CommandInterface {
 						continue;
 					}
 
-					if (!$rConnection['hls_end']) {
+					if (!$rConnection['hls_end'] && time() - intval($rConnection['hls_last_read'] ?? 0) < 900) { // QC-ACTIVE-COUNT : connexions fantomes exclues de la limite
 						$rActiveCount++;
 					}
 				}
 
-				if ($rServers[SERVER_ID]['is_main'] && 0 < $rMaxConnections && $rMaxConnections < $rActiveCount) {
+				if (($rServers[SERVER_ID]['is_main'] ?? 0) && 0 < $rMaxConnections && $rMaxConnections < $rActiveCount) {
 					foreach ($rConnections as $rConnection) {
 						if (!$rConnection['hls_end']) {
 							echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-							ConnectionTracker::closeConnection($rConnection, false, false);
+							ConnectionTracker::closeConnection($rConnection, false, false, time() - intval($rConnection['hls_last_read'] ?? 0) < 900); // QC-KILL-ACTIVE-ONLY
 
 							if ($rRedis) {
 								$rRedisDelete['count']++;
@@ -840,7 +873,7 @@ class UsersCronJob implements CommandInterface {
 
 		$this->writeDivergence($rRedis);
 
-		if ($rServers[SERVER_ID]['is_main']) {
+		if (($rServers[SERVER_ID]['is_main'] ?? 0)) {
 			if ($rRedis) {
 				$rDeleteQuery = "DELETE FROM `lines_divergence` WHERE `uuid` NOT IN ('" . implode("','", $rLiveKeys) . "');";
 				for ($rRetry = 0; $rRetry < 3; $rRetry++) {

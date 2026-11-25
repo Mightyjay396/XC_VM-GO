@@ -6,7 +6,10 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\LbDatabaseAccessException;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Config\NginxPortsFile;
+use XcVm\Core\Config\TreeOwnership;
 use XcVm\Core\Container\ServiceContainer;
+use XcVm\Core\Database\Database;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Module\ModuleManager;
 use XcVm\Core\Process\ProcessRunner;
@@ -99,7 +102,8 @@ class StatusCommand implements CommandInterface {
 		$rServers = $this->getServers();
 
 		if ($rServers[SERVER_ID]['is_main']) {
-			MigrationRunner::run($db);
+			// Every run, boot included, so the dashboard's schema row clears once a failure is gone.
+			self::markSchema($db, MigrationRunner::run($db) === []);
 
 			// Provision bundled modules (create their tables via migrations) the
 			// first time after a fresh install/update. Idempotent and safe to
@@ -134,14 +138,6 @@ class StatusCommand implements CommandInterface {
 			$this->configureRedis();
 			$this->ensureClusterNginx();
 			$this->ensureClusterPools();
-		} elseif (!$rApi) {
-			// LB nodes run no local Redis (bin/redis is stripped from the LB build)
-			// and never reach configureRedis, so the xcvm_core extension would keep
-			// its default Redis target of 127.0.0.1 and every connection refuses —
-			// live.php then fails with LINE_CREATE_FAIL under redis_handler. Point
-			// the extension at the MAIN server's Redis (same host as MySQL) using the
-			// shared password, without touching MAIN's own config.
-			$this->configureRedisLb($rServers);
 		}
 
 		if (!$rFirstRun && $rServers[SERVER_ID]['is_main']) {
@@ -251,7 +247,19 @@ class StatusCommand implements CommandInterface {
 		ProcessRunner::run(['sudo', 'chmod', '0771', MAIN_HOME . 'bin/daemons.sh']);
 		ProcessRunner::run(['sudo', 'chmod', '0775', MAIN_HOME . 'bin/certbot']);
 		ProcessRunner::run(['sudo', 'chown', '-R', 'xc_vm:xc_vm', MAIN_HOME . 'config']);
+		// The database user and password: the installer wrote the file readable
+		// by all up to 2.6.4 (only config/'s own mode kept others out).
+		if (is_file(MAIN_HOME . 'config/config.ini')) {
+			ProcessRunner::run(['sudo', 'chmod', '0600', MAIN_HOME . 'config/config.ini']);
+		}
 		shell_exec("sudo echo 'net.ipv4.ip_unprivileged_port_start=0' > /etc/sysctl.d/50-allports-nonroot.conf && sudo sysctl --system 2> /dev/null");
+		// MAIN: what root runs or loads from the tree is root's again, after the
+		// install or the update that handed the whole tree to xc_vm.
+		if (NodeRole::isMain()) {
+			foreach (TreeOwnership::rootOwn(MAIN_HOME) as $rArgv) {
+				ProcessRunner::run(array_merge(['sudo'], $rArgv));
+			}
+		}
 	}
 
 	private function fixNginxConfig(bool $rReload): bool {
@@ -262,16 +270,46 @@ class StatusCommand implements CommandInterface {
 			$rReload = true;
 		}
 
+		$rHasIpv6 = is_readable('/proc/net/if_inet6'); // the kernel has the IPv6 stack; [::] will bind
 		foreach (['http', 'https'] as $rType) {
-			$rPortConfig = file_get_contents(MAIN_HOME . 'bin/nginx/conf/ports/' . $rType . '.conf');
-
-			if (stripos($rPortConfig, ' reuseport') !== false) {
-				file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/' . $rType . '.conf', str_replace(' reuseport', '', $rPortConfig));
+			$rPath = MAIN_HOME . 'bin/nginx/conf/ports/' . $rType . '.conf';
+			if (NginxPortsFile::update($rPath, static fn(string $rConfig): string => self::ipv6ListenFor($rConfig, $rHasIpv6))) {
 				$rReload = true;
 			}
 		}
 
 		return $rReload;
+	}
+
+	/**
+	 * The ports/<type>.conf nginx should run: `reuseport` dropped (as before),
+	 * and a `listen [::]:<port> …;` line present exactly when the host has an
+	 * IPv6 stack — so a dual-stack host answers IPv6 clients, while a host with
+	 * IPv6 disabled at the kernel is not handed a `[::]` listen nginx cannot
+	 * bind (which would stop it starting). Pure and idempotent: fixNginxConfig
+	 * writes the result only when it differs. ipv6only=on keeps the v6 socket
+	 * from also claiming the v4 wildcard the `listen <port>;` line already holds.
+	 */
+	public static function ipv6ListenFor(string $rConf, bool $rHasIpv6): string {
+		$rLines = array_values(array_filter(
+			array_map('trim', preg_split('/\R|(?<=;)\h*(?=listen\s)/i', str_replace(' reuseport', '', $rConf)) ?: []),
+			static fn(string $rLine): bool => $rLine !== '' && stripos($rLine, 'listen [::]:') !== 0
+		));
+		// Older versions copied an entire multi-listen line into the IPv6
+		// directive, duplicating its trailing IPv4 ports. Repair those too.
+		$rLines = array_values(array_unique(array_map(
+			static fn(string $rLine): string => preg_replace('/\s+ipv6only=(?:on|off)(?=\s|;)/i', '', $rLine) ?? $rLine,
+			$rLines
+		)));
+		if ($rHasIpv6) {
+			foreach ($rLines as $rLine) {
+				if (preg_match('/^listen\s+(\d+)([^;]*);$/i', $rLine, $rMatch) === 1) {
+					$rLines[] = 'listen [::]:' . $rMatch[1] . $rMatch[2] . ' ipv6only=on;';
+				}
+			}
+		}
+
+		return implode("\n", $rLines) . "\n";
 	}
 
 	private function configureFileLimits(): void {
@@ -325,11 +363,10 @@ class StatusCommand implements CommandInterface {
 	private function broadcastUpdateBinaries(array $rServers): void {
 		$db = self::db();
 		// Drop whatever an earlier run left queued, once — the same statement ran
-		// per server before. Only MAIN is queued: `binaries` needs
-		// bin/install/update_binaries.sh, which the LB build strips, so every LB
-		// answered "Updater script not found" and wrote a syslog row for it. LB
-		// runtimes are refreshed by the install flow, and fanout_binary/xcvm_core
-		// keep themselves current on every node (UpdateCommand).
+		// per server before. Only MAIN is queued: a load balancer polls
+		// `binaries` itself (cron:root_signals) once its panel update has brought
+		// the updater, which LBs of older releases lack: queued to them, every one
+		// answered "Updater script not found" and wrote a syslog row for it.
 		$db->query('DELETE FROM `signals` WHERE `custom_data` = ?;', json_encode(['action' => 'update_binaries']));
 		NodeActions::updateBinaries(SERVER_ID, $db);
 	}
@@ -391,65 +428,16 @@ class StatusCommand implements CommandInterface {
 	}
 
 	/**
-	 * Point this LB node's xcvm_core Redis config at the MAIN server's Redis.
-	 *
-	 * The MAIN server owns the shared Redis (its configureRedis generates the
-	 * password and stores it in `settings`). An LB has no local Redis, so it must
-	 * connect to MAIN's — at the same host it already uses for MySQL. We only READ
-	 * the shared password here (never rotate it — that is MAIN's job) and write the
-	 * host/password into the local config.enc so `\XC_VM::redis_connect()` reaches
-	 * the right server instead of refusing on 127.0.0.1.
-	 *
-	 * @param array<int,array<string,mixed>> $rServers Servers keyed by id.
+	 * The dashboard's "Database schema" row: this release's mark when every migration
+	 * applied, none while one fails (a mark left from a clean run would hide it).
 	 */
-	private function configureRedisLb(array $rServers): void {
-		$db = self::db();
-		if (!method_exists('XC_VM', 'config_set_redis')) {
-			return;
-		}
-
-		$rHost = self::mainRedisHost($rServers);
-		if ($rHost === null) {
-			echo "WARNING: could not resolve the main server's IP for Redis\n";
-			return;
-		}
-
-		$db->query('SELECT `redis_password` FROM `settings`;');
-		$rPassword = $db->get_row()['redis_password'] ?? '';
-		if ($rPassword === '' || $rPassword === '#PASSWORD#') {
-			echo "WARNING: no shared Redis password available yet\n";
-			return;
-		}
-
-		if (!\XC_VM::config_set_redis($rHost, 6379, $rPassword)) {
-			echo "WARNING: failed to point config.enc Redis at the main server ({$rHost})\n";
-		} else {
-			echo "Redis pointed at main server {$rHost}:6379\n";
-		}
+	public static function markSchema(Database $db, bool $rCurrent): void {
+		$db->query('UPDATE `settings` SET `status_uuid` = ?;', $rCurrent ? self::schemaMark() : null);
 	}
 
-	/**
-	 * The address a load balancer reaches MAIN's Redis on: MAIN's `private_ip`
-	 * when it has one, else its `server_ip` — the raw column, never a URL built
-	 * from it (`private_url_ip` is `http://<ip>:<port>/`). Null when MAIN's row
-	 * is missing or neither is an IP address or a plain host name.
-	 *
-	 * @param array<int, array<string, mixed>> $rServers `servers` rows
-	 */
-	public static function mainRedisHost(array $rServers): ?string {
-		foreach ($rServers as $rServer) {
-			if (empty($rServer['is_main'])) {
-				continue;
-			}
-			foreach (['private_ip', 'server_ip'] as $rKey) {
-				$rHost = trim((string) ($rServer[$rKey] ?? ''));
-				if ($rHost !== '' && (filter_var($rHost, FILTER_VALIDATE_IP) !== false || preg_match('/^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/', $rHost) === 1)) {
-					return $rHost;
-				}
-			}
-			return null;
-		}
-		return null;
+	/** The mark of this release's schema, as the dashboard compares it: the release. */
+	public static function schemaMark(): string {
+		return XC_VM_VERSION;
 	}
 
 	private function printStatusReport(array $rServers): void {
@@ -458,7 +446,6 @@ class StatusCommand implements CommandInterface {
 
 		$db->query('UPDATE `servers` SET `is_main` = 0 WHERE `id` <> ?;', SERVER_ID);
 		$db->query('UPDATE `servers` SET `is_main` = 1 WHERE `id` = ?;', SERVER_ID);
-		$db->query('UPDATE `settings` SET `status_uuid` = ?;', md5(XC_VM_VERSION));
 
 		if (stripos($rSettings['server_name'], 'xtream') !== false || stripos($rSettings['server_name'], 'zapx') !== false || stripos($rSettings['server_name'], 'streamcreed') !== false) {
 			$db->query("UPDATE `settings` SET `server_name` = 'XC_VM';");

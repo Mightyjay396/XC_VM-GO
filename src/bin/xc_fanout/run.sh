@@ -12,7 +12,9 @@
 #
 # This file is git-tracked and deployed with the tree; fanout_binary only atomically
 # renames the downloaded binary into this same dir, so it never clobbers this script.
-SCRIPT=/home/xc_vm
+# XCVM_FANOUT_HOME is for tests only (sudo passes none on a node), matching the
+# agent supervisor's XCVM_AGENT_HOME.
+SCRIPT="${XCVM_FANOUT_HOME:-/home/xc_vm}"
 FANOUT_DIR="$SCRIPT/bin/xc_fanout"
 
 # Single-instance guard. Hold an exclusive lock for the supervisor's whole
@@ -65,12 +67,38 @@ while true; do
     # we bind fresh.
     pkill -u xc_vm -x xc_fanout 2>/dev/null
     FF=$(pick_ffmpeg)
+    # The segment gateway's socket (Phase 12), only for a daemon that knows the
+    # flag: an older one would exit on it. Until the gateway answers there,
+    # nginx sends /hls/ and /key/ to PHP.
+    GW=()
+    if "$FANOUT_DIR/xc_fanout" -h 2>&1 | grep -q -- '-gw-policy'; then
+      GW=(-gw "$FANOUT_DIR/sockets/gw.sock" -gw-policy "$SCRIPT/tmp/gateway/policy.json")
+    fi
+    # Serve-only single-binary LB: the Go binary IS the whole HTTP surface — the
+    # front is the sole listener, with no nginx and no php-fpm (service starts
+    # neither on a serve_only node). Gated on the serve_only marker the install
+    # writes AND on the binary knowing -front-agent-sock (the full single-binary
+    # front: implies -front, and routes /xfile, /stream/rtmp and /admin/* to the
+    # agent; an older daemon lacking it stays a plain fanout rather than exiting on
+    # an unknown flag). The front binds the node's port set from
+    # bin/nginx/conf/ports/*.conf (its -front-ports defaults, which
+    # RootSignalsCronJob keeps at the node's public ports), terminates TLS with
+    # certbot's cert, and serves everything in-process — -front-nginx "" means no
+    # backend. FRONT_ADDR (config/cluster/front_addr) only enables the front; the
+    # listen set comes from the ports files.
+    FRONT=()
+    if [ -f "$SCRIPT/config/cluster/serve_only" ] && "$FANOUT_DIR/xc_fanout" -h 2>&1 | grep -q -- '-front-agent-sock'; then
+      FRONT_ADDR=$(cat "$SCRIPT/config/cluster/front_addr" 2>/dev/null); FRONT_ADDR=${FRONT_ADDR:-:443}
+      FRONT=(-front "$FRONT_ADDR" -front-cert "$SCRIPT/bin/nginx/conf/server.crt" -front-key "$SCRIPT/bin/nginx/conf/server.key" -front-nginx "" -front-agent-sock "$SCRIPT/config/cluster/agent.sock")
+    fi
     echo "=== $(date '+%F %T') supervisor pid=$$ spawning daemon (ffmpeg=$FF) ===" >> "$LOG"
     "$FANOUT_DIR/xc_fanout" \
       -sock "$FANOUT_DIR/sockets/http.sock" \
       -ctl "$FANOUT_DIR/sockets/control.sock" \
       -ffmpeg "${FF:-ffmpeg}" \
       -font "$SCRIPT/bin/free-sans.ttf" \
+      "${GW[@]}" \
+      "${FRONT[@]}" \
       >> "$LOG" 2>&1
     rc=$?
     echo "=== $(date '+%F %T') daemon EXITED rc=$rc (supervisor pid=$$) ===" >> "$LOG"

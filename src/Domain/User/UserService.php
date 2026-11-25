@@ -4,6 +4,7 @@ namespace XcVm\Domain\User;
 
 use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Auth\TwoFactor;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Validation\InputValidator;
@@ -29,6 +30,34 @@ class UserService {
 	 * @param array $rData Selected user ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
+
+	/**
+	 * What a reseller action log row says (users_logs): the admin's and the
+	 * reseller's User Logs and the reseller dashboard read it from here. Plain
+	 * text; $rGlue goes between "with Package:" and the package's name, which is
+	 * named only while the package exists.
+	 *
+	 * @param array<string, mixed> $rRow      A users_logs row: type, action, package_id, cost
+	 * @param array<int, array>    $rPackages PackageService::getAll()
+	 */
+	public static function logText(array $rRow, array $rPackages, string $rGlue = ' '): string {
+		$rDevice = ['line' => 'User Line', 'mag' => 'MAG Device', 'enigma' => 'Enigma2 Device', 'user' => 'Reseller'][$rRow['type'] ?? ''] ?? (string) ($rRow['type'] ?? '');
+		$rPackage = !empty($rRow['package_id']) && isset($rPackages[$rRow['package_id']]) ? ' with Package:' . $rGlue . $rPackages[$rRow['package_id']]['package_name'] : '';
+		return match ((string) ($rRow['action'] ?? '')) {
+			'new' => 'Created New ' . $rDevice . $rPackage,
+			'extend' => 'Extended ' . $rDevice . $rPackage,
+			'convert' => 'Converted Device to User Line',
+			'edit' => 'Edited ' . $rDevice,
+			'enable' => 'Enabled ' . $rDevice,
+			'disable' => 'Disabled ' . $rDevice,
+			'delete' => 'Deleted ' . $rDevice,
+			'send_event' => 'Sent Event to ' . $rDevice,
+			'adjust_credits' => 'Adjusted Credits by ' . $rRow['cost'],
+			'connection' => 'Additional Connection Added',
+			default => (string) ($rRow['action'] ?? ''),
+		};
+	}
+
 	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
@@ -36,7 +65,7 @@ class UserService {
 		ini_set('default_socket_timeout', 0);
 
 		$rUsers = json_decode($rData['users'], true);
-		self::deleteRegisteredUser($rUsers);
+		self::deleteRegisteredUsers($rUsers);
 
 		return ['status' => STATUS_SUCCESS];
 	}
@@ -68,6 +97,14 @@ class UserService {
 
 			if (isset($rData['c_member_group_id'])) {
 				$rArray['member_group_id'] = intval($rData['member_group_id']);
+			}
+
+			// An administrator group is given out, and an administrator's account
+			// changed, by a full administrator (GroupService::reservedGroups).
+			$rReserved = GroupService::reservedGroups();
+
+			if (isset($rArray['member_group_id']) && in_array($rArray['member_group_id'], $rReserved)) {
+				return ['status' => STATUS_INVALID_GROUP, 'data' => $rData];
 			}
 
 			if (isset($rData['c_reseller_dns'])) {
@@ -105,7 +142,7 @@ class UserService {
 				$rPrepare = QueryHelper::prepareArray($rArray);
 
 				if (count($rPrepare['data']) > 0) {
-					$rQuery = 'UPDATE `users` SET ' . $rPrepare['update'] . ' WHERE `id` IN (' . implode(',', $rUsers) . ');';
+					$rQuery = 'UPDATE `users` SET ' . $rPrepare['update'] . ' WHERE `id` IN (' . implode(',', $rUsers) . ')' . (0 < count($rReserved) ? ' AND COALESCE(`member_group_id`, 0) NOT IN (' . implode(',', $rReserved) . ')' : '') . ';';
 					$db->query($rQuery, ...$rPrepare['data']);
 				}
 			}
@@ -127,7 +164,10 @@ class UserService {
 		if (InputValidator::validate('processUser', $rData)) {
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'edit_reguser') || $rBypassAuth) {
-					$rUser = UserRepository::getRegisteredUserById($rData['edit']);
+					// The edit starts from the user as stored: the row cleaner's
+					// escaping would be written back into every field not sent.
+					$db->query('SELECT * FROM `users` WHERE `id` = ?;', intval($rData['edit']));
+					$rUser = ($rStored = $db->get_raw_row()) ? UserCredits::amounts($rStored) : null;
 					$rArray = AdminHelpers::overwriteData($rUser, $rData, ['password']);
 				} else {
 					exit();
@@ -140,6 +180,34 @@ class UserService {
 				} else {
 					exit();
 				}
+			}
+
+			if (isset($rUser, $rData['bouquet_limit_revision'])
+				&& (!is_string($rData['bouquet_limit_revision']) || !hash_equals(\XcVm\Domain\Bouquet\ResellerBouquetPolicy::allowanceRevision($rUser), $rData['bouquet_limit_revision']))
+			) {
+				return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			}
+
+			// Only the admin account editor owns this permission field.
+			if (array_key_exists('bouquet_limit_enabled', $rData)) {
+				$rArray['allowed_bouquets'] = in_array($rData['bouquet_limit_enabled'], ['1', 1], true)
+					? json_encode(\XcVm\Domain\Bouquet\ResellerBouquetPolicy::ids($rData['allowed_bouquets'] ?? []))
+					: null;
+			} elseif (isset($rUser)) {
+				unset($rArray['allowed_bouquets']);
+			} else {
+				$rArray['allowed_bouquets'] = null;
+			}
+
+			// The group is stored as the number it is checked as.
+			$rArray['member_group_id'] = intval($rArray['member_group_id']);
+
+			// An administrator's account is changed, and an administrator group
+			// given out, by a full administrator (GroupService::reservedGroups).
+			$rReserved = ($rBypassAuth ? [] : GroupService::reservedGroups());
+
+			if (in_array($rArray['member_group_id'], $rReserved) || (isset($rUser) && in_array(intval($rUser['member_group_id']), $rReserved))) {
+				return ['status' => STATUS_INVALID_GROUP, 'data' => $rData];
 			}
 
 			if (!empty($rData['member_group_id'])) {
@@ -177,18 +245,52 @@ class UserService {
 					$rArray['override_packages'] = json_encode($rOverride);
 					$rReason = '';
 
-					if (isset($rUser) && $rUser['credits'] != $rData['credits']) {
-						$rCreditsAdjustment = $rData['credits'] - $rUser['credits'];
-						$rReason = $rData['credits_reason'];
+					if (isset($rUser)) {
+						// An edit moves the balance by what the form changed it by: the
+						// posted balance against the one the form was opened with
+						// (`credits_shown`; a caller that sends none means the stored one).
+						// The balance itself is not written back: it may have moved since.
+						if (is_numeric($rData['credits'] ?? null)) {
+							// A caller shown no balance: one that sends back the balance as the
+							// panel reads it (six significant digits) changes nothing; any other
+							// figure is set against the balance as it is stored.
+							$rShown = (is_numeric($rData['credits_shown'] ?? null) ? $rData['credits_shown'] : ($rData['credits'] == $rUser['credits'] ? $rData['credits'] : UserCredits::balance((int) $rUser['id'])));
+
+							if ($rShown != $rData['credits']) {
+								$rCreditsAdjustment = $rData['credits'] - $rShown;
+								$rReason = $rData['credits_reason'] ?? '';
+							}
+						}
+
+						$rPrepare = QueryHelper::prepareArray(array_diff_key($rArray, ['id' => 0, 'credits' => 0]));
+						$rQuery = 'UPDATE `users` SET ' . $rPrepare['update'] . ' WHERE `id` = ?;';
+						$rPrepare['data'][] = $rUser['id'];
+						if (array_key_exists('bouquet_limit_enabled', $rData)) {
+							$rQuery = rtrim($rQuery, ';') . ' AND `allowed_bouquets` <=> ?;';
+							$rPrepare['data'][] = $rUser['allowed_bouquets'] ?? null;
+						}
+					} else {
+						$rPrepare = QueryHelper::prepareArray($rArray);
+						$rQuery = 'INSERT INTO `users`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 					}
 
-					$rPrepare = QueryHelper::prepareArray($rArray);
-					$rQuery = 'REPLACE INTO `users`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-
 					if ($db->query($rQuery, ...$rPrepare['data'])) {
-						$rInsertID = $db->last_insert_id();
+						if (isset($rUser) && array_key_exists('bouquet_limit_enabled', $rData) && $db->num_rows() === 0) {
+							$db->query('SELECT `allowed_bouquets` FROM `users` WHERE `id` = ?;', $rUser['id']);
+							$current = $db->get_raw_row();
+							if (!$current || $current['allowed_bouquets'] !== ($rUser['allowed_bouquets'] ?? null)) {
+								return ['status' => STATUS_FAILURE, 'data' => $rData];
+							}
+						}
+						$rInsertID = (isset($rUser) ? $rUser['id'] : $db->last_insert_id());
 
-						if (isset($rCreditsAdjustment)) {
+						// The second factor of an account that lost it, turned off by an admin.
+						if (isset($rUser) && !empty($rData['reset_2fa'])) {
+							TwoFactor::disable((int) $rInsertID);
+						}
+
+						// The log holds the adjustments that were made.
+						if (isset($rCreditsAdjustment) && UserCredits::credit($rInsertID, $rCreditsAdjustment)) {
 							$db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rInsertID, $GLOBALS['rAdminUserInfo']['id'], $rCreditsAdjustment, time(), $rReason);
 						}
 
@@ -299,11 +401,14 @@ class UserService {
 		$db = self::db();
 		$rUser = UserRepository::getRegisteredUserById($rID);
 
-		if (!$rUser) {
+		// An administrator's account is deleted by a full administrator.
+		if (!$rUser || in_array(intval($rUser['member_group_id']), GroupService::reservedGroups())) {
 			return false;
 		}
 
 		$db->query('DELETE FROM `users` WHERE `id` = ?;', $rID);
+		$db->query('DELETE FROM `users_2fa` WHERE `user_id` = ?;', $rID);
+		$db->query('DELETE FROM `api_tokens` WHERE `user_id` = ?;', $rID);
 		$db->query('DELETE FROM `users_credits_logs` WHERE `admin_id` = ?;', $rID);
 		$db->query('DELETE FROM `users_logs` WHERE `owner` = ?;', $rID);
 		$db->query('DELETE FROM `tickets_replies` WHERE `ticket_id` IN (SELECT `id` FROM `tickets` WHERE `member_id` = ?);', $rID);
@@ -342,11 +447,19 @@ class UserService {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
+		// An administrator's account is deleted by a full administrator.
+		if (0 < count($rIDs) && 0 < count($rReserved = GroupService::reservedGroups())) {
+			$db->query('SELECT `id` FROM `users` WHERE `id` IN (' . implode(',', $rIDs) . ') AND `member_group_id` IN (' . implode(',', $rReserved) . ');');
+			$rIDs = array_values(array_diff($rIDs, array_column($db->get_rows(), 'id')));
+		}
+
 		if (0 >= count($rIDs)) {
 			return false;
 		}
 
 		$db->query('DELETE FROM `users` WHERE `id` IN (' . implode(',', $rIDs) . ');');
+		$db->query('DELETE FROM `users_2fa` WHERE `user_id` IN (' . implode(',', $rIDs) . ');');
+		$db->query('DELETE FROM `api_tokens` WHERE `user_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `users_credits_logs` WHERE `admin_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `users_logs` WHERE `owner` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `tickets_replies` WHERE `ticket_id` IN (SELECT `id` FROM `tickets` WHERE `member_id` IN (' . implode(',', $rIDs) . '));');

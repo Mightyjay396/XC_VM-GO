@@ -1,10 +1,11 @@
 <?php
 
-use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Config\Maintenance;
 use XcVm\Core\GeoIP\GeoIPService;
 use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Core\Util\TimeUtils;
+use XcVm\Domain\Device\DeviceUserAgentPolicy;
 use XcVm\Domain\Stream\CategoryService;
 use XcVm\Domain\Stream\StreamSorter;
 use XcVm\Domain\User\UserRepository;
@@ -45,6 +46,11 @@ $rLegacyPortalRequest = in_array($rRequestPath, ["/c/portal.php", "/portal.php"]
 if ($rLegacyPortalRequest && empty($rSettings["mag_legacy_redirect"])) {
 	http_response_code(404);
 	exit();
+}
+
+// Maintenance mode: the box shows a server error and retries.
+if (Maintenance::active($rSettings)) {
+	Maintenance::refuse($rSettings);
 }
 
 if (!$rSettings["disable_ministra"]) {
@@ -120,10 +126,15 @@ if (!$rSettings["disable_ministra"]) {
 					$rDevice = [];
 				}
 
-				if (!isset($rDevice["token"]) || $rDevice["token"] != $rVerify["token"]) {
-					$rDevice = [];
-				} else {
-					$rDevice["authenticated"] = true;
+				if (!isset($rDevice["token"]) || $rDevice["token"] !== $rVerify["token"]) {
+					// Not the device's token. A handshake's token is put to get_profile below,
+					// with the device as the panel has it now; whatever get_profile says of that
+					// box, the device keeps the token and the entry it has until it is verified.
+					$rDevice = $rReqType == "stb" && $rReqAction == "get_profile"
+						? PortalHandler::handshakeDevice($rVerify["id"], $rVerify["token"])
+						: [];
+				} elseif (!empty($rDevice["authenticated"])) {
+					// The token names the device; only get_profile below verifies it.
 					updatecache();
 				}
 			} else {
@@ -131,7 +142,25 @@ if (!$rSettings["disable_ministra"]) {
 			}
 		}
 
+		$rSerialAttempt = null;
 		if ($rDevice && $rReqType == "stb" && $rReqAction == "get_profile") {
+			// Serialize first binding and later verification, including requests using an existing token.
+			$rBindingLock = @fopen(MINISTRA_TMP_PATH . "ministra_" . intval($rDevice["mag_id"]) . ".binding.lock", "c");
+			if (!$rBindingLock || !flock($rBindingLock, LOCK_EX)) {
+				http_response_code(503);
+				exit();
+			}
+			// A cached device may predate another box's first binding or an administrator's reset.
+			if (!$db->query("SELECT `sn`, `device_id`, `device_id2`, `hw_version`, `lock_device`, `lock_user_agent`, `allowed_user_agents` FROM `mag_devices` WHERE `mag_id` = ? LIMIT 1", $rDevice["mag_id"])) {
+				http_response_code(503);
+				exit();
+			}
+			$rBinding = $db->get_raw_row();
+			if (!is_array($rBinding) || !array_key_exists("sn", $rBinding)) {
+				http_response_code(503);
+				exit();
+			}
+			$rDevice = array_replace($rDevice, $rBinding);
 			$rSerialNumber = !empty($rRequest["sn"]) ? $rRequest["sn"] : null;
 			$rSTBType = !empty($rRequest["stb_type"]) ? $rRequest["stb_type"] : null;
 			$rVersion = !empty($rRequest["ver"]) ? $rRequest["ver"] : null;
@@ -148,64 +177,6 @@ if (!$rSettings["disable_ministra"]) {
 				$rVerified = false;
 			}
 
-			//MAGSCAN
-			//If No SerialNumber Is Posted
-			if (empty($rSerialNumber) && !$rDebug) {
-				$rBanData = ["ip" => $rIP, "notes" => "[MS] No Serial Number", "date" => time()];
-				touch(FLOOD_TMP_PATH . "block_" . $rIP);
-				$db->query(
-					"INSERT INTO `blocked_ips` (`ip`,`notes`,`date`) VALUES(?,?,?)",
-					$rBanData["ip"],
-					$rBanData["notes"],
-					$rBanData["date"],
-				);
-				BlocklistChanges::set('ip', [$rIP], $db);
-				http_response_code(404);
-				die();
-			}
-			//If Posted SN is different from Device
-			if (!empty($rDevice["sn"]) && $rDevice["sn"] !== $rSerialNumber && !$rDebug) {
-				$rBanData = [
-					"ip" => $rIP,
-					"notes" => "[MS] Invalid Serial Number",
-					"date" => time(),
-				];
-				touch(FLOOD_TMP_PATH . "block_" . $rIP);
-				$db->query(
-					"INSERT INTO `blocked_ips` (`ip`,`notes`,`date`) VALUES(?,?,?)",
-					$rBanData["ip"],
-					$rBanData["notes"],
-					$rBanData["date"],
-				);
-				BlocklistChanges::set('ip', [$rIP], $db);
-				http_response_code(404);
-				die();
-			}
-			//MANGSCAN
-
-			if (!$rDevice["lock_device"]) {
-			} else {
-				if (empty($rDevice["sn"]) || $rDevice["sn"] == $rSerialNumber) {
-				} else {
-					$rVerified = false;
-				}
-
-				if (empty($rDevice["device_id"]) || $rDevice["device_id"] == $rDeviceID) {
-				} else {
-					$rVerified = false;
-				}
-
-				if (empty($rDevice["device_id2"]) || $rDevice["device_id2"] == $rDeviceID2) {
-				} else {
-					$rVerified = false;
-				}
-
-				if (empty($rDevice["hw_version"]) || $rDevice["hw_version"] == $rHWVersion) {
-				} else {
-					$rVerified = false;
-				}
-			}
-
 			if (empty($rSettings["stalker_lock_images"])
 				|| in_array($rVersion, $rSettings["stalker_lock_images"])
 			) {
@@ -217,7 +188,43 @@ if (!$rSettings["disable_ministra"]) {
 				$rVerified = true;
 			}
 
+			// Debug mode must never authorize a missing/replaced serial or a changed locked identity.
+			$rBindingMatches = is_string($rSerialNumber) && trim($rSerialNumber) !== ""
+				&& ((string) ($rBinding["sn"] ?? "") === "" || $rBinding["sn"] === $rSerialNumber);
+			if (!empty($rBinding["lock_device"])) {
+				foreach (["device_id" => $rDeviceID, "device_id2" => $rDeviceID2, "hw_version" => $rHWVersion] as $rField => $rValue) {
+					if ((string) ($rBinding[$rField] ?? "") !== "" && $rBinding[$rField] !== $rValue) {
+						$rBindingMatches = false;
+					}
+				}
+			}
+			if (!$rBindingMatches || !empty($rDeviceMismatch)) {
+				$rVerified = false;
+			}
+			// A serial that is not the one bound to the device is a guess at it: it is counted
+			// by MAC and serial (handleStbPublic), so guessing the serial of one known MAC
+			// reaches the MAC attempt limit as guessing MACs does.
+			if ((string) ($rBinding["sn"] ?? "") !== "" && $rBinding["sn"] !== $rSerialNumber) {
+				$rSerialAttempt = (string) $rSerialNumber;
+			}
+
 			if ($rVerified) {
+				$rObservedAgent = DeviceUserAgentPolicy::observed();
+				// Record only a request that passed the device identity checks. Never auto-allow it.
+				if (!$db->query("UPDATE `mag_devices` SET `last_user_agent` = ? WHERE `mag_id` = ?", $rObservedAgent, $rDevice["mag_id"])) {
+					http_response_code(503);
+					exit();
+				}
+				$rVerified = DeviceUserAgentPolicy::allows($rBinding, $rObservedAgent);
+			}
+
+			// The device's own token, or a handshake's that is not the device's yet.
+			$rOwnToken = ($rDevice["token"] ?? null) === $rVerify["token"];
+
+			if ($rVerified) {
+				if (!$rOwnToken) {
+					PortalHandler::adoptToken($rVerify["token"]);
+				}
 				$rDevice["ip"] = $rIP;
 				$rDevice["stb_type"] = $rSTBType;
 				$rDevice["sn"] = $rSerialNumber;
@@ -231,8 +238,8 @@ if (!$rSettings["disable_ministra"]) {
 				$rDevice["get_profile_vars"]["stb_type"] = $rSTBType;
 				$rDevice["get_profile_vars"]["hw_version"] = $rHWVersion;
 				$rDevice["authenticated"] = true;
-				$db->query(
-					"UPDATE `mag_devices` SET `ip` = ?, `stb_type` = ?, `sn` = ?, `ver` = ?, `image_version` = ?, `device_id` = ?, `device_id2` = ?, `hw_version` = ? WHERE `mag_id` = ?;",
+				if (!$db->query(
+					"UPDATE `mag_devices` SET `ip` = ?, `stb_type` = ?, `sn` = CASE WHEN `sn` IS NULL OR `sn` = '' THEN ? ELSE `sn` END, `ver` = ?, `image_version` = ?, `device_id` = ?, `device_id2` = ?, `hw_version` = ? WHERE `mag_id` = ?;",
 					$rIP,
 					$rSTBType,
 					$rSerialNumber,
@@ -242,19 +249,41 @@ if (!$rSettings["disable_ministra"]) {
 					$rDeviceID2,
 					$rHWVersion,
 					$rDevice["mag_id"],
-				);
+				)
+				) {
+					http_response_code(503);
+					exit();
+				}
 				updatecache();
 			} else {
-				if (!empty($rDevice["id"])
-					&& file_exists(MINISTRA_TMP_PATH . "ministra_" . $rDevice["id"])
+				// Entries are named by device number, as updateCache() writes them. The
+				// entry goes with the box that held the device's token: a box refused with
+				// a handshake's token ends no session but its own.
+				if ($rOwnToken
+					&& !empty($rDevice["mag_id"])
+					&& file_exists(MINISTRA_TMP_PATH . "ministra_" . intval($rDevice["mag_id"]))
 				) {
-					unlink(MINISTRA_TMP_PATH . "ministra_" . $rDevice["id"]);
+					unlink(MINISTRA_TMP_PATH . "ministra_" . intval($rDevice["mag_id"]));
 				}
 				$rDevice = [];
 			}
+			flock($rBindingLock, LOCK_UN);
+			fclose($rBindingLock);
 		}
 
 		$rAuthenticated = !empty($rDevice["authenticated"]);
+		// Recheck the current policy for existing sessions as well as new logins.
+		if ($rAuthenticated && !($rReqType === "stb" && $rReqAction === "get_profile")) {
+			if (!$db->query("SELECT `lock_user_agent`, `allowed_user_agents` FROM `mag_devices` WHERE `mag_id` = ? LIMIT 1", $rDevice["mag_id"])) {
+				http_response_code(503);
+				exit();
+			}
+			$rAgentPolicy = $db->get_raw_row();
+			if (!$rAgentPolicy || !DeviceUserAgentPolicy::allows($rAgentPolicy, DeviceUserAgentPolicy::observed())) {
+				$rAuthenticated = false;
+				$rDevice = [];
+			}
+		}
 		$rMagID = !empty($rDevice["mag_id"]) ? intval($rDevice["mag_id"]) : 0;
 
 		if (empty($rDevice["locale"]) && !empty($_COOKIE["locale"])) {
@@ -938,6 +967,7 @@ if (!$rSettings["disable_ministra"]) {
 			"forceProtocol" => $rForceProtocol,
 			"player" => "",
 			"mac" => $rMAC,
+			"serialAttempt" => $rSerialAttempt,
 			"ip" => $rIP,
 			"authenticated" => $rAuthenticated,
 			"gMode" => $rGMode,
@@ -953,7 +983,7 @@ if (!$rSettings["disable_ministra"]) {
 		if ($rAuthenticated) {
 			PortalHandler::handleAuthenticated($rReqType, $rReqAction, $ctx);
 		} else {
-			// Phase 6: Unauthenticated — bruteforce check
+			// Phase 6: Unauthenticated
 			PortalHandler::handleUnauthenticated($rReqType, $rReqAction, $ctx);
 		}
 	} else {
@@ -1144,7 +1174,7 @@ function getItems(
 		$rWhereV[] = $rPicking["genre"];
 	}
 
-	$rChannels = StreamSorter::sortChannels($rChannels);
+	$rChannels = StreamSorter::sortChannels($rChannels, $rDevice);
 
 	if (empty($rFav)) {
 	} else {
@@ -1202,7 +1232,7 @@ function getItems(
 
 		case "number":
 		default:
-			if ($rSettings["channel_number_type"] != "manual") {
+			if ($rSettings["channel_number_type"] != "manual" || \XcVm\Domain\Bouquet\ResellerBouquetPolicy::hasCustomOrder($rDevice)) {
 				$rOrder = "FIELD(id," . implode(",", $rChannels) . ")";
 			} else {
 				$rOrder = "`order` ASC";
@@ -1348,11 +1378,12 @@ function getDevice($rID = null, $rMAC = null) {
 			: null;
 
 	if ((!$rDevice && $rMAC) || ($rDevice && 600 < time() - $rDevice["generated"])) {
+		$rAnswered = false;
 		if ($rMAC) {
 			$db->query("SELECT * FROM `mag_devices` WHERE `mac` = ? LIMIT 1", $rMAC);
 		} else {
 			if ($rDevice) {
-				$db->query(
+				$rAnswered = $db->query(
 					"SELECT * FROM `mag_devices` WHERE `mac` = ? LIMIT 1",
 					$rDevice["get_profile_vars"]["mac"],
 				);
@@ -1360,7 +1391,16 @@ function getDevice($rID = null, $rMAC = null) {
 		}
 
 		if (0 >= $db->num_rows()) {
+			// The panel no longer has the device this entry was cached for: the entry
+			// goes and the device is unknown again. A lookup that failed says nothing
+			// about the device, so then the entry stays.
+			if ($rAnswered) {
+				@unlink(MINISTRA_TMP_PATH . "ministra_" . $rID);
+				$rDevice = null;
+			}
 		} else {
+			// A verified device stays verified across the rebuild only under the token it was verified with.
+			$rVerifiedToken = !empty($rDevice["authenticated"]) ? ($rDevice["token"] ?? null) : null;
 			$rDevice = $db->get_row();
 			$rUserInfo = UserRepository::getStreamingUserInfo(
 				$rSettings,
@@ -1490,6 +1530,7 @@ function getDevice($rID = null, $rMAC = null) {
 			];
 			$rDevice["mac"] = base64_encode($rDevice["mac"]);
 			$rDevice["generated"] = time();
+			$rDevice["authenticated"] = $rVerifiedToken !== null && $rDevice["token"] === $rVerifiedToken;
 		}
 	} else {
 		if ($rDevice) {
@@ -1988,9 +2029,8 @@ function sortArrayStreamName($a, $b) {
 	return strcmp($a[$rColumn], $b[$rColumn]);
 }
 
-function getStations($rCategoryID = null, $rFav = null, $rOrderBy = null) {
+function getStations(string $rPlayer, $rCategoryID = null, $rFav = null, $rOrderBy = null) {
 	global $rDevice;
-	global $rPlayer;
 	global $rPageItems;
 	global $rRequest;
 	global $rSettings;
@@ -2089,6 +2129,7 @@ function getStations($rCategoryID = null, $rFav = null, $rOrderBy = null) {
 }
 
 function getStreams(
+	string $rPlayer,
 	$rCategoryID = null,
 	$rAll = false,
 	$rFav = null,
@@ -2096,7 +2137,6 @@ function getStreams(
 	$rSearchBy = null,
 ) {
 	global $rDevice;
-	global $rPlayer;
 	global $rPageItems;
 	global $rRequest;
 	global $rSettings;
@@ -2318,6 +2358,26 @@ function getStreams(
 		$rPage = 0;
 		$rPosition = 0;
 	}
+
+	// Ministra returns channel fields as the strings its DB yields. Native Stalker
+	// clients (C firmware such as GX STBs) read them as strings, so an int field
+	// comes back empty and the client drops every channel.
+	//
+	// But the 0/1 boolean flags must stay integers: the portal JS renders them with
+	// strict === / truthy checks (layer.list.js, tv.js), so a string "0" reads as
+	// "on" and shows the adult lock, favourites star and timeshift/record icons on
+	// every channel (issue #393). Keep those flags as ints; stringify the rest
+	// (ids, numbers, statuses, genre ids) for the C firmware.
+	$rFlagKeys = [
+		'censored', 'lock', 'locked', 'fav', 'archive', 'pvr', 'hd', 'open',
+		'enable_tv_archive', 'allow_pvr', 'allow_local_pvr', 'allow_remote_pvr',
+		'use_load_balancing',
+	];
+	array_walk_recursive($rDatas, static function (&$rValue, $rKey) use ($rFlagKeys) {
+		if (is_int($rValue) && !in_array($rKey, $rFlagKeys, true)) {
+			$rValue = (string) $rValue;
+		}
+	});
 
 	$rOutput = [
 		"js" => [

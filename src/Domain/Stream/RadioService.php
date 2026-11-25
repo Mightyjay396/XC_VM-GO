@@ -34,6 +34,7 @@ class RadioService {
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
 	public static function process(array $rData) {
+		$rData = Authorization::dropFfmpegArguments($rData);
 		$db = self::db();
 
 		if (!InputValidator::validate('processRadio', $rData)) {
@@ -44,7 +45,10 @@ class RadioService {
 			if (!Authorization::check('adv', 'edit_radio')) {
 				exit();
 			}
-			$rArray = AdminHelpers::overwriteData(StreamRepository::getById($rData['edit']), $rData);
+			// The edit starts from the stream as stored: the row cleaner's
+			// escaping would be written back into every field not sent.
+			$db->query('SELECT * FROM `streams` WHERE `id` = ?;', intval($rData['edit']));
+			$rArray = AdminHelpers::overwriteData($db->get_raw_row(), $rData);
 		} else {
 			if (!Authorization::check('adv', 'add_radio')) {
 				exit();
@@ -107,7 +111,7 @@ class RadioService {
 		self::saveStreamOptions($db, $rInsertID, $rData);
 
 		if ($rRestart) {
-			ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID]]);
+			ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID], 'async' => true]);
 		}
 
 		self::syncBouquets($rInsertID, $rBouquets, isset($rData['edit']));
@@ -382,7 +386,7 @@ class RadioService {
 	 */
 	private static function planServerTreeForStream(object $db, array $rData, int|string $rStreamID, array $rExistingServers, string &$rAddQuery, array &$rDeleteServers): void {
 		$rStreamsAdded = [];
-		foreach (json_decode($rData['server_tree_data'], true) as $rServer) {
+		foreach (json_decode((string) ($rData['server_tree_data'] ?? ''), true) ?: [] as $rServer) {
 			if ($rServer['parent'] == '#') {
 				continue;
 			}
@@ -502,7 +506,7 @@ class RadioService {
 				StreamProcess::updateStreams($rStreamIDs);
 				EventDispatcher::dispatch(new StreamsChangedEvent(array_values(array_map('intval', $rStreamIDs))));
 				if (isset($rData['restart_on_edit'])) {
-					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)]);
+					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs), 'async' => true]);
 				}
 			}
 

@@ -19,6 +19,8 @@ use XcVm\Streaming\Delivery\HLSGenerator;
 use XcVm\Streaming\Delivery\OffAirHandler;
 use XcVm\Streaming\Delivery\SegmentReader;
 use XcVm\Streaming\Delivery\SignalSender;
+use XcVm\Streaming\Delivery\TsProducerRecovery;
+use XcVm\Streaming\Delivery\TsDiscontinuity;
 use XcVm\Streaming\Fanout\FanoutClient;
 use XcVm\Streaming\Fanout\FanoutMode;
 use XcVm\Streaming\Lifecycle\ShutdownHandler;
@@ -32,29 +34,6 @@ use XcVm\Streaming\Lifecycle\ShutdownHandler;
  * @link    https://github.com/Vateron-Media/XC_VM
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
-
-
-// ─── Go xc_ts_server integration (ADR-GO) ────────────────────────────
-// Go is the primary handler for /auth/<token> (full pipeline: auth,
-// tracking, enforcement, delivery). These X-Accel-Redirect blocks are
-// the secondary/fallback path: they are reached only when nginx routes
-// to PHP instead of Go (e.g. if the /auth/ rewrite is re-enabled, or
-// for any reason the request reaches live.php). In that case, PHP does
-// auth and hands off delivery to Go via X-Accel-Redirect.
-// If Go is not running, PHP falls back to its own delivery.
-function goTsServerAvailable(): bool {
-	static $available = null;
-	if ($available === null) {
-		$pidFile = '/home/xc_vm/bin/xc_ts_server/ts_server.pid';
-		if (!file_exists($pidFile)) {
-			$available = false;
-		} else {
-			$pid = intval(file_get_contents($pidFile));
-			$available = ($pid > 0 && file_exists("/proc/{$pid}"));
-		}
-	}
-	return $available;
-}
 
 set_time_limit(0);
 register_shutdown_function([ShutdownHandler::class, 'handle'], 'live');
@@ -75,7 +54,8 @@ $rPID = getmypid();
 $rStartTime = time();
 $rVideoCodec = null;
 
-if (isset($rRequest["token"])) {
+// A link is one plain value: a request that sends a list of them has none.
+if (isset($rRequest["token"]) && !is_array($rRequest["token"])) {
 	$rTokenData = StreamAuthMiddleware::decryptToken($rRequest["token"], $rSettings, $rServers, $rIP);
 
 	if (!isset($rTokenData["video_path"]) && !isset($rTokenData["off_air"])) {
@@ -223,7 +203,7 @@ if ($rChannelInfo) {
 			// Watched = a live PHP monitor, or the fanout supervisor (whose pid
 			// the PHP check rightly rejects). Either way, do not start another.
 			if (!StreamProcess::isWatched($rStreamID, $rChannelInfo["monitor_pid"])) {
-				if (($rActivityStart + $rCreateExpiration) - intval($rServers[SERVER_ID]["time_offset"]) < time()) {
+				if ($rActivityStart + $rCreateExpiration < StreamAuthMiddleware::mainNow($rServers) && !ConnectionTracker::adaptiveViewerOpen($rSettings, $rTokenData, $rIP, $rUserAgent)) {
 					generateError("TOKEN_EXPIRED");
 				}
 
@@ -313,13 +293,10 @@ if ($rChannelInfo) {
 	}
 
 	$rExecutionTime = time() - $rStartTime;
-	$rExpiresAt = ($rActivityStart + $rCreateExpiration + $rExecutionTime) - intval($rServers[SERVER_ID]["time_offset"]);
+	// MAIN's clock, as the token's start (StreamAuthMiddleware::mainNow()).
+	$rExpiresAt = $rActivityStart + $rCreateExpiration + $rExecutionTime;
 
-	if ($rSettings["redis_handler"]) {
-		RedisManager::ensureConnected();
-	} else {
-		DatabaseFactory::connectLazy();
-	}
+	ConnectionTracker::openStore($rSettings);
 
 	if ($rSettings["disallow_2nd_ip_con"] && !$rUserInfo["is_restreamer"] && ($rUserInfo["max_connections"] <= $rSettings["disallow_2nd_ip_max"] && 0 < $rUserInfo["max_connections"] || $rSettings["disallow_2nd_ip_max"] == 0)) {
 		$rAcceptIP = null;
@@ -346,7 +323,8 @@ if ($rChannelInfo) {
 		$rTokenData["adm_uuid"] = $rTokenData["uuid"] ?? null;
 		// HMAC/external-device streams have no real user id in $rUserInfo (0 is a
 		// safe placeholder: hlsConnectionKey() only uses $rUserId in the non-HMAC branch).
-		$rTokenData["uuid"] = ConnectionTracker::hlsConnectionKey($rIsHMAC, $rIdentifier, $rUserInfo["id"] ?? 0, $rStreamID, $rIP, $rUserAgent);
+		// An adaptive master's variants share the master's connection.
+		$rTokenData["uuid"] = ConnectionTracker::hlsConnectionKey($rIsHMAC, $rIdentifier, $rUserInfo["id"] ?? 0, intval($rTokenData["adaptive"][1] ?? $rStreamID), $rIP, $rUserAgent);
 	}
 
 	// Shared connection context for ConnectionTracker::createLive(); the HLS
@@ -375,7 +353,7 @@ if ($rChannelInfo) {
 		case "m3u8":
 			$rConnection = ConnectionTracker::lookupLive($rSettings, $rConnCtx, "hls", false, true, true);
 			if (!isset($rConnection)) {
-				if (time() > $rExpiresAt) {
+				if (StreamAuthMiddleware::mainNow($rServers) > $rExpiresAt) {
 					generateError("TOKEN_EXPIRED");
 				}
 
@@ -388,7 +366,9 @@ if ($rChannelInfo) {
 					generateError("IP_MISMATCH");
 				}
 
-				$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ["server_id" => $rServerID, "proxy_id" => $rProxyID, "hls_last_read" => time() - intval($rServers[SERVER_ID]["time_offset"])]);
+				// stream_id: an adaptive viewer moves to the variant it now plays, so
+				// the on-demand reaper counts it there and does not stop that variant.
+				$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ["stream_id" => $rStreamID, "server_id" => $rServerID, "proxy_id" => $rProxyID, "hls_last_read" => time() - intval($rServers[SERVER_ID]["time_offset"])]);
 			}
 
 			if (!$rResult) {
@@ -403,19 +383,6 @@ if ($rChannelInfo) {
 				RedisManager::closeInstance();
 			} else {
 				DatabaseFactory::close();
-			}
-
-
-			// ─── Go xc_ts_server HLS handoff (ADR-GO) ───────────────────
-			// Secondary path: reached only if nginx routes to PHP instead
-			// of Go. Hands off HLS playlist generation to Go via X-Accel.
-			// Falls back to PHP HLSGenerator when Go is not available.
-			if (goTsServerAvailable() && !empty($rPlaylist) && file_exists($rPlaylist)) {
-				touch(CONS_TMP_PATH . $rTokenData["uuid"]);
-				header("Content-Type: application/x-mpegurl");
-				header("Cache-Control: no-store, no-cache, must-revalidate");
-				header("X-Accel-Redirect: /xc_hls_go/" . intval($rStreamID) . "?uuid=" . rawurlencode($rTokenData["uuid"]));
-				exit();
 			}
 
 			// With fanout on, client HLS is daemon-only (ADR 0003, Phase E). When
@@ -463,7 +430,7 @@ if ($rChannelInfo) {
 
 			$rConnection = ConnectionTracker::lookupLive($rSettings, $rConnCtx, $rExtension, true, false, false);
 			if (!isset($rConnection)) {
-				if (time() > $rExpiresAt) {
+				if (StreamAuthMiddleware::mainNow($rServers) > $rExpiresAt) {
 					generateError("TOKEN_EXPIRED");
 				}
 				$rResult = ConnectionTracker::createLive($rSettings, $rConnCtx, $rExtension, $rConnPID);
@@ -497,7 +464,12 @@ if ($rChannelInfo) {
 				DatabaseFactory::close();
 			}
 
-			$rCloseCon = true;
+			// A daemon viewer's record has pid 0 and outlives this worker: the
+			// agent or fanout_sync closes it when the daemon drops the viewer.
+			// The shutdown handler has nothing to close for it (it closes only
+			// this worker's pid) and would delete its marker at once, so neither
+			// is asked of it: no store round-trip after the hand-off.
+			$rCloseCon = !$rTSDaemon;
 
 			if ($rSettings["monitor_connection_status"]) {
 				ob_implicit_flush(true);
@@ -506,7 +478,26 @@ if ($rChannelInfo) {
 				}
 			}
 
-			touch(CONS_TMP_PATH . $rTokenData["uuid"]);
+			if (!$rTSDaemon) {
+				touch(CONS_TMP_PATH . $rTokenData["uuid"]);
+			}
+
+			// The daemon hand-off, the same for proxy and non-proxy channels.
+			// client_prebuffer / restreamer_prebuffer (seconds) → the daemon
+			// front-loads that much keyframe-aligned history on join, filling the
+			// player's cache (without it it sends only the current GOP); a
+			// restreamer's link that asks for a prebuffer gets a segment's time.
+			// The daemon clamps the value to its retention ceiling.
+			$rDaemonHandOff = static function () use ($rUserInfo, $rTokenData, $rSettings, $rStreamID, $rVideoCodec): void {
+				$rDaemonPrebuffer = $rUserInfo["is_restreamer"]
+					? (!empty($rTokenData["prebuffer"])
+						? max(1, intval($rSettings["seg_time"]))
+						: intval($rSettings["restreamer_prebuffer"] ?? 0))
+					: intval($rSettings["client_prebuffer"] ?? 0);
+				header("Content-Type: video/mp2t");
+				header("X-Accel-Buffering: no");
+				header("X-Accel-Redirect: /xc_fanout/" . rawurlencode((string) $rStreamID) . "?c=" . rawurlencode($rTokenData["uuid"]) . "&prebuffer=" . $rDaemonPrebuffer . "&vc=" . rawurlencode((string) $rVideoCodec));
+			};
 
 			if ($rChannelInfo["proxy"]) {
 				// ────────────────────────────────────────────────────────────────
@@ -560,19 +551,7 @@ if ($rChannelInfo) {
 				if (!$rTSDaemon) {
 					OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 				}
-				// client_prebuffer / restreamer_prebuffer (seconds) → the daemon
-				// front-loads that much keyframe-aligned history on join, filling
-				// the player's cache. Without it the daemon sends only the current
-				// GOP (~1s, "no cache"). Same hand-off contract as the non-proxy
-				// $rTSDaemon branch below; the daemon clamps to its retention ceiling.
-				$rDaemonPrebuffer = $rUserInfo["is_restreamer"]
-					? (!empty($rTokenData["prebuffer"])
-						? intval($rSegmentSettings["seg_time"] ?? 0)
-						: intval($rSettings["restreamer_prebuffer"] ?? 0))
-					: intval($rSettings["client_prebuffer"] ?? 0);
-				header("Content-Type: video/mp2t");
-				header("X-Accel-Buffering: no");
-				header("X-Accel-Redirect: /xc_fanout/" . rawurlencode((string) $rStreamID) . "?c=" . rawurlencode($rTokenData["uuid"]) . "&prebuffer=" . $rDaemonPrebuffer . "&vc=" . rawurlencode((string) $rVideoCodec));
+				$rDaemonHandOff();
 				exit;
 			}
 
@@ -587,20 +566,7 @@ if ($rChannelInfo) {
 			// arm. With fanout off the chase-read below serves it.
 			// ────────────────────────────────────────────────────────────────
 			if ($rTSDaemon) {
-				// client_prebuffer / restreamer_prebuffer (seconds) → the daemon
-				// front-loads that much keyframe-aligned history on join, filling
-				// the player's cache. The X-Accel hand-off must pass them through or
-				// they would be lost
-				// (the daemon otherwise sends only the current GOP). The daemon
-				// clamps the value to its own retention ceiling.
-				$rDaemonPrebuffer = $rUserInfo["is_restreamer"]
-					? (!empty($rTokenData["prebuffer"])
-						? intval($rSegmentSettings["seg_time"] ?? 0)
-						: intval($rSettings["restreamer_prebuffer"] ?? 0))
-					: intval($rSettings["client_prebuffer"] ?? 0);
-				header("Content-Type: video/mp2t");
-				header("X-Accel-Buffering: no");
-				header("X-Accel-Redirect: /xc_fanout/" . rawurlencode((string) $rStreamID) . "?c=" . rawurlencode($rTokenData["uuid"]) . "&prebuffer=" . $rDaemonPrebuffer . "&vc=" . rawurlencode((string) $rVideoCodec));
+				$rDaemonHandOff();
 				exit;
 			}
 
@@ -611,24 +577,6 @@ if ($rChannelInfo) {
 			// ────────────────────────────────────────────────────────────────
 			if ($rTSVia !== FanoutMode::VIA_LEGACY) {
 				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
-			}
-
-
-			// ─── Go xc_ts_server TS handoff (ADR-GO) ────────────────────
-			// Secondary path: reached only if nginx routes to PHP instead
-			// of Go. Hands off TS delivery to Go via X-Accel-Redirect.
-			// Go does the chase-read loop with prebuffering and heartbeat.
-			// Falls back to PHP delivery when Go is not available.
-			if (goTsServerAvailable()) {
-				$rGoPrebuffer = $rUserInfo["is_restreamer"]
-					? (!empty($rTokenData["prebuffer"]) ? intval($rSegmentSettings["seg_time"] ?? 10) : intval($rSettings["restreamer_prebuffer"] ?? 0))
-					: intval($rSettings["client_prebuffer"] ?? 0);
-				header("Content-Type: video/mp2t");
-				header("X-Accel-Buffering: no");
-				header("X-Accel-Redirect: /xc_ts_go/" . intval($rStreamID)
-					. "?uuid=" . rawurlencode($rTokenData["uuid"])
-					. "&prebuffer=" . $rGoPrebuffer);
-				exit;
 			}
 
 			// ────────────────────────────────────────────────────────────────
@@ -707,12 +655,22 @@ if ($rChannelInfo) {
 			$rFails = 0;
 			$rTotalFails = max($rSegmentSettings["seg_time"] * 2, intval($rSettings["segment_wait_time"]) ?: 20);
 			$rMonitorCheck = $rLastCheck = time();
+			$rReset = null;
 
 			while (true) {
 				$rSegmentFile = sprintf("%d_%d.ts", $rStreamID, $rCurrent + 1);
 				$rNextSegment = sprintf("%d_%d.ts", $rStreamID, $rCurrent + 2);
 
-				if (!AsyncFileOperations::awaitFileExists(STREAMS_PATH . $rSegmentFile, max(1, $rTotalFails), 1000) || !file_exists(STREAMS_PATH . $rSegmentFile)) {
+				if (!TsProducerRecovery::awaitSegment(STREAMS_PATH . $rSegmentFile, (int) $rStreamID, (int) $rChannelInfo["pid"], max(1, $rTotalFails))) {
+					if ($rUserInfo["is_restreamer"] != 1 && !ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
+						$rResume = TsProducerRecovery::wait(STREAMS_PATH, (int) $rStreamID, (int) $rChannelInfo["pid"], max(1, $rTotalFails));
+						if ($rResume !== null) {
+							$rChannelInfo["pid"] = $rResume['pid'];
+							$rCurrent = $rResume['current'];
+							$rReset = new TsDiscontinuity();
+							continue;
+						}
+					}
 					exit();
 				}
 
@@ -747,7 +705,15 @@ if ($rChannelInfo) {
 
 				$rFails = 0;
 				$rTimeStart = time();
-				$rFP = fopen(STREAMS_PATH . $rSegmentFile, "r");
+				$rFP = @fopen(STREAMS_PATH . $rSegmentFile, "r");
+				if ($rFP === false) {
+					// Re-check a restart above; an unreadable file on a live
+					// producer must not spin this worker indefinitely.
+					if (!ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
+						continue;
+					}
+					exit();
+				}
 
 				// Drain what ffmpeg has written without sleeping; only at the write
 				// head (no data) wait ~1 s and count a stall tick. Sleeping after
@@ -755,6 +721,12 @@ if ($rChannelInfo) {
 				while ($rFails <= $rTotalFails && !file_exists(STREAMS_PATH . $rNextSegment)) {
 					$rData = stream_get_line($rFP, $rSettings["read_buffer_size"]);
 					if (!empty($rData)) {
+						if ($rReset !== null) {
+							$rData = $rReset->push($rData);
+							if ($rData === false) {
+								exit();
+							}
+						}
 						echo $rData;
 						$rFails = 0;
 						continue;
@@ -764,7 +736,10 @@ if ($rChannelInfo) {
 						AsyncFileOperations::efficientSleep(1000000);
 						$rFails++;
 					} else {
-						AsyncFileOperations::efficientSleep(100000);
+						// No producer can append to this segment. Leave this loop
+						// so the bounded restart recovery below can run; sleeping
+						// here never advanced the stall counter and orphaned viewers.
+						break;
 					}
 				}
 
@@ -773,31 +748,34 @@ if ($rChannelInfo) {
 					$rSegmentSize = filesize(STREAMS_PATH . $rSegmentFile);
 					$rRestSize = $rSegmentSize - ftell($rFP);
 					if ($rRestSize > 0) {
-						echo stream_get_line($rFP, $rRestSize);
+						$rData = stream_get_line($rFP, $rRestSize);
+						if ($rReset !== null) {
+							$rData = $rReset->push((string) $rData);
+							if ($rData === false) {
+								exit();
+							}
+						}
+						echo $rData;
 					}
+					if ($rReset !== null && !$rReset->complete()) {
+						exit();
+					}
+					$rReset = null;
 
 					$rTotalTime = max(0.1, time() - $rTimeStart);
 					file_put_contents($rConSpeedFile, intval($rSegmentSize / 1024 / $rTotalTime));
-				} elseif ($rUserInfo["is_restreamer"] != 1 && $rFails <= $rTotalFails) {
-					// The producer died: wait up to one segment for its restart,
-					// then carry on from the new playlist.
-					for ($rChecks = 0; $rChecks <= $rSegmentSettings["seg_time"] && !ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID); $rChecks++) {
-						if (file_exists(STREAMS_PATH . $rStreamID . "_.pid")) {
-							$rPidContent = AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.pid", false);
-							if ($rPidContent) {
-								$rChannelInfo["pid"] = intval($rPidContent);
-							}
-						}
-						AsyncFileOperations::efficientSleep(1000000);
-					}
-
-					if ($rSegmentSettings["seg_time"] >= $rChecks && ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
-						if (!file_exists(STREAMS_PATH . $rNextSegment)) {
-							$rCurrent = -2;
-						}
-					} else {
+				} elseif ($rUserInfo["is_restreamer"] != 1 && $rFails <= $rTotalFails && !ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
+					// Keep the viewer connected, but do not replay segment zero or
+					// mistake the previous producer's files for a ready replacement.
+					fclose($rFP);
+					$rResume = TsProducerRecovery::wait(STREAMS_PATH, (int) $rStreamID, (int) $rChannelInfo["pid"], max(1, $rTotalFails));
+					if ($rResume === null) {
 						exit();
 					}
+					$rChannelInfo["pid"] = $rResume['pid'];
+					$rCurrent = $rResume['current'];
+					$rReset = new TsDiscontinuity();
+					continue;
 				} else {
 					exit();
 				}
@@ -820,9 +798,7 @@ if ($rChannelInfo) {
 					$rConnection = null;
 					$rSettings = CacheReader::get("settings") ?: $rSettings;
 
-					$rConnection = ConnectionTracker::heartbeat($rSettings, $rTokenData["uuid"], time() - intval($rServers[SERVER_ID]["time_offset"]));
-
-					if (!is_array($rConnection) || $rConnection["hls_end"] != 0 || $rConnection["pid"] != $rPID) {
+					if (!ConnectionTracker::checkIn($rSettings, $rTokenData["uuid"], time() - intval($rServers[SERVER_ID]["time_offset"]), $rPID, $rLastCheck)) {
 						exit();
 					}
 				}
@@ -831,4 +807,3 @@ if ($rChannelInfo) {
 } else {
 	OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 }
-

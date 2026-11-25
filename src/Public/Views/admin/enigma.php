@@ -121,7 +121,7 @@ if ($rIsEdit && !empty($rUser['custom_data'])) {
                         <div class="row mb-6">
                             <div class="col-md-8">
                                 <label class="form-label" for="exp_date"><?= $language::get('expiry'); ?></label>
-                                <input type="text" class="form-control" id="exp_date" name="exp_date" value="<?= $rIsEdit ? (empty($rUser['exp_date']) ? '' : date('Y-m-d H:i:s', (int) $rUser['exp_date'])) : date('Y-m-d H:i:s', time() + 2592000); ?>">
+                                <input type="text" class="form-control" id="exp_date" name="exp_date" step="1" value="<?= $rIsEdit ? (empty($rUser['exp_date']) ? '' : date('Y-m-d H:i:s', (int) $rUser['exp_date'])) : date('Y-m-d H:i:s', time() + 2592000); ?>">
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label d-block">&nbsp;</label>
@@ -151,6 +151,11 @@ if ($rIsEdit && !empty($rUser['custom_data'])) {
                     <div class="form-check form-switch mb-6">
                         <input class="form-check-input" type="checkbox" id="lock_device" name="lock_device" value="1" <?= (!$rIsEdit || ($rDevice['lock_device'] ?? 0) == 1) ? 'checked' : ''; ?>>
                         <label class="form-check-label" for="lock_device"><?= $language::get('device_lock'); ?></label>
+                    </div>
+
+                    <div class="mb-6">
+                        <label class="form-label" for="telegram">Telegram <i title="<?= htmlspecialchars($language::get('line_telegram_tooltip'), ENT_QUOTES); ?>" class="icon-base ti tabler-brand-telegram text-info"></i></label>
+                        <input type="text" class="form-control" id="telegram" name="telegram" maxlength="64" placeholder="@username" value="<?= $rIsEdit ? htmlspecialchars((string) ($rUser['telegram'] ?? ''), ENT_QUOTES) : ''; ?>">
                     </div>
 
                     <div class="row">
@@ -346,6 +351,8 @@ LayoutRenderer::renderFooter('admin');
 <script>
     (function() {
         var errText = <?= json_encode($language::get('error_occured')); ?>;
+        // The refusals the save answers with a status of their own.
+        var statusText = <?= json_encode([STATUS_INVALID_USERNAME => $language::get('line_username_no_slash'), STATUS_INVALID_PASSWORD => $language::get('line_password_no_slash')]); ?>;
         var $ = window.jQuery;
 
         // select2 owner (registered users) + paired-user (all lines) remote search,
@@ -442,6 +449,9 @@ LayoutRenderer::renderFooter('admin');
                     el.disabled = paired;
                 }
             });
+            if (typeof applyExpire === 'function') {
+                applyExpire();
+            }
         };
         if ($ && pairEl) {
             $('#pair_id').on('change', applyPair);
@@ -508,8 +518,10 @@ LayoutRenderer::renderFooter('admin');
         var noExpire = document.getElementById('no_expire'),
             expDate = document.getElementById('exp_date');
         var applyExpire = function() {
-            if (!isPaired()) {
-                expDate.disabled = noExpire.checked;
+            expDate.disabled = isPaired() || noExpire.checked;
+            // Flatpickr creates a separate native date-time input on mobile.
+            if (expDate._flatpickr && expDate._flatpickr.mobileInput) {
+                expDate._flatpickr.mobileInput.disabled = expDate.disabled;
             }
         };
         noExpire.addEventListener('change', applyExpire);
@@ -616,7 +628,7 @@ LayoutRenderer::renderFooter('admin');
                     }
                     btn.disabled = false;
                     applyPair();
-                    xcToast(errText, 'error');
+                    xcToast((dt && statusText[dt.status]) || errText, 'error');
                 })
                 .catch(function() {
                     btn.disabled = false;

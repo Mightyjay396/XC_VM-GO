@@ -2,7 +2,9 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
+use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Cluster\ReplicaSections;
@@ -10,7 +12,9 @@ use XcVm\Core\Cluster\StrictQuery;
 use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\StreamSecret;
+use XcVm\Core\Gateway\GatewayPolicy;
 use XcVm\Core\Util\AtomicFile;
+use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -47,6 +51,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   key (`viewer_key`, ViewerKey) in the same form: the only secrets a node gets.
  * - `bouquets`, `categories`: every bouquet and stream category, the
  *   catalogue the node's caches of those names hold for the viewer APIs.
+ *
+ * A blocklist section too large for one reply goes in parts too (blocklist()).
  *
  * All but the blocklist are sent whole, to an agent that names them in
  * `have`, whenever their ETag differs from the node's. The agent reads at
@@ -119,30 +125,67 @@ final class ReplicaBuilder {
 	 */
 	public const REPLY_ORDER = [
 		ReplicaSections::SETTINGS, ReplicaSections::SERVERS, ReplicaSections::NODE, ReplicaSections::CRONTAB, ReplicaSections::CLUSTER,
-		ReplicaSections::SECRETS, ReplicaSections::BOUQUETS, ReplicaSections::CATEGORIES,
+		ReplicaSections::SECRETS, ReplicaSections::POLICY, ReplicaSections::BOUQUETS, ReplicaSections::CATEGORIES,
 	];
+
+	/**
+	 * What the agent's `config` poll says (`blocklist_parts: true`) when it
+	 * fetches a whole blocklist section too large for one reply in parts.
+	 */
+	public const BLOCKLIST_PARTS = 'blocklist_parts';
 
 	/**
 	 * The node's blocklist from change $rSince (0: it has none).
 	 *
+	 * A whole section whose sealed record passes MAX_WHOLE_BYTES goes to an
+	 * agent that fetches it in parts ($rParts) as `{too_large, etag, parts}`,
+	 * staged for it; it is sealed afresh at each poll that needs it, so the
+	 * staged record always carries the seq the reply names, which the agent
+	 * checks. To an older agent it is sent whole while one reply can carry
+	 * it. Past that, or past MAX_PARTS, MAIN answers $rSince with nothing:
+	 * the node keeps the blocklist it holds, and the reply's other sections
+	 * still reach it. Either is audited once per ETag.
+	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row
-	 * @return array{seq: int, more: bool, unchanged?: bool, delta?: string, section?: array{etag: string, sealed: string}}
+	 * @return array{seq: int, more: bool, unchanged?: bool, delta?: string, section?: array{etag: string, sealed?: string, too_large?: bool, parts?: int}}
 	 */
-	public static function blocklist(ClusterCrypto $rCrypto, array $rNode, int $rSince, string $rHave): array {
+	public static function blocklist(ClusterCrypto $rCrypto, array $rNode, int $rSince, string $rHave, bool $rParts = false): array {
 		$rDelta = BlocklistDelta::since($rSince);
 		if ($rDelta['full'] || !empty($rDelta['reload'])) {
 			// The head before the snapshot: a change made in between comes again next time.
 			$rSeq = BlocklistDelta::head();
 			$rData = BlocklistDelta::snapshot();
 			$rEtag = self::etag($rData);
-			if (hash_equals($rEtag, $rHave)) {
+			// Only an agent that drops the deltas it stored over the section it
+			// holds (the one that says blocklist_parts) is told `unchanged`: an
+			// older one kept them, and went on blocking what a flush or a
+			// reload had cleared. It gets the section again.
+			if ($rParts && hash_equals($rEtag, $rHave)) {
 				return ['seq' => $rSeq, 'more' => false, 'unchanged' => true];
 			}
 			$rDoc = [
 				'v' => 1, 'section' => self::SECTION_BLOCKLIST, 'node' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'],
 				'etag' => $rEtag, 'seq' => $rSeq, 'iat' => ClusterClock::now(), 'data' => self::canonical($rData),
 			];
-			return ['seq' => $rSeq, 'more' => false, 'section' => ['etag' => $rEtag, 'sealed' => base64_encode(self::record($rCrypto, $rNode, 'rep', self::json($rDoc)))]];
+			try {
+				$rSealed = base64_encode(self::record($rCrypto, $rNode, 'rep', self::json($rDoc)));
+			} catch (ClusterRefusedException $rE) {
+				// Without a licence no section is signed: one the node holds is unchanged, as it always was.
+				if ($rE->reason() === 'LICENCE' && hash_equals($rEtag, $rHave)) {
+					return ['seq' => $rSeq, 'more' => false, 'unchanged' => true];
+				}
+				throw $rE;
+			}
+			// An older agent reads it in the reply itself, with room left for the reply around it.
+			if (strlen($rSealed) > ($rParts ? self::MAX_WHOLE_BYTES : self::MAX_REPLY - 65536)) {
+				self::tooLarge(self::SECTION_BLOCKLIST, $rEtag, strlen($rSealed));
+				$rCount = $rParts ? self::stage($rNode, self::SECTION_BLOCKLIST, $rEtag, $rSealed) : null;
+				if ($rCount === null) {
+					return ['seq' => $rSince, 'more' => false];
+				}
+				return ['seq' => $rSeq, 'more' => false, 'section' => ['too_large' => true, 'etag' => $rEtag, 'parts' => $rCount]];
+			}
+			return ['seq' => $rSeq, 'more' => false, 'section' => ['etag' => $rEtag, 'sealed' => $rSealed]];
 		}
 		$rOut = ['seq' => $rDelta['last'], 'more' => $rDelta['more']];
 		if (($rDelta['add'] ?? []) === [] && ($rDelta['remove'] ?? []) === []) {
@@ -283,7 +326,9 @@ final class ReplicaBuilder {
 	 * @param array<string, mixed> $rNode cluster_nodes row (state, mode)
 	 */
 	public static function serves(array $rNode, string $rSection): bool {
-		if ($rSection !== ReplicaSections::SECRETS) {
+		// SECRETS and POLICY both carry viewer-key material: only an active,
+		// enrolled (mode >= 1) node is eligible — a restricted node gets neither.
+		if ($rSection !== ReplicaSections::SECRETS && $rSection !== ReplicaSections::POLICY) {
 			return true;
 		}
 		return ($rNode['state'] ?? null) === 'active' && (int) ($rNode['mode'] ?? 0) >= 1;
@@ -299,13 +344,18 @@ final class ReplicaBuilder {
 	 * @return array{etag: string, data: array<mixed>}
 	 */
 	public static function section(ClusterCrypto $rCrypto, array $rNode, string $rSection, array $rSettings, array $rMain): array {
-		if ($rSection === ReplicaSections::SECRETS) {
-			$rData = self::canonical(self::secretsData((int) $rNode['server_id'], $rNode));
+		// SECRETS and POLICY both carry viewer-key material, so they are read
+		// fresh each time and never kept unsealed in the TMP_PATH ETag cache.
+		if ($rSection === ReplicaSections::SECRETS || $rSection === ReplicaSections::POLICY) {
+			$rData = self::canonical(
+				$rSection === ReplicaSections::SECRETS
+					? self::secretsData((int) $rNode['server_id'], $rNode)
+					: self::policyData($rNode)
+			);
 			return ['etag' => self::etag($rData), 'data' => $rData];
 		}
 		$rKey = match ($rSection) {
 			ReplicaSections::NODE => $rSection . '.' . (int) $rNode['server_id'],
-			ReplicaSections::CRONTAB => $rSection . '.' . ((int) $rNode['mode'] >= 2 ? 'api' : 'legacy'),
 			default => $rSection,
 		};
 		$rNow = ClusterClock::nowMs();
@@ -342,11 +392,67 @@ final class ReplicaBuilder {
 	 *
 	 * @return array{servers: list<array<string, int|string|null>>, nodes: list<array{sid: int, gen: int, state: string, ed_pub: string, dataplane: bool}>, reseller_dns: list<string>}
 	 */
+
+	/**
+	 * The `policy` section: this node's gateway policy (GatewayPolicy::build), so
+	 * a serve-only node writes tmp/gateway/policy.json from it with no PHP. Built
+	 * with the node's OWN viewer key K_n (ViewerKey::entry for $rServerID, as the
+	 * secrets section derives it), not MAIN's held() key; the shared and context
+	 * keys are the fleet's, which MAIN holds. The node overlays written_at and
+	 * serve_until on its own clock when it writes the file.
+	 *
+	 * @return array<string, mixed>
+	 */
+	public static function policyData(array $rNode): array {
+		$rServerID = (int) $rNode['server_id'];
+		$rNow = ClusterClock::now();
+		$rLive = (string) (self::settingsRow('`live_streaming_pass`')['live_streaming_pass'] ?? '');
+		$rPrevious = StreamSecret::previousEntry($rNow);
+		$rEntry = ViewerKey::entry($rLive, $rServerID, $rPrevious);
+		// held()-style: the current key, and the previous one while still accepted.
+		$rViewerKeys = [['value' => $rEntry['current'], 'until' => null]];
+		if ($rEntry['previous'] !== null && $rNow <= (int) ($rEntry['previous_valid_until'] ?? 0)) {
+			$rViewerKeys[] = ['value' => (string) $rEntry['previous'], 'until' => (int) $rEntry['previous_valid_until']];
+		}
+		// The node's own settings (the settings section it applies). A locked-down
+		// mode-2 node that withholds the stream pass must not get it in keys.shared
+		// either (secretsData omits it for such a node); match that here. Otherwise
+		// add the fleet secret build() needs for the shared keys (settingsData strips it).
+		$rSettings = self::settingsData();
+		if (!self::withholdsStreamPass($rNode, $rLive)) {
+			$rSettings['live_streaming_pass'] = $rLive;
+		}
+		// Fresh servers (DB-rebuilt, the same source + shape the servers section
+		// reads), so the policy's ports/redirects/serve_only stay consistent with it.
+		$rServers = ServerRepository::getAll(true);
+		$rDomains = FileCache::getCache('allowed_domains');
+		$rPolicy = GatewayPolicy::build($rSettings, is_array($rServers) ? $rServers : [], $rServerID, $rNow, is_array($rDomains) ? $rDomains : [], $rViewerKeys);
+		// build() read MAIN's own flow/connection state; the policy is the TARGET
+		// node's, so set its admission (active) and conn store from the node row.
+		// The agent stamps these on its own clock. MAIN's build time would
+		// change the section ETag every second without any policy change.
+		$rPolicy['written_at'] = 0;
+		$rPolicy['serve_until'] = 0;
+		$rPolicy['live']['admission'] = ($rNode['state'] ?? '') === 'active';
+		$rPolicy['conn_store'] = ((int) ($rNode['flows'] ?? 0) & NodeRegistry::FLOW_CONNECTIONS) !== 0 ? 'agent' : 'php';
+		return $rPolicy;
+	}
+
 	public static function serversData(): array {
 		self::read('SELECT * FROM `servers` ORDER BY `id` ASC;');
 		$rServers = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
-			$rServers[] = ReplicaSections::typed($rRow, ReplicaSections::SERVER_FIELDS);
+			$rTyped = ReplicaSections::typed($rRow, ReplicaSections::SERVER_FIELDS);
+			// MAIN is the authority on its own running release: stamp it from the
+			// code constant, not the servers.xc_vm_version column, which lags (it
+			// is written only by `status`/post-update) and is empty on a MAIN that
+			// has not run them. A load balancer pins its update to MAIN's release
+			// (UpdateCommand::mainVersion), so an empty value there aborts its
+			// update with "MAIN's release is unknown".
+			if ((int) ($rRow['is_main'] ?? 0) === 1 && defined('XC_VM_VERSION')) {
+				$rTyped['xc_vm_version'] = XC_VM_VERSION;
+			}
+			$rServers[] = $rTyped;
 		}
 		self::read('SELECT * FROM `cluster_nodes` ORDER BY `server_id` ASC;');
 		$rNodes = [];

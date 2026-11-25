@@ -4,13 +4,14 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\Commands\FfmpegBuildsCommand;
+use XcVm\Cli\Commands\StartupCommand;
 use XcVm\Cli\Commands\UpdateCommand;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\BlocklistChanges;
-use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\LogSink;
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeCredentials;
 use XcVm\Core\Cluster\NodeCorePin;
 use XcVm\Core\Cluster\NodeFlows;
@@ -20,11 +21,15 @@ use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\RootCredentials;
 use XcVm\Core\Cluster\RootPin;
+use XcVm\Core\Config\NginxPortsFile;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Gateway\GatewayNginxConfig;
+use XcVm\Core\Gateway\GatewayPolicy;
 use XcVm\Core\Process\PhpFpmPools;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Process\ProcessRunner;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
@@ -88,48 +93,109 @@ class RootSignalsCronJob implements CommandInterface {
 			shell_exec("sudo kill -9 $pids");
 		}
 		cli_set_process_title('XC_VM[RootSignals]');
-		file_put_contents(CONFIG_PATH . 'signals.last', time());
+		// Written aside and renamed in: root writes this every minute in a
+		// directory xc_vm can write, and a plain write follows a link planted
+		// under the name, into whatever file it points to.
+		AtomicFile::write(CONFIG_PATH . 'signals.last', (string) time(), 0644);
 
+		self::refreshModuleCrons();
 		$this->loadCron();
 
 		return 0;
 	}
 
-	private function blockip($rIP): bool {
-		$isPrivate = false;
+	/** The widest IPv4 range the panel blocks: a /16, 65,536 addresses of a set's IPSET_MAX. */
+	public const RANGE_MIN_PREFIX = 16;
 
-		if (filter_var($rIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-			$isPrivate = filter_var($rIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
-			$isPrivate = !$isPrivate;
-
-			if (!$isPrivate) {
-				$isPrivate = (strpos($rIP, '127.') === 0) || ($rIP === '0.0.0.0');
-			}
-
-			if (!$isPrivate) {
-				exec('sudo iptables -I INPUT -s ' . escapeshellcmd($rIP) . ' -j DROP');
-			}
-		} elseif (filter_var($rIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-			$isPrivate = (strpos($rIP, 'fc') === 0 ||
-				strpos($rIP, 'fd') === 0 ||
-				strpos($rIP, 'fe80') === 0 ||
-				$rIP === '::1' ||
-				strpos($rIP, '2001:db8') === 0);
-
-			if (!$isPrivate) {
-				exec('sudo ip6tables -I INPUT -s ' . escapeshellcmd($rIP) . ' -j DROP');
-			}
+	/**
+	 * An IPv4 range the panel blocks, by its network address ("a.b.c.0/24");
+	 * null for anything else: one address (blockTool()'s), a range wider than
+	 * RANGE_MIN_PREFIX, a private or reserved one, an IPv6 one. A range lives
+	 * in the family's ipset set alone (syncSets()): a hash:ip set takes an IPv4
+	 * range expanded into its addresses and refuses an IPv6 one, and an INPUT
+	 * rule with a network is never the panel's (ownBlocks()).
+	 */
+	public static function blockRange(string $rEntry): ?string {
+		if (!preg_match('#^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,2})\z#', $rEntry, $rMatch)) {
+			return null;
 		}
-		if (!$isPrivate && $rIP) {
+		$rPrefix = (int) $rMatch[2];
+		$rAddress = ip2long($rMatch[1]);
+		if ($rAddress === false || $rPrefix < self::RANGE_MIN_PREFIX || $rPrefix > 31) {
+			return null;
+		}
+		$rNetwork = long2ip($rAddress & ((0xFFFFFFFF << (32 - $rPrefix)) & 0xFFFFFFFF));
+		return self::blockTool($rNetwork) === 'iptables' ? $rNetwork . '/' . $rPrefix : null;
+	}
+
+	/**
+	 * What an entry of the panel's list is in the sets: the tool of its
+	 * family, and what its set is given (an address as it is, a range by its
+	 * network). Null for what the panel does not block.
+	 *
+	 * @return array{0: string, 1: string}|null
+	 */
+	public static function setEntry(string $rEntry): ?array {
+		if (($rTool = self::blockTool($rEntry)) !== null) {
+			return [$rTool, $rEntry];
+		}
+		$rRange = self::blockRange($rEntry);
+		return $rRange === null ? null : ['iptables', $rRange];
+	}
+
+	/**
+	 * Root's crontab as the modules now ask for it, checked every minute. A
+	 * module installed, enabled, disabled or removed from the panel brings or
+	 * takes its cron lines (CronProviderInterface), and only `startup` and
+	 * `status` wrote them: a module's cron did not run until the next restart
+	 * (the anti-abuse shield, and with it its honeypot ports).
+	 *
+	 * Nothing is kept of the last write: installRootCrontab() compares the
+	 * crontab itself and writes only when its list differs, one writer at a
+	 * time (crontabLock()), so a list read before another's write cannot land
+	 * after it; and a list written just before the modules changed is put
+	 * right the next minute. Root writes no file of its own where xc_vm can
+	 * plant a link.
+	 *
+	 * @param (callable(): bool)|null $rWrite What brings the crontab up to date (tests); StartupCommand::installRootCrontab(true).
+	 * @return bool Whether the crontab holds the modules' lines now.
+	 */
+	public static function refreshModuleCrons(?callable $rWrite = null): bool {
+		return (bool) ($rWrite ?? static fn(): bool => StartupCommand::installRootCrontab(true))();
+	}
+
+	/**
+	 * The tool that blocks an address of the panel's list: iptables or
+	 * ip6tables, or null for one never blocked (private, reserved, loopback,
+	 * documentation) or not an address.
+	 */
+	public static function blockTool(string $rIP): ?string {
+		if (filter_var($rIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+			$rPublic = filter_var($rIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+			return $rPublic && strpos($rIP, '127.') !== 0 && $rIP !== '0.0.0.0' ? 'iptables' : null;
+		}
+		if (filter_var($rIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+			$rPrivate = strpos($rIP, 'fc') === 0 || strpos($rIP, 'fd') === 0 || strpos($rIP, 'fe80') === 0 || $rIP === '::1' || strpos($rIP, '2001:db8') === 0;
+			return $rPrivate ? null : 'ip6tables';
+		}
+		return null;
+	}
+
+	private function blockip($rIP): bool {
+		$rTool = self::blockTool((string) $rIP);
+		if ($rTool !== null) {
+			// A fixed command; the address, an IP blockTool() checked, on its standard input.
+			$rPipe = $rTool === 'iptables' ? popen('sudo iptables-restore --noflush', 'w') : popen('sudo ip6tables-restore --noflush', 'w');
+			if (is_resource($rPipe)) {
+				@fwrite($rPipe, "*filter\n-I INPUT -s " . $rIP . " -j DROP\nCOMMIT\n");
+				pclose($rPipe);
+			}
 			touch(FLOOD_TMP_PATH . 'block_' . $rIP);
 			return true;
 		}
-
-		if ($isPrivate) {
+		if (filter_var($rIP, FILTER_VALIDATE_IP)) {
 			error_log("Block attempt denied for private IP: " . $rIP);
-			return false;
 		}
-
 		return false;
 	}
 
@@ -144,10 +210,213 @@ class RootSignalsCronJob implements CommandInterface {
 		}
 	}
 
-	/** Flush iptables and the flood guard's block files (protected: a test records the call). */
+	/** Flush the panel's blocks from iptables and the flood guard's block files (protected: a test records the call). */
 	protected function flushIPs(): void {
-		exec('sudo iptables -F && sudo ip6tables -F');
-		shell_exec('sudo rm ' . FLOOD_TMP_PATH . 'block_*');
+		$this->unblockAll();
+	}
+
+	/**
+	 * Remove every block blockip() added, and the flood guard's block files.
+	 * The host's other rules, chains and policies are not the panel's and
+	 * stay: an operator's DROP policy with its ACCEPT rules, ufw's and
+	 * Docker's chains, the DB allowlist's. One commit per address family, so
+	 * a long list is gone in seconds; rule by rule, as the minute's sync
+	 * removes them, where the tool refuses the list.
+	 */
+	public function unblockAll(): void {
+		foreach (['iptables', 'ip6tables'] as $rTool) {
+			$rRules = [];
+			if ($rTool === 'iptables') {
+				exec('sudo iptables -S INPUT', $rRules);
+			} else {
+				exec('sudo ip6tables -S INPUT', $rRules);
+			}
+			$rIPs = self::ownBlocks($rRules);
+			if ($rIPs && !$this->unblockTogether($rTool, $rIPs)) {
+				foreach ($rIPs as $rIP) {
+					$this->unblockip($rIP);
+				}
+			}
+		}
+		// The sets syncSets() fills, where the host has them: their INPUT rules stay, matching nothing.
+		exec('command -v ipset', $rFound, $rCode);
+		if ($rCode === 0) {
+			exec('sudo ipset flush xcvm_block4 2>/dev/null');
+			exec('sudo ipset flush xcvm_block6 2>/dev/null');
+		}
+		// Root runs this (this cron, cluster:root, `tools flush`): no file is another user's to keep.
+		foreach (glob(FLOOD_TMP_PATH . 'block_*') ?: [] as $rFile) {
+			@unlink($rFile);
+		}
+	}
+
+	/**
+	 * Remove these blocks in one commit: `--noflush` leaves every other rule
+	 * and chain alone. False when the tool refuses the list, and then none
+	 * of it was applied.
+	 *
+	 * @param list<string> $rIPs from ownBlocks()
+	 */
+	private function unblockTogether(string $rTool, array $rIPs): bool {
+		$rPipe = $rTool === 'iptables' ? popen('sudo iptables-restore --noflush', 'w') : popen('sudo ip6tables-restore --noflush', 'w');
+		if (!is_resource($rPipe)) {
+			return false;
+		}
+		// A refusal closes the pipe early: the exit status says so.
+		@fwrite($rPipe, "*filter\n-D INPUT -s " . implode(" -j DROP\n-D INPUT -s ", $rIPs) . " -j DROP\nCOMMIT\n");
+		return pclose($rPipe) === 0;
+	}
+
+	/** The ipset sets the panel's blocks live in, by tool: [set, family]. One INPUT rule drops what each holds. */
+	public const IPSETS = ['iptables' => ['xcvm_block4', 'inet'], 'ip6tables' => ['xcvm_block6', 'inet6']];
+
+	/** The most addresses a set takes (ipset's own default is 65,536). */
+	public const IPSET_MAX = 1048576;
+
+	/**
+	 * Block exactly $rBlocked with ipset, where the host has it: each address
+	 * family's set refilled in one `ipset restore` into a fresh set swapped in
+	 * (it never stands half-built), and one INPUT rule per family that drops
+	 * what the set holds. A per-address rule blockip() added before goes, in
+	 * one commit; the flood guard's block files follow the change as
+	 * blockip() and unblockip() kept them. Where ipset is missing or refuses,
+	 * false, and the caller blocks rule by rule as before. A rule per address
+	 * cost a `sudo` each to add and a check of every packet against each.
+	 *
+	 * @param list<string> $rBlocked
+	 */
+	protected function syncSets(array $rBlocked): bool {
+		exec('command -v ipset', $rFound, $rCode);
+		if ($rCode !== 0) {
+			return false;
+		}
+		$rWant = ['iptables' => [], 'ip6tables' => []];
+		foreach (array_unique(array_map('strval', $rBlocked)) as $rIP) {
+			if (($rEntry = self::setEntry($rIP)) !== null && !in_array($rEntry[1], $rWant[$rEntry[0]], true)) {
+				$rWant[$rEntry[0]][] = $rEntry[1];
+			}
+		}
+		foreach (self::IPSETS as $rTool => [$rSet, $rFamily]) {
+			$rRules = [];
+			$rMembers = [];
+			if ($rTool === 'iptables') {
+				exec('sudo iptables -S INPUT', $rRules);
+				exec('sudo ipset list xcvm_block4 -output save 2>/dev/null', $rMembers);
+			} else {
+				exec('sudo ip6tables -S INPUT', $rRules);
+				exec('sudo ipset list xcvm_block6 -output save 2>/dev/null', $rMembers);
+			}
+			$rOld = self::ownBlocks($rRules);
+			$rHave = array_merge(self::setMembers($rMembers, $rSet), $rOld);
+			if (!$this->restoreSet($rSet, $rFamily, $rWant[$rTool])) {
+				return false;
+			}
+			if (!in_array('-A INPUT -m set --match-set ' . $rSet . ' src -j DROP', array_map('trim', $rRules), true)) {
+				if ($rTool === 'iptables') {
+					exec('sudo iptables -I INPUT -m set --match-set xcvm_block4 src -j DROP', $rOut, $rCode);
+				} else {
+					exec('sudo ip6tables -I INPUT -m set --match-set xcvm_block6 src -j DROP', $rOut, $rCode);
+				}
+				if ($rCode !== 0) {
+					return false;
+				}
+			}
+			if ($rOld && !$this->unblockTogether($rTool, $rOld)) {
+				foreach ($rOld as $rIP) {
+					$this->unblockip($rIP);
+				}
+			}
+			foreach (array_diff($rHave, $rWant[$rTool]) as $rIP) {
+				@unlink(FLOOD_TMP_PATH . 'block_' . $rIP);
+			}
+			foreach ($rWant[$rTool] as $rIP) {
+				// The flood guard's file is an address's: a range has none (the set drops it).
+				if (strpos($rIP, '/') === false) {
+					@touch(FLOOD_TMP_PATH . 'block_' . $rIP);
+				}
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Refill $rSet with exactly $rIPs: a fresh set filled, swapped in and
+	 * destroyed, in one `ipset restore` that takes the list on its standard
+	 * input. False when ipset refuses it, and then the set holds what it held.
+	 *
+	 * @param list<string> $rIPs
+	 */
+	private function restoreSet(string $rSet, string $rFamily, array $rIPs): bool {
+		$rPipe = popen('sudo ipset restore', 'w');
+		if (!is_resource($rPipe)) {
+			return false;
+		}
+		$rNew = $rSet . '_new';
+		$rCreate = ' hash:ip family ' . $rFamily . ' maxelem ' . self::IPSET_MAX . " -exist\n";
+		$rList = 'create ' . $rSet . $rCreate . 'create ' . $rNew . $rCreate . 'flush ' . $rNew . "\n";
+		foreach ($rIPs as $rIP) {
+			$rList .= 'add ' . $rNew . ' ' . $rIP . "\n";
+		}
+		// A refusal closes the pipe early: the exit status says so.
+		@fwrite($rPipe, $rList . 'swap ' . $rNew . ' ' . $rSet . "\ndestroy " . $rNew . "\n");
+		return pclose($rPipe) === 0;
+	}
+
+	/**
+	 * The addresses `ipset list <set> -output save` names: one `add <set>
+	 * <address>` line each.
+	 *
+	 * @param list<string> $rLines
+	 * @return list<string>
+	 */
+	public static function setMembers(array $rLines, string $rSet): array {
+		$rIPs = [];
+		foreach ($rLines as $rLine) {
+			$rParts = explode(' ', trim($rLine));
+			if (count($rParts) >= 3 && $rParts[0] === 'add' && $rParts[1] === $rSet && filter_var($rParts[2], FILTER_VALIDATE_IP)) {
+				$rIPs[] = $rParts[2];
+			}
+		}
+		return $rIPs;
+	}
+
+	/**
+	 * Whether `ipset list <set> -output save` names $rIP, compared as binary
+	 * addresses: an IPv6 address written another way is the same address.
+	 *
+	 * @param list<string> $rLines
+	 */
+	public static function inSet(array $rLines, string $rSet, string $rIP): bool {
+		$rWant = @inet_pton($rIP);
+		if ($rWant === false) {
+			return false;
+		}
+		foreach (self::setMembers($rLines, $rSet) as $rMember) {
+			if (@inet_pton($rMember) === $rWant) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The addresses blockip() blocked, from `iptables -S INPUT` (or
+	 * ip6tables'): one per `-A INPUT -s <address> -j DROP` rule, so an address
+	 * blocked twice is there twice. A rule with a network (any prefix but the
+	 * family's single-address one: /32 of an IPv6 address is a network),
+	 * another match or another target is not the panel's.
+	 *
+	 * @param list<string> $rRules
+	 * @return list<string>
+	 */
+	public static function ownBlocks(array $rRules): array {
+		$rIPs = [];
+		foreach ($rRules as $rRule) {
+			if (preg_match('#^-A INPUT -s (\S+?)(?:/(\d+))? -j DROP$#', trim($rRule), $rMatch) && filter_var($rMatch[1], FILTER_VALIDATE_IP) && in_array($rMatch[2] ?? '', ['', str_contains($rMatch[1], ':') ? '128' : '32'], true)) {
+				$rIPs[] = $rMatch[1];
+			}
+		}
+		return $rIPs;
 	}
 
 	protected function saveiptables(): void {
@@ -160,6 +429,9 @@ class RootSignalsCronJob implements CommandInterface {
 		// chain ends in a DROP that must not read as a banned 0.0.0.0/0.
 		exec('sudo iptables -nL INPUT --line-numbers -t filter', $rLines);
 		foreach ($rLines as $rLine) {
+			if (str_contains($rLine, 'match-set')) {
+				continue; // syncSets()' rule: the set holds the addresses, not the rule
+			}
 			$rLine = explode(' ', preg_replace('!\\s+!', ' ', $rLine));
 			if (isset($rLine[1], $rLine[4]) && $rLine[1] == 'DROP') {
 				$rReturn[] = $rLine[4];
@@ -168,6 +440,9 @@ class RootSignalsCronJob implements CommandInterface {
 		$rLines = '';
 		exec('sudo ip6tables -nL INPUT --line-numbers -t filter', $rLines);
 		foreach ($rLines as $rLine) {
+			if (str_contains($rLine, 'match-set')) {
+				continue;
+			}
 			$rLine = explode(' ', preg_replace('!\\s+!', ' ', $rLine));
 			if (isset($rLine[1], $rLine[3]) && $rLine[1] == 'DROP') {
 				$rReturn[] = $rLine[3];
@@ -273,24 +548,6 @@ class RootSignalsCronJob implements CommandInterface {
 			$rOutput[] = $rLine;
 		}
 		return implode("\n", $rOutput);
-	}
-
-	/**
-	 * api_legacy.conf for this node, or null on MAIN. The legacy `/api` of a
-	 * load balancer is served until nothing reads the node's files with
-	 * `getFile` any more (DataPlane::legacyApiRetired): its own data plane
-	 * on, and every server of the cluster, MAIN included, reading through
-	 * `/xfile`. MAIN has no data-plane client yet, so this is 1 on every
-	 * node today. MAIN's own `/api` keeps no toggle (ADR 0004, Phase 8): its
-	 * nginx.conf neither includes the file nor guards `/api`, so the cron
-	 * does not write it there — retiring MAIN's `/api` is a cluster-wide
-	 * judgement, not a per-node flow.
-	 */
-	public static function apiLegacyConf(): ?string {
-		if (NodeRole::isMain()) {
-			return null;
-		}
-		return 'set $api_legacy ' . (DataPlane::legacyApiRetired() ? '0' : '1') . ';';
 	}
 
 	/**
@@ -526,17 +783,23 @@ class RootSignalsCronJob implements CommandInterface {
 			$rBlocked = self::blockedIPs($db);
 			$rRunFullSync = $rBlocked !== null;
 			$rCurrentIPCount = count($rBlocked ?? []);
+			// The list's content, not its size: a ban and an unban in one minute change it too.
+			$rSorted = $rBlocked ?? [];
+			sort($rSorted);
+			$rHash = hash('sha256', implode("\n", $rSorted));
 
 			if ($rRunFullSync && file_exists($rSyncMarker)) {
 				$rLastSyncData = json_decode(@file_get_contents($rSyncMarker), true);
-				if (is_array($rLastSyncData) && isset($rLastSyncData['count'], $rLastSyncData['time'])) {
-					if (intval($rLastSyncData['count']) == $rCurrentIPCount && (time() - intval($rLastSyncData['time'])) < 300) {
+				if (is_array($rLastSyncData) && isset($rLastSyncData['hash'], $rLastSyncData['time'])) {
+					if ($rLastSyncData['hash'] === $rHash && (time() - intval($rLastSyncData['time'])) < 300) {
 						$rRunFullSync = false;
 					}
 				}
 			}
 
-			if ($rRunFullSync) {
+			if ($rRunFullSync && $this->syncSets($rBlocked)) {
+				@file_put_contents($rSyncMarker, json_encode(['count' => $rCurrentIPCount, 'hash' => $rHash, 'time' => time()]));
+			} elseif ($rRunFullSync) {
 				$rActualBlocked = $this->getBlockedIPs();
 				$rActualBlockedFlip = array_flip($rActualBlocked);
 				$rBlockedFlip = array_flip($rBlocked);
@@ -577,20 +840,21 @@ class RootSignalsCronJob implements CommandInterface {
 					$this->saveiptables();
 					$this->rSaveIPTables = false;
 				}
-				@file_put_contents($rSyncMarker, json_encode(['count' => $rCurrentIPCount, 'time' => time()]));
+				@file_put_contents($rSyncMarker, json_encode(['count' => $rCurrentIPCount, 'hash' => $rHash, 'time' => time()]));
 			}
 		}
 		$rReload = false;
-		$rApiLegacyConf = self::apiLegacyConf();
-		if ($rApiLegacyConf !== null && $rApiLegacyConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/api_legacy.conf')) ?: '')) {
-			echo 'Updating the legacy /api toggle...' . "\n";
-			file_put_contents(BIN_PATH . 'nginx/conf/api_legacy.conf', $rApiLegacyConf);
-			$rReload = true;
-		}
 		$rViewerApiConf = self::viewerApiConf();
 		if ($rViewerApiConf !== null && $rViewerApiConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/viewer_api.conf')) ?: '')) {
 			echo 'Updating the viewer API toggle...' . "\n";
 			file_put_contents(BIN_PATH . 'nginx/conf/viewer_api.conf', $rViewerApiConf);
+			$rReload = true;
+		}
+		// The segment gateway's include (Phase 12): off, or shadow's mirror to xc_fanout.
+		$rGatewayConf = GatewayNginxConfig::render(GatewayPolicy::mode(SettingsManager::getAll()), file_exists(GatewayNginxConfig::SOCKET));
+		if ($rGatewayConf !== trim((string) @file_get_contents(BIN_PATH . GatewayNginxConfig::FILE))) {
+			echo 'Updating the segment gateway include...' . "\n";
+			file_put_contents(BIN_PATH . GatewayNginxConfig::FILE, $rGatewayConf . "\n");
 			$rReload = true;
 		}
 		$rMinistraLegacyConf = 'set $ministra_legacy_redirect ' . (SettingsManager::get('mag_legacy_redirect') ? '1' : '0') . ';';
@@ -631,7 +895,7 @@ class RootSignalsCronJob implements CommandInterface {
 				$rReload = true;
 			}
 		}
-		if ($rServers[SERVER_ID]['is_main']) {
+		if ($rServers[SERVER_ID]['is_main'] ?? 0) {
 			$rCurrentStatus = stripos((trim(file_get_contents(BIN_PATH . 'nginx/conf/gzip.conf')) ?: 'gzip off'), 'gzip on') !== false;
 			if ($rServers[SERVER_ID]['enable_gzip']) {
 				if (!$rCurrentStatus) {
@@ -721,12 +985,25 @@ class RootSignalsCronJob implements CommandInterface {
 		// node on an older extension) would never converge on its own. xcvm_core is
 		// idempotent (version-compared, downloads only on a mismatch) and installs
 		// with a load-test + rollback, so it is safe to poll ~hourly; the first
-		// pass runs immediately. This is what delivers config_set_redis to LB nodes,
-		// without which StatusCommand::configureRedisLb cannot point Redis at main.
+		// pass runs immediately. This is what delivers config_set_redis to LB nodes.
 		$rCoreStamp = CRONS_TMP_PATH . 'xcvm_core_check';
 		if (!file_exists($rCoreStamp) || time() - intval(@file_get_contents($rCoreStamp) ?: 0) > 3600) {
 			file_put_contents($rCoreStamp, time());
 			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'xcvm_core']);
+		}
+
+		// The runtime bundle (PHP, nginx) of a load balancer. MAIN updates its own
+		// at every `status`, and nothing reached the nodes, so a load balancer kept
+		// the PHP it was installed with, PHP 8.1 among them. `binaries` is
+		// idempotent (the installed release against the newest, and only one with
+		// this distribution's bundle), so it is safe to poll daily; the first pass
+		// runs right away, so a node takes a new bundle within a minute of the
+		// panel update that brings its updater. A new bundle stops the node's
+		// service for a minute or two.
+		$rBinariesStamp = CRONS_TMP_PATH . 'binaries_check';
+		if (!NodeRole::isMain() && (!file_exists($rBinariesStamp) || time() - intval(@file_get_contents($rBinariesStamp) ?: 0) > 86400)) {
+			file_put_contents($rBinariesStamp, time());
+			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'binaries']);
 		}
 
 		// yt-dlp — same self-heal rationale. It is a static bundled binary that
@@ -759,32 +1036,42 @@ class RootSignalsCronJob implements CommandInterface {
 			ProcessRunner::start(['sudo', '-u', 'xc_vm', PHP_BIN, MAIN_HOME . 'console.php', 'ffmpeg']);
 		}
 
-		if ($rServers[SERVER_ID]['limit_requests'] > 0) {
-			$rLimitConf = 'limit_req_zone global zone=two:10m rate=' . intval($rServers[SERVER_ID]['limit_requests']) . 'r/s;';
-		} else {
-			$rLimitConf = '';
-		}
-		$rCurrentConf = (trim(file_get_contents(BIN_PATH . 'nginx/conf/limit.conf')) ?: '');
-		if ($rLimitConf != $rCurrentConf) {
-			echo 'Updating rate limit...' . "\n";
-			file_put_contents(BIN_PATH . 'nginx/conf/limit.conf', $rLimitConf);
-			$rReload = true;
-		}
-		if ($rServers[SERVER_ID]['limit_requests'] > 0) {
-			$rLimitConf = 'limit_req zone=two burst=' . intval($rServers[SERVER_ID]['limit_burst']) . ';';
-		} else {
-			$rLimitConf = '';
-		}
-		$rCurrentConf = (trim(file_get_contents(BIN_PATH . 'nginx/conf/limit_queue.conf')) ?: '');
-		if ($rLimitConf != $rCurrentConf) {
-			echo 'Updating rate limit queue...' . "\n";
-			file_put_contents(BIN_PATH . 'nginx/conf/limit_queue.conf', $rLimitConf);
-			$rReload = true;
+		// A serve-only node runs no http-nginx, so skip the rate-limit (limit_req) config
+		// reconcile: nginx never reads it, and after the install removed limit*.conf this
+		// would only warn on the missing files and re-create inert ones (the Go front
+		// applies its own rate limit).
+		if (!is_file(CONFIG_PATH . 'cluster/serve_only')) {
+			if (($rServers[SERVER_ID]['limit_requests'] ?? 0) > 0) {
+				$rLimitConf = 'limit_req_zone global zone=two:10m rate=' . intval(($rServers[SERVER_ID]['limit_requests'] ?? 0)) . 'r/s;';
+			} else {
+				$rLimitConf = '';
+			}
+			$rCurrentConf = (trim(file_get_contents(BIN_PATH . 'nginx/conf/limit.conf')) ?: '');
+			if ($rLimitConf != $rCurrentConf) {
+				echo 'Updating rate limit...' . "\n";
+				file_put_contents(BIN_PATH . 'nginx/conf/limit.conf', $rLimitConf);
+				$rReload = true;
+			}
+			if (($rServers[SERVER_ID]['limit_requests'] ?? 0) > 0) {
+				$rLimitConf = 'limit_req zone=two burst=' . intval(($rServers[SERVER_ID]['limit_burst'] ?? 0)) . ';';
+			} else {
+				$rLimitConf = '';
+			}
+			$rCurrentConf = (trim(file_get_contents(BIN_PATH . 'nginx/conf/limit_queue.conf')) ?: '');
+			if ($rLimitConf != $rCurrentConf) {
+				echo 'Updating rate limit queue...' . "\n";
+				file_put_contents(BIN_PATH . 'nginx/conf/limit_queue.conf', $rLimitConf);
+				$rReload = true;
+			}
 		}
 		if ($rReload) {
 			self::$rReloadNginx = true; // once, after this pass's actions (reloadAsked())
 		}
-		if (SettingsManager::get('restart_php_fpm')) {
+		// A serve-only node runs no php-fpm by design (the Go front is the whole HTTP
+		// surface), so zero php-fpm PIDs is the intended state, not a crash — and
+		// nginx_rtmp's master still matches `nginx: master`, so without this guard the
+		// check below would see nginx>0 + php==0 and restart xc_vm every pass.
+		if (SettingsManager::get('restart_php_fpm') && !is_file(CONFIG_PATH . 'cluster/serve_only')) {
 			$rPHP = count(glob(BIN_PATH . 'php/sockets/*.pid') ?: []);
 			$rNginx = 0;
 			foreach (glob('/proc/*/cmdline') ?: [] as $rCmdFile) {
@@ -844,7 +1131,7 @@ class RootSignalsCronJob implements CommandInterface {
 						break;
 				}
 			}
-			if ($rCheck['services']) {
+			if ($rCheck['services'] && !is_file(CONFIG_PATH . 'cluster/serve_only')) {
 				$rCurServices = 0;
 				$rStartScript = explode("\n", file_get_contents(MAIN_HOME . 'bin/daemons.sh'));
 				foreach ($rStartScript as $rLine) {
@@ -864,6 +1151,11 @@ class RootSignalsCronJob implements CommandInterface {
 						$rPorts['http'][] = intval($rPort);
 					}
 				}
+				// Serve-only node: the Go front owns the public HTTPS port(s) and binds
+				// them from ports/https.conf, so the cron reconciles those files to the
+				// node's public ports exactly as for a normal LB (http-nginx is not
+				// running). The rethink dropped the nginx fallback, so there is no :8080
+				// loopback-backend demote — the capability marker that gated it is gone.
 				foreach (array_merge([intval($rServers[SERVER_ID]['https_broadcast_port'])], explode(',', $rServers[SERVER_ID]['https_ports_add'])) as $rPort) {
 					if (is_numeric($rPort) && $rPort > 0 && $rPort <= 65535) {
 						$rListen['https'][] = 'listen ' . intval($rPort) . ' ssl;';
@@ -1091,7 +1383,11 @@ class RootSignalsCronJob implements CommandInterface {
 					echo $rOutput . "\n";
 					break;
 				}
-				self::run(self::moduleInstallArgv($rData, null));
+				[$rCode, $rOutput] = self::run(self::moduleInstallArgv($rData, null));
+				if ($rCode !== 0) {
+					throw new \RuntimeException(trim($rOutput) !== '' ? trim($rOutput) : 'module:install exited ' . $rCode);
+				}
+				echo $rOutput . "\n";
 				break;
 			case 'strip_db_credentials':
 			case 'install_config':
@@ -1147,7 +1443,25 @@ class RootSignalsCronJob implements CommandInterface {
 					ProcessRunner::start(['sudo', PHP_BIN, MAIN_HOME . 'console.php', 'update', 'rollback', $rRbVersion]);
 				}
 				break;
+			case 'seed_connections':
+				// MAIN's guided cutover, before it switches CONNECTIONS on
+				// (ClusterCutover): this node's viewers from MAIN's store into its
+				// agent, as xc_vm, so its first digest agrees with MAIN's and none
+				// is dropped. Its line tells MAIN how it went (SEEDED / NOT_SEEDED).
+				[$rSeedCode, $rSeedOut] = self::run(['sudo', '-u', 'xc_vm', PHP_BIN, MAIN_HOME . 'console.php', 'cluster:seed-connections']);
+				$rSeedLines = preg_split('/\R/', trim($rSeedOut)) ?: [];
+				$rSeedLine = ($rSeedCode === 0 ? NodeActions::SEEDED : NodeActions::NOT_SEEDED) . substr(trim((string) end($rSeedLines)), 0, 200);
+				if (!LogSink::syslog('CLUSTER', $rSeedLine)) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CLUSTER', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rSeedLine, time());
+				}
+				echo $rSeedLine . "\n";
+				break;
 			case 'set_services':
+				// Serve-only node runs no php-fpm: ignore a set_services action (it would
+				// restart xc_vm and re-create the pools/balance.conf the install removed).
+				if (is_file(CONFIG_PATH . 'cluster/serve_only')) {
+					break;
+				}
 				echo 'Setting PHP Services' . "\n";
 				$rServices = intval($rData['count']);
 				if ($rData['reload']) {
@@ -1197,7 +1511,7 @@ class RootSignalsCronJob implements CommandInterface {
 							$rListen[] = 'listen ' . intval($rPort) . ';';
 						}
 					}
-					file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/http.conf', implode(' ', $rListen));
+					NginxPortsFile::write(MAIN_HOME . 'bin/nginx/conf/ports/http.conf', implode(' ', $rListen));
 					// MAIN: the cluster API's servers follow the ports (its old ports,
 					// kept after a port change), rendered as xc_vm (ClusterNginxConfig).
 					if (NodeRole::isMain() && class_exists(ClusterNginxConfig::class)) {
@@ -1208,13 +1522,18 @@ class RootSignalsCronJob implements CommandInterface {
 						self::$rReloadNginx = true;
 					}
 				} elseif (intval($rData['type']) == 1) {
+					// Legacy safety: a stale `backend` set_port (the retired :8080 demote) must not
+					// be written as a public ssl listener. Nothing enqueues it anymore; ignore it.
+					if (!empty($rData['backend'])) {
+						break;
+					}
 					$rListen = [];
 					foreach ($rData['ports'] as $rPort) {
 						if (is_numeric($rPort) && $rPort >= 80 && $rPort <= 65535) {
 							$rListen[] = 'listen ' . intval($rPort) . ' ssl;';
 						}
 					}
-					file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/https.conf', implode(' ', $rListen));
+					NginxPortsFile::write(MAIN_HOME . 'bin/nginx/conf/ports/https.conf', implode(' ', $rListen));
 					if (NodeRole::isMain() && class_exists(ClusterNginxConfig::class)) {
 						shell_exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:nginx --no-reload');
 					}

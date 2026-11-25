@@ -30,6 +30,17 @@ $rBar = static function (int $pct): string {
 };
 ?>
 
+<?php // The rolling update's progress (Domain\Cluster\RollingUpdate), filled by the script below. ?>
+<div class="card mb-4 d-none" id="rolling-update-card">
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <h5 class="card-title mb-0"><i class="icon-base ti tabler-stairs-up me-1"></i><span id="rolling-update-title"></span> <span class="badge ms-1" id="rolling-update-status"></span></h5>
+        <button type="button" class="btn btn-sm btn-label-danger d-none" id="rolling-update-cancel"><?= $language::get('rolling_update_cancel'); ?></button>
+    </div>
+    <div class="card-body pt-0">
+        <ul class="list-group list-group-flush" id="rolling-update-nodes"></ul>
+    </div>
+</div>
+
 <div class="card">
     <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
         <h5 class="card-title mb-0"><?= $language::get('servers'); ?></h5>
@@ -60,6 +71,7 @@ $rBar = static function (int $pct): string {
                     <button type="button" class="btn btn-sm btn-label-primary dropdown-toggle" data-bs-toggle="dropdown"><i class="icon-base ti tabler-tool me-1"></i>Bulk</button>
                     <div class="dropdown-menu dropdown-menu-end">
                         <button type="button" class="dropdown-item" id="op-update-all"><i class="icon-base ti tabler-download me-2"></i>Update All Servers</button>
+                        <button type="button" class="dropdown-item" id="op-rolling-update"><i class="icon-base ti tabler-stairs-up me-2"></i><?= $language::get('rolling_update'); ?></button>
                         <button type="button" class="dropdown-item" id="op-restart-services"><i class="icon-base ti tabler-refresh me-2"></i>Restart All Services</button>
                         <button type="button" class="dropdown-item" id="op-update-binaries"><i class="icon-base ti tabler-package me-2"></i>Update All Binaries</button>
                     </div>
@@ -150,7 +162,7 @@ $rBar = static function (int $pct): string {
                                 $rHealth = (string) ($rNode['health'] ?? '');
                                 $rTone = $rHealth === 'ok' ? 'success' : ($rHealth === 'suspect' ? 'warning' : ($rNode['state'] === 'active' ? 'danger' : 'secondary'));
                                 ?>
-                                <a href="cluster_nodes" class="badge bg-label-<?= $rTone; ?> ms-1" title="<?= htmlspecialchars($language::get('cluster_node_badge_help'), ENT_QUOTES); ?>">
+                                <a href="#node-<?= (int) $rServer['id']; ?>" class="badge bg-label-<?= $rTone; ?> ms-1" title="<?= htmlspecialchars($language::get('cluster_node_badge_help'), ENT_QUOTES); ?>">
                                     <?= htmlspecialchars($language::get('cluster'), ENT_QUOTES); ?> ·
                                     <?= htmlspecialchars($rHealth !== '' ? $rHealth : (string) $rNode['state'], ENT_QUOTES); ?> ·
                                     <?= htmlspecialchars($language::get('cluster_mode'), ENT_QUOTES); ?> <?= (int) $rNode['mode']; ?>
@@ -171,7 +183,7 @@ $rBar = static function (int $pct): string {
                         </td>
                         <td class="text-center" data-order="<?= $rClients; ?>">
                             <?php if ($rCanConns): ?>
-                                <a href="./live_connections?server=<?= (int) $rServer['id']; ?>" class="btn btn-xs btn-label-secondary"><?= number_format($rClients); ?></a>
+                                <a href="./live_connections?server_id=<?= (int) $rServer['id']; ?>" class="btn btn-xs btn-label-secondary"><?= number_format($rClients); ?></a>
                             <?php else: ?>
                                 <span class="badge bg-label-secondary"><?= number_format($rClients); ?></span>
                             <?php endif; ?>
@@ -214,7 +226,7 @@ $rBar = static function (int $pct): string {
                                             <div class="dropdown-divider"></div>
                                             <h6 class="dropdown-header"><?= $language::get('cluster_row_menu'); ?></h6>
                                             <?php if ($rLive): ?>
-                                                <a class="dropdown-item" href="cluster_nodes#node-<?= (int) $rServer['id']; ?>"><i class="icon-base ti tabler-adjustments me-2"></i><?= $language::get('cluster_flows_link'); ?></a>
+                                                <a class="dropdown-item" href="#node-<?= (int) $rServer['id']; ?>"><i class="icon-base ti tabler-adjustments me-2"></i><?= $language::get('cluster_flows_link'); ?></a>
                                                 <?php if ((int) $rNode['mode'] < 1): // the move to mode 2 asks first, on Cluster Nodes ?>
                                                     <form method="POST" action="cluster_nodes"><input type="hidden" name="server_id" value="<?= (int) $rServer['id']; ?>"><input type="hidden" name="mode" value="<?= (int) $rNode['mode']; ?>"><button type="submit" name="cluster_action" value="mode_up" class="dropdown-item" title="<?= htmlspecialchars($language::get('cluster_mode_up_tip'), ENT_QUOTES); ?>"><i class="icon-base ti tabler-arrow-up me-2"></i><?= $language::get('cluster_mode_up'); ?> (<?= (int) $rNode['mode'] + 1; ?>)</button></form>
                                                 <?php endif; ?>
@@ -246,6 +258,38 @@ $rBar = static function (int $pct): string {
             </tbody>
         </table>
     </div>
+</div>
+
+<?php // Cluster action results: shown even when the API is off or its tables are not
+// created yet (the action's outcome must never vanish), so rendered here rather
+// than inside the section partial, which is skipped when the cluster is unavailable. ?>
+<?php foreach ($clusterFlashes ?? [] as $rFlash): ?>
+    <div class="alert alert-<?= htmlspecialchars($rFlash['type'], ENT_QUOTES); ?> alert-dismissible" role="alert">
+        <?= htmlspecialchars($language::get($rFlash['message'], $rFlash['vars'] ?? []), ENT_QUOTES); ?>
+        <?php if (!empty($rFlash['code'])): ?>
+            <div class="mt-3">
+                <code class="d-block fs-5 text-break user-select-all js-cluster-code"><?= htmlspecialchars($rFlash['code'], ENT_QUOTES); ?></code>
+                <div class="mt-2 small"><?= $language::get('cluster_code_run_on_node'); ?></div>
+                <code class="d-block text-break user-select-all small">sudo -u xc_vm /home/xc_vm/bin/xc_agent/xc_agent enrol -state /home/xc_vm/config/cluster/agent.json <?= htmlspecialchars($rFlash['code'], ENT_QUOTES); ?></code>
+            </div>
+        <?php endif; ?>
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+<?php endforeach; ?>
+
+<?php // Cluster: the enrolled nodes, pending enrolments, MAIN data plane, metrics and audit — folded in from the former Cluster Nodes page. ?>
+<?php if (!empty($clusterEnabled)) { include __DIR__ . '/partials/cluster_section.php'; } ?>
+
+<?php // Placement advice (Domain\Cluster\PlacementAdvice): read only, fetched when asked. ?>
+<div class="card mt-4">
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div>
+            <h5 class="card-title mb-0"><i class="icon-base ti tabler-chart-arrows me-1"></i><?= $language::get('placement_advice'); ?></h5>
+            <small class="text-body-secondary"><?= $language::get('placement_advice_intro'); ?></small>
+        </div>
+        <button type="button" class="btn btn-sm btn-label-primary" id="placement-show"><?= $language::get('placement_advice_show'); ?></button>
+    </div>
+    <div class="card-body pt-0 d-none" id="placement-body"></div>
 </div>
 
 <?php if ($rCanEdit): ?>
@@ -280,6 +324,7 @@ LayoutRenderer::renderFooter('admin');
             return;
         }
         var errText = <?= json_encode($language::get('error_occured')); ?>;
+        var notSentText = <?= json_encode($language::get('server_action_not_sent')); ?>;
         var canEdit = <?= $rCanEdit ? 'true' : 'false'; ?>;
 
         var toast = window.xcToast || function() {};
@@ -426,7 +471,7 @@ LayoutRenderer::renderFooter('admin');
                         return;
                     }
                     getJSON('./api?action=server&sub=rollback&server_id=' + encodeURIComponent(id) + '&version=' + encodeURIComponent(r.value)).then(function(res) {
-                        toast(res && res.result === true ? 'Rollback to v' + r.value + ' started…' : 'Rollback request failed.', res && res.result === true ? 'success' : 'error');
+                        toast(res && res.result === true ? 'Rollback to v' + r.value + ' started…' : (res && res.error === 'not_sent' ? notSentText : 'Rollback request failed.'), res && res.result === true ? 'success' : 'error');
                     });
                 });
             });
@@ -465,25 +510,151 @@ LayoutRenderer::renderFooter('admin');
                     url = './api?action=server&sub=update&server_id=' + toolsId;
                 }
                 getJSON(url).then(function(d) {
-                    toast(d && d.result === true ? 'Task started in the background…' : errText, d && d.result === true ? 'success' : 'error');
+                    toast(d && d.result === true ? 'Task started in the background…' : (d && d.error === 'not_sent' ? notSentText : errText), d && d.result === true ? 'success' : 'error');
                 });
             });
 
             // --- global bulk operations ------------------------------------------
+            // Servers a bulk action could not reach (ServerAjaxController::okSkipping).
+            function skipped(d) {
+                if (d && d.not_sent && d.not_sent.length) {
+                    toast(notSentText + ' (' + d.not_sent.join(', ') + ')', 'warning');
+                }
+            }
             $('#op-update-all').on('click', function() {
                 confirmSwal('Update ALL running servers?').then(function(ok) {
                     if (ok) {
-                        getJSON('./api?action=update_all_servers').then(function() {
+                        getJSON('./api?action=update_all_servers').then(function(d) {
                             toast('Servers are being updated in the background…');
+                            skipped(d);
                         });
                     }
+                });
+            });
+            // The rolling update: one load balancer at a time (RollingUpdate).
+            var rollingText = <?= json_encode([
+                'title' => $language::get('rolling_update_title'),
+                'none' => $language::get('rolling_update_none'),
+                'busy' => $language::get('rolling_update_busy'),
+                'started' => $language::get('rolling_update_started'),
+                'status' => ['starting' => $language::get('rolling_update_starting'), 'running' => $language::get('rolling_update_running'), 'done' => $language::get('rolling_update_done'), 'failed' => $language::get('rolling_update_failed'), 'cancelled' => $language::get('rolling_update_cancelled')],
+                'node' => ['waiting' => $language::get('rolling_update_waiting'), 'updating' => $language::get('rolling_update_updating'), 'soaking' => $language::get('rolling_update_soaking'), 'done' => $language::get('rolling_update_node_done'), 'failed' => $language::get('rolling_update_node_failed')],
+            ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+            var rollingTones = {starting: 'info', running: 'info', done: 'success', failed: 'danger', cancelled: 'secondary', waiting: 'secondary', updating: 'info', soaking: 'warning'};
+            var rollingTimer = null;
+            var rollingActive = false; // true once a live run is seen in this page view
+
+            function showRolling(d) {
+                var state = d && d.state;
+                if (!state || !state.status) {
+                    return;
+                }
+                var live = (d && d.running) || state.status === 'starting';
+                if (live) {
+                    rollingActive = true;
+                }
+                // A run that finished before this page was opened must not resurrect
+                // the card on every load (its state file lingers): only show it while a
+                // run is live or while we are watching one through to its result now.
+                if (!live && !rollingActive) {
+                    return;
+                }
+                $('#rolling-update-card').removeClass('d-none');
+                $('#rolling-update-title').text(rollingText.title.replace('{version}', state.version || ''));
+                $('#rolling-update-status').attr('class', 'badge ms-1 bg-label-' + (rollingTones[state.status] || 'secondary')).text(rollingText.status[state.status] || state.status);
+                $('#rolling-update-cancel').toggleClass('d-none', !d.running);
+                var list = $('#rolling-update-nodes').empty();
+                if (!state.nodes || !state.nodes.length) {
+                    if (state.status !== 'starting') {
+                        list.append($('<li class="list-group-item px-0 text-body-secondary">').text(rollingText.none));
+                    }
+                }
+                (state.nodes || []).forEach(function(n) {
+                    var item = $('<li class="list-group-item px-0 d-flex justify-content-between align-items-center gap-2">');
+                    var name = $('<span>').text(n.name);
+                    if (n.error) {
+                        name.append($('<small class="d-block text-danger">').text(n.error));
+                    }
+                    item.append(name).append($('<span class="badge bg-label-' + (n.state === 'done' ? 'success' : (n.state === 'failed' ? 'danger' : (rollingTones[n.state] || 'secondary'))) + '">').text(rollingText.node[n.state] || n.state));
+                    list.append(item);
+                });
+                clearTimeout(rollingTimer);
+                if (d.running || state.status === 'starting') {
+                    rollingTimer = setTimeout(pollRolling, 5000);
+                }
+            }
+
+            function pollRolling() {
+                getJSON('./api?action=rolling_update_status').then(showRolling);
+            }
+            pollRolling();
+
+            $('#op-rolling-update').on('click', function() {
+                confirmSwal(<?= json_encode($language::get('rolling_update_confirm')); ?>).then(function(ok) {
+                    if (ok) {
+                        getJSON('./api?action=rolling_update_start').then(function(d) {
+                            toast(d && d.result ? rollingText.started : rollingText.busy, d && d.result ? 'success' : 'warning');
+                            setTimeout(pollRolling, 1000);
+                        });
+                    }
+                });
+            });
+            $('#rolling-update-cancel').on('click', function() {
+                confirmSwal(<?= json_encode($language::get('rolling_update_cancel_confirm')); ?>).then(function(ok) {
+                    if (ok) {
+                        getJSON('./api?action=rolling_update_cancel').then(pollRolling);
+                    }
+                });
+            });
+            // Placement advice: busy servers and where their busiest streams could also run.
+            var placementText = <?= json_encode([
+                'none' => $language::get('placement_advice_none'),
+                'busy' => $language::get('placement_advice_busy'),
+                'add' => $language::get('placement_advice_add'),
+                'noHelper' => $language::get('placement_advice_no_helper'),
+                'noStreams' => $language::get('placement_advice_no_streams'),
+                'viewers' => $language::get('placement_viewers'),
+                'by' => ['clients' => $language::get('placement_by_clients'), 'network' => $language::get('placement_by_network'), 'cpu' => $language::get('placement_by_cpu')],
+            ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+            $('#placement-show').on('click', function() {
+                var body = $('#placement-body').removeClass('d-none').empty();
+                getJSON('./api?action=placement_advice').then(function(d) {
+                    if (!d || !d.result) {
+                        body.text(errText);
+                        return;
+                    }
+                    if (!d.advice.length) {
+                        body.append($('<p class="mb-0 text-body-secondary">').text(placementText.none));
+                        return;
+                    }
+                    var name = function(id) {
+                        return d.names[id] || ('#' + id);
+                    };
+                    d.advice.forEach(function(a) {
+                        var block = $('<div class="border-bottom py-2">');
+                        block.append($('<div class="fw-medium">').text(placementText.busy.replace('{server}', name(a.from)).replace('{load}', Math.round(a.load * 100)).replace('{by}', placementText.by[a.by] || a.by)));
+                        if (a.to === null) {
+                            block.append($('<div class="text-body-secondary">').text(placementText.noHelper));
+                        } else if (!a.streams.length) {
+                            block.append($('<div class="text-body-secondary">').text(placementText.noStreams.replace('{server}', name(a.to))));
+                        } else {
+                            block.append($('<div>').text(placementText.add.replace('{server}', name(a.to)).replace('{load}', Math.round(a.to_load * 100))));
+                            var list = $('<ul class="mb-0">');
+                            a.streams.forEach(function(st) {
+                                list.append($('<li>').append($('<a>').attr('href', './stream?id=' + st.id).text(d.streams[st.id] || ('#' + st.id))).append(document.createTextNode(' · ' + placementText.viewers.replace('{n}', st.viewers))));
+                            });
+                            block.append(list);
+                        }
+                        body.append(block);
+                    });
                 });
             });
             $('#op-restart-services').on('click', function() {
                 confirmSwal('Restart services on ALL running servers?').then(function(ok) {
                     if (ok) {
-                        getJSON('./api?action=restart_all_services').then(function() {
+                        getJSON('./api?action=restart_all_services').then(function(d) {
                             toast('Services will be restarted shortly…');
+                            skipped(d);
                         });
                     }
                 });
@@ -491,8 +662,9 @@ LayoutRenderer::renderFooter('admin');
             $('#op-update-binaries').on('click', function() {
                 confirmSwal('Update binaries on ALL running servers?').then(function(ok) {
                     if (ok) {
-                        getJSON('./api?action=update_all_binaries').then(function() {
+                        getJSON('./api?action=update_all_binaries').then(function(d) {
                             toast('Binaries are being updated in the background…');
+                            skipped(d);
                         });
                     }
                 });
@@ -558,6 +730,7 @@ LayoutRenderer::renderFooter('admin');
         }
     })();
 </script>
+<?php if (!empty($clusterEnabled)) { include __DIR__ . '/partials/cluster_section_script.php'; } ?>
 </body>
 
 </html>

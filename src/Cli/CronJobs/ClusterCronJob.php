@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ArtefactGrants;
+use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\ClusterEndpoint;
@@ -20,6 +21,7 @@ use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\MainDataPlane;
 use XcVm\Domain\Cluster\NonceStore;
+use XcVm\Domain\Cluster\ReleaseCanary;
 use XcVm\Domain\Cluster\StreamReplica;
 use XcVm\Domain\Cluster\TokenService;
 use XcVm\Domain\Server\ServerRepository;
@@ -103,12 +105,16 @@ class ClusterCronJob implements CommandInterface {
 			// lb_revocation_mode=hard without a licence: every node that takes
 			// commands is fenced, the fence riding its refused session.
 			'licence_fence' => static fn() => ClusterRoute::licenceFences(ClusterCryptoFactory::create(), SettingsManager::getAll()),
+			// The fleet canary: the release every other server may take (opt-in).
+			'release_canary' => static fn() => ReleaseCanary::tick(SettingsManager::getAll()),
 			// Every node that takes root commands gets this panel's key pinned in
 			// its xcvm_core, which its compiled lease verdict needs (Phase 9).
 			'core_pin' => static fn() => CorePins::offer(),
 			// MAIN's own data-plane client: its tickets anew at each epoch, its
 			// agent's servers section when it changed (Phase 9).
 			'main_dataplane' => static fn() => MainDataPlane::refresh(),
+			// A node in mode 2 that lost its own streams goes back to mode 1 (opt-in).
+			'auto_mode_down' => static fn() => ClusterAdmin::autoModeDown(SettingsManager::getAll()),
 			// The signals daemon runs this every second; the minute is its fallback.
 			'liveness' => static function () {
 				if (LivenessService::tick(ClusterSettings::int('cluster_offline_after_sec', SettingsManager::get('cluster_offline_after_sec'))) !== []) {

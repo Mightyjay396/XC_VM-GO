@@ -60,7 +60,6 @@ class PlaylistGenerator {
 			return false;
 		}
 
-		$rCacheName = $rUserInfo['id'] . '_' . $rDeviceKey . '_' . $rOutputKey . '_' . implode('_', ($rTypeKey ?: []));
 		$rOutputExt = $db->get_col();
 		$rEncryptPlaylist = ($rUserInfo['is_restreamer'] ? $rSettings['encrypt_playlist_restreamer'] : $rSettings['encrypt_playlist']);
 		if ($rUserInfo['is_stalker']) {
@@ -89,26 +88,35 @@ class PlaylistGenerator {
 			$rOutputExt = 'ts';
 		}
 
+		// The stored list's name covers everything the list is built from: the line,
+		// the request (host and scheme are in the domain name) and what a token is
+		// minted from. A change to what generate() reads of the line or the request
+		// must join it, and so must HOST if ServerRepository::getPublicURL() (the
+		// image URLs, via ImageUtils::validateURL) ever reads the request's host.
+		$rCacheName = hash('sha256', serialize([$rUserInfo['id'], $rUserInfo['username'], $rUserInfo['password'], $rUserInfo['access_token'], $rUserInfo['bouquet'], $rUserInfo['is_restreamer'], $rUserInfo['is_stalker'], $rUserInfo['force_server_id'], $rUserInfo['custom_data'] ?? null, $rUserInfo['bouquet_order_custom'] ?? 0, $rDeviceKey, $rOutputKey, $rTypeKey, $rProxy, $rDomainName, $rEncryptPlaylist, $rSettings['live_streaming_pass'], defined('OPENSSL_EXTRA') ? OPENSSL_EXTRA : null, !empty($rSettings['secure_stream_tokens'])]));
+
 		$db->query('SELECT t1.*,t2.* FROM `output_devices` t1 LEFT JOIN `output_formats` t2 ON t2.access_output_id = t1.default_output WHERE t1.device_key = ? LIMIT 1', $rDeviceKey);
 		if ($db->num_rows() <= 0) {
 			return false;
 		}
 		$rDeviceInfo = $db->get_row();
-		if (strlen($rUserInfo['access_token']) == 32) {
+		if (strlen((string) ($rUserInfo['access_token'] ?? '')) == 32) {
 			$rFilename = str_replace('{USERNAME}', $rUserInfo['access_token'], $rDeviceInfo['device_filename']);
 		} else {
 			$rFilename = str_replace('{USERNAME}', $rUserInfo['username'], $rDeviceInfo['device_filename']);
 		}
 
-		if (0 < $rSettings['cache_playlists'] && !$rNoCache && file_exists(PLAYLIST_PATH . md5($rCacheName))) {
+		// One handle: cron:tmp may remove the file between a test by name and the read.
+		$rHit = (0 < $rSettings['cache_playlists'] && !$rNoCache) ? @fopen(PLAYLIST_PATH . $rCacheName, 'r') : false;
+		if ($rHit) {
 			header('Content-Description: File Transfer');
 			header('Content-Type: audio/mpegurl');
 			header('Expires: 0');
 			header('Cache-Control: must-revalidate');
 			header('Pragma: public');
 			header('Content-Disposition: attachment; filename="' . $rFilename . '"');
-			header('Content-Length: ' . filesize(PLAYLIST_PATH . md5($rCacheName)));
-			readfile(PLAYLIST_PATH . md5($rCacheName));
+			header('Content-Length: ' . fstat($rHit)['size']);
+			fpassthru($rHit);
 			exit();
 		}
 
@@ -178,8 +186,8 @@ class PlaylistGenerator {
 			$rChannelIDs = $rUserInfo['channel_ids'];
 		}
 
-		if (in_array($rSettings['channel_number_type'], ['bouquet_new', 'manual'])) {
-			$rChannelIDs = StreamSorter::sortChannels($rChannelIDs);
+		if (\XcVm\Domain\Bouquet\ResellerBouquetPolicy::hasCustomOrder($rUserInfo) || in_array($rSettings['channel_number_type'], ['bouquet_new', 'manual'])) {
+			$rChannelIDs = StreamSorter::sortChannels($rChannelIDs, $rUserInfo);
 		}
 
 		unset($rUserInfo['live_ids'], $rUserInfo['vod_ids'], $rUserInfo['radio_ids'], $rUserInfo['episode_ids'], $rUserInfo['channel_ids']);
@@ -189,16 +197,23 @@ class PlaylistGenerator {
 		header('Expires: 0');
 		header('Cache-Control: must-revalidate');
 		header('Pragma: public');
-		if (strlen($rUserInfo['access_token']) == 32) {
+		if (strlen((string) ($rUserInfo['access_token'] ?? '')) == 32) {
 			header('Content-Disposition: attachment; filename="' . str_replace('{USERNAME}', $rUserInfo['access_token'], $rDeviceInfo['device_filename']) . '"');
 		} else {
 			header('Content-Disposition: attachment; filename="' . str_replace('{USERNAME}', $rUserInfo['username'], $rDeviceInfo['device_filename']) . '"');
 		}
 
+		// Written beside its name by this request alone and renamed when complete: a
+		// download its client abandons leaves nothing (cron:tmp removes the rest).
 		$rOutputFile = null;
-		if ($rSettings['cache_playlists'] == 1) {
-			$rOutputPath = PLAYLIST_PATH . md5($rCacheName) . '.write';
-			$rOutputFile = fopen($rOutputPath, 'w');
+		$rOutputPath = PLAYLIST_PATH . '.' . $rCacheName . '.' . getmypid() . '.tmp';
+		if (self::mayCache($rSettings['cache_playlists'], @disk_free_space(PLAYLIST_PATH))) {
+			$rOutputFile = @fopen($rOutputPath, 'w') ?: null;
+			if ($rOutputFile) {
+				register_shutdown_function(static function () use ($rOutputPath): void {
+					@unlink($rOutputPath);
+				});
+			}
 		}
 
 		if ($rDeviceKey == 'starlivev5') {
@@ -248,7 +263,7 @@ class PlaylistGenerator {
 						} else {
 							$rChannelInfo['stream_display_name'] = StreamSorter::formatTitle($rChannelInfo['stream_display_name'], $rChannelInfo['year']);
 						}
-						if (strlen($rUserInfo['access_token']) == 32) {
+						if (strlen((string) ($rUserInfo['access_token'] ?? '')) == 32) {
 							$rURL = $rDomainName . $rChannelInfo['type_output'] . '/' . $rUserInfo['access_token'] . '/';
 							if ($rChannelInfo['live'] == 0) {
 								$rURL .= $rChannelInfo['id'] . '.' . $rChannelInfo['target_container'];
@@ -280,9 +295,7 @@ class PlaylistGenerator {
 				}
 			}
 			$rData = json_encode((object) $rOutput);
-			if ($rOutputFile) {
-				fwrite($rOutputFile, $rData);
-			}
+			self::cachePut($rOutputFile, $rOutputPath, $rData);
 			echo $rData;
 		} else {
 			if (!empty($rDeviceInfo['device_header'])) {
@@ -293,9 +306,7 @@ class PlaylistGenerator {
 				}
 				$rAppend = ($isM3UFormat ? "\n" . '#EXT-X-SESSION-DATA:DATA-ID="com.xc_vm.' . str_replace('.', '_', XC_VM_VERSION) . '"' : '');
 				$rData = str_replace(['&lt;', '&gt;'], ['<', '>'], str_replace(['{BOUQUET_NAME}', '{USERNAME}', '{PASSWORD}', '{SERVER_URL}', '{OUTPUT_KEY}'], [$rSettings['server_name'], $rUserInfo['username'], $rUserInfo['password'], $rDomainName, $rOutputKey], $rDeviceInfo['device_header'] . $rAppend)) . "\n";
-				if ($rOutputFile) {
-					fwrite($rOutputFile, $rData);
-				}
+				self::cachePut($rOutputFile, $rOutputPath, $rData);
 				echo $rData;
 			}
 
@@ -386,7 +397,7 @@ class PlaylistGenerator {
 
 						$rIcon = '';
 						if ($rChannel['live'] == 0) {
-							if (strlen($rUserInfo['access_token']) == 32) {
+							if (strlen((string) ($rUserInfo['access_token'] ?? '')) == 32) {
 								$rURL = $rDomainName . $rChannel['type_output'] . '/' . $rUserInfo['access_token'] . '/' . $rChannel['id'] . '.' . $rChannel['target_container'];
 							} elseif ($rEncryptPlaylist) {
 								$rEncData = $rChannel['type_output'] . '/' . $rUserInfo['username'] . '/' . $rUserInfo['password'] . '/' . $rChannel['id'] . '/' . $rChannel['target_container'];
@@ -400,7 +411,7 @@ class PlaylistGenerator {
 							}
 						} else {
 							if ($rOutputKey != 'rtmp' || !array_key_exists($rChannel['id'], $rRTMPRows)) {
-								if (strlen($rUserInfo['access_token']) == 32) {
+								if (strlen((string) ($rUserInfo['access_token'] ?? '')) == 32) {
 									if ($rSettings['cloudflare'] && $rOutputExt == 'ts') {
 										$rURL = $rDomainName . $rChannel['type_output'] . '/' . $rUserInfo['access_token'] . '/' . $rChannel['id'];
 									} else {
@@ -428,7 +439,7 @@ class PlaylistGenerator {
 								} else {
 									$rServerID = ($rSettings['rtmp_random'] == 1 ? $rAvailableServers[array_rand($rAvailableServers, 1)] : $rAvailableServers[0]);
 								}
-								if (strlen($rUserInfo['access_token']) == 32) {
+								if (strlen((string) ($rUserInfo['access_token'] ?? '')) == 32) {
 									$rURL = $rServers[$rServerID]['rtmp_server'] . $rChannel['id'] . '?token=' . $rUserInfo['access_token'];
 								} elseif ($rEncryptPlaylist) {
 									$rEncData = $rUserInfo['username'] . '/' . $rUserInfo['password'];
@@ -458,12 +469,10 @@ class PlaylistGenerator {
 								}
 								$rData = str_replace(['&lt;', '&gt;'], ['<', '>'], str_replace([$rPattern, '{ESR_ID}', '{SID}', '{CHANNEL_NAME}', '{CHANNEL_ID}', '{XC_VM_ID}', '{CATEGORY}', '{CHANNEL_ICON}'], array_map('strval', [str_replace($rCharts, array_map('urlencode', $rCharts), $rURL), $rESRID, $rSID, $rChannel['stream_display_name'], $rChannel['channel_id'], $rChannel['id'], $catDisplayName, ImageUtils::validateURL($rIcon)]), $rConfig)) . "\r\n";
 							} else {
-								$rData = str_replace(['&lt;', '&gt;'], ['<', '>'], str_replace([$rPattern, '{ESR_ID}', '{SID}', '{CHANNEL_NAME}', '{CHANNEL_ID}', '{XC_VM_ID}', '{CHANNEL_ICON}'], array_map('strval', [str_replace($rCharts, array_map('urlencode', $rCharts), $rURL), $rESRID, $rSID, $rChannel['stream_display_name'], $rChannel['channel_id'], $rChannel['id'], $rIcon]), $rConfig)) . "\r\n";
+								$rData = str_replace(['&lt;', '&gt;'], ['<', '>'], str_replace([$rPattern, '{ESR_ID}', '{SID}', '{CHANNEL_NAME}', '{CHANNEL_ID}', '{XC_VM_ID}', '{CHANNEL_ICON}'], array_map('strval', [str_replace($rCharts, array_map('urlencode', $rCharts), $rURL), $rESRID, $rSID, $rChannel['stream_display_name'], $rChannel['channel_id'], $rChannel['id'], ImageUtils::validateURL($rIcon)]), $rConfig)) . "\r\n";
 								$rData = str_replace(' group-title="{CATEGORY}"', '', $rData);
 							}
-							if ($rOutputFile) {
-								fwrite($rOutputFile, $rData);
-							}
+							self::cachePut($rOutputFile, $rOutputPath, $rData);
 							echo $rData;
 							if (stripos($rDeviceInfo['device_conf'], '{CATEGORY}') === false) {
 								break;
@@ -473,18 +482,40 @@ class PlaylistGenerator {
 				}
 
 				$rData = trim(str_replace(['&lt;', '&gt;'], ['<', '>'], $rDeviceInfo['device_footer']));
-				if ($rOutputFile) {
-					fwrite($rOutputFile, $rData);
-				}
+				self::cachePut($rOutputFile, $rOutputPath, $rData);
 				echo $rData;
 			}
 		}
 
 		if ($rOutputFile) {
 			fclose($rOutputFile);
-			rename(PLAYLIST_PATH . md5($rCacheName) . '.write', PLAYLIST_PATH . md5($rCacheName));
+			if (!@rename($rOutputPath, PLAYLIST_PATH . $rCacheName)) {
+				@unlink($rOutputPath);
+			}
 		}
 		exit();
+	}
+
+	/** Free space below which no list is stored: a subscriber can make one stored list per `key` they ask for. */
+	private const CACHE_MIN_FREE = 2 * 1024 ** 3;
+
+	/** Whether to store this list: "Cache Playlists for" is a number of seconds, and the disk keeps its floor. */
+	private static function mayCache(mixed $rTTL, int|float|false $rFree): bool {
+		return 0 < (int) $rTTL && $rFree !== false && self::CACHE_MIN_FREE < $rFree;
+	}
+
+	/**
+	 * Add $rData to the stored copy; a short write (a full disk) drops the copy, so a
+	 * cut-off list never takes the final name.
+	 *
+	 * @param resource|null $rOutputFile
+	 */
+	private static function cachePut(&$rOutputFile, string $rOutputPath, string $rData): void {
+		if ($rOutputFile && @fwrite($rOutputFile, $rData) !== strlen($rData)) {
+			fclose($rOutputFile);
+			@unlink($rOutputPath);
+			$rOutputFile = null;
+		}
 	}
 
 	/**

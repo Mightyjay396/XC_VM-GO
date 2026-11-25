@@ -31,7 +31,10 @@ use XcVm\Infrastructure\Redis\RedisManager;
  *
  * A node writes only its own connections: `server_id` is always the sender,
  * the line identity is recomputed from the record's owner, and a uuid another
- * node holds is refused.
+ * node holds is refused. The owner is the one the record first entered the
+ * store with, and that entry must prove its mint (admitsFirst()) under
+ * `cluster_conn_binding` = `enforce`, from a node whose stream secret MAIN
+ * withholds (ConnectionAdmission::enforces()).
  *
  * In an events batch a store that fails a read or a write throws rather
  * than answer false: false is an event refused (dropped and counted, and the
@@ -46,10 +49,13 @@ final class ConnectionIngest {
 	use DatabaseAware;
 
 	/** The record keys a node may set. */
-	public const KEYS = ['user_id', 'hmac_id', 'hmac_identifier', 'stream_id', 'proxy_id', 'user_agent', 'user_ip', 'container', 'pid', 'uuid', 'date_start', 'geoip_country_code', 'isp', 'external_device', 'hls_last_read', 'hls_end', 'on_demand'];
+	public const KEYS = ['user_id', 'hmac_id', 'hmac_identifier', 'stream_id', 'proxy_id', 'user_agent', 'user_ip', 'container', 'pid', 'uuid', 'date_start', 'geoip_country_code', 'isp', 'external_device', 'hls_last_read', 'hls_end', 'on_demand', 'retire_token'];
+
+	/** The keys that name a record's owner: the first entry sets them, an update never changes them. */
+	private const OWNER = ['user_id', 'hmac_id', 'hmac_identifier', 'identity'];
 
 	/** The `lines_live` columns among them. */
-	private const COLUMNS = ['user_id', 'hmac_id', 'hmac_identifier', 'stream_id', 'server_id', 'proxy_id', 'user_agent', 'user_ip', 'container', 'pid', 'uuid', 'date_start', 'geoip_country_code', 'isp', 'external_device', 'hls_last_read', 'hls_end'];
+	private const COLUMNS = ['user_id', 'hmac_id', 'hmac_identifier', 'stream_id', 'server_id', 'proxy_id', 'user_agent', 'user_ip', 'container', 'pid', 'uuid', 'date_start', 'geoip_country_code', 'isp', 'external_device', 'hls_last_read', 'hls_end', 'retire_token'];
 
 	/**
 	 * Apply a node's conn.upsert. A connection that opened on the node is no
@@ -88,15 +94,80 @@ final class ConnectionIngest {
 	 * @param bool $rTell false: the caller tells the row's server itself (the sweep, once for all its rows)
 	 */
 	public static function retireEnded(array $rRow, int $rEndAt, bool $rTell = true): bool {
+		if (SettingsManager::getBool('cluster_api_enabled')) {
+			return ConnectionRetirement::retire($rRow, $rEndAt);
+		}
 		$rDb = self::db();
 		// Never waited for: a node's batch or snapshot holds its rows' locks until it
 		// commits, and a mint or the sweep must not stand still behind one. A locked
 		// row fails at once and stays for the next sweep.
-		if (!$rDb->query('SET STATEMENT innodb_lock_wait_timeout=0 FOR DELETE FROM `lines_live` WHERE `activity_id` = ? AND `hls_end` = 1;', $rRow['activity_id']) || $rDb->num_rows() < 1) {
+		if (!$rDb->query('SET STATEMENT innodb_lock_wait_timeout=0 FOR DELETE FROM `lines_live` WHERE `activity_id` = ? AND `hls_end` = 1 AND `server_id` = ? AND `uuid` = ? AND `date_start` <=> ? AND `hls_last_read` <=> ?;', $rRow['activity_id'], $rRow['server_id'], $rRow['uuid'], $rRow['date_start'], $rRow['hls_last_read']) || $rDb->num_rows() < 1) {
 			return false;
 		}
 		self::retired($rRow, $rEndAt, $rTell);
 		return true;
+	}
+
+	private static ?string $sweepPath = null;
+
+	/** Override the persistent cursor location for an isolated run. */
+	public static function useSweepPath(?string $path): void {
+		self::$sweepPath = $path;
+	}
+
+	/**
+	 * Retire ended records of API-only nodes without loading their entire history.
+	 * Active records and other nodes stay untouched. TS/VOD workers get the same
+	 * five-minute end grace as the regular users sweep. Work and queued markers
+	 * are bounded even when an old installation has accumulated a large backlog.
+	 *
+	 * @param list<int> $rServers
+	 */
+	public static function sweepEnded(array $rServers, int $rNow, int $rLimit = 500, float $rSeconds = 2.0): int {
+		if ($rServers === [] || $rLimit <= 0 || $rSeconds <= 0) {
+			return 0;
+		}
+		$rDb = self::db();
+		$rUntil = microtime(true) + $rSeconds;
+		$path = self::$sweepPath ?? TMP_PATH . 'users_ended_cursor.json';
+		$state = json_decode((string) @file_get_contents($path), true);
+		$cursor = (int) ($state['after'] ?? 0);
+		$upper = (int) ($state['upper'] ?? 0);
+		if ($upper <= 0) {
+			if (!$rDb->query('SELECT MAX(activity_id) FROM lines_live;')) {
+				return 0;
+			}
+			$upper = (int) $rDb->get_col();
+		}
+		$rLimit = min(1000, $rLimit);
+		// A primary-key window bounds rows examined as well as rows returned.
+		// Advance past failed/locked records. A fixed upper bound makes every
+		// cycle wrap even when new connections arrive continuously.
+		if (!$rDb->query('SELECT * FROM lines_live FORCE INDEX (PRIMARY) WHERE activity_id > ? AND activity_id <= ? ORDER BY activity_id ASC LIMIT ' . $rLimit . ';', $cursor, $upper)) {
+			return 0;
+		}
+		$rows = $rDb->get_raw_rows();
+		if ($rows === []) {
+			$cursor = $upper = 0;
+		}
+		$rCount = 0;
+		foreach ($rows as $rRow) {
+			if (microtime(true) >= $rUntil) {
+				break;
+			}
+			$cursor = (int) $rRow['activity_id'];
+			if (!in_array((int) $rRow['server_id'], $rServers, true) || (int) $rRow['hls_end'] !== 1 || ($rRow['container'] !== 'hls' && (int) ($rRow['hls_last_read'] ?? 0) > $rNow - 300)) {
+				continue;
+			}
+			$rEnd = (int) ($rRow['hls_last_read'] ?? 0);
+			$rEnd = $rEnd > 0 ? min($rNow, $rEnd) : $rNow;
+			$rCount += self::retireEnded($rRow, $rEnd, !SettingsManager::getBool('cluster_api_enabled')) ? 1 : 0;
+		}
+		\XcVm\Core\Util\AtomicFile::write($path, json_encode(['after' => $cursor, 'upper' => $upper]));
+		if (SettingsManager::getBool('cluster_api_enabled')) {
+			ConnectionRetirement::dispatch(100, max(0, $rUntil - microtime(true)));
+		}
+		return $rCount;
 	}
 
 	/**
@@ -107,8 +178,13 @@ final class ConnectionIngest {
 	 */
 	private static function retired(array $rRow, int $rEndAt, bool $rTell): void {
 		$rDb = self::db();
+		$rActivitySettings = SettingsManager::getAll() + ['save_closed_connection' => 0];
+		$rKeep = (int) ($rActivitySettings['keep_activity'] ?? 0);
+		if ($rKeep > 0 && $rEndAt < time() - $rKeep) {
+			$rActivitySettings['save_closed_connection'] = 0;
+		}
 		ConnectionTracker::writeOfflineActivity(
-			SettingsManager::getAll() + ['save_closed_connection' => 0],
+			$rActivitySettings,
 			(int) $rRow['server_id'],
 			(int) ($rRow['proxy_id'] ?? 0),
 			(int) ($rRow['user_id'] ?? 0),
@@ -137,10 +213,63 @@ final class ConnectionIngest {
 
 	/** @param array<string, mixed> $rRecord */
 	private static function write(int $rServerID, array $rRecord, bool $rFailBatch): bool {
+		if (SettingsManager::getBool('redis_handler') || !SettingsManager::getBool('cluster_api_enabled')) {
+			return self::writeRecord($rServerID, $rRecord, $rFailBatch);
+		}
+		$uuid = (string) ($rRecord['uuid'] ?? '');
+		if (!preg_match(AgentConnections::CONN_UUID, $uuid) || (empty($rRecord['user_id']) && empty($rRecord['hmac_id']))) {
+			return false;
+		}
+		if (!ConnectionRetirement::lock($rServerID, $uuid)) {
+			return self::failed($rFailBatch);
+		}
+		$db = self::db();
+		$own = !$db->isInTransaction();
+		$started = false;
+		try {
+			if ($own ? !$db->beginTransaction() : !$db->query('SAVEPOINT xcvm_ingest;')) {
+				return self::failed($rFailBatch);
+			}
+			$started = true;
+			$ok = ConnectionRetirement::seen($rServerID, $rRecord) || self::writeRecord($rServerID, $rRecord, $rFailBatch);
+			if (!$ok) {
+				$own ? $db->rollback() : $db->query('ROLLBACK TO SAVEPOINT xcvm_ingest;');
+				$started = false;
+				return false;
+			}
+			if ($own ? !$db->commit() : !$db->query('RELEASE SAVEPOINT xcvm_ingest;')) {
+				throw new \RuntimeException('Cannot commit connection ingest');
+			}
+			$started = false;
+			return true;
+		} catch (\Throwable $e) {
+			if ($started) {
+				$own ? $db->rollback() : $db->query('ROLLBACK TO SAVEPOINT xcvm_ingest;');
+			}
+			if ($rFailBatch) {
+				throw $e;
+			}
+			return false;
+		} finally {
+			ConnectionRetirement::unlock($rServerID, $uuid);
+		}
+	}
+
+	private static function writeRecord(int $rServerID, array $rRecord, bool $rFailBatch): bool {
+		$rMint = $rRecord['mint'] ?? null; // the proof of the mint, never stored
 		$rRecord = array_filter(array_intersect_key($rRecord, array_flip(self::KEYS)), static fn($rValue) => is_scalar($rValue) || $rValue === null);
+		if (array_key_exists('retire_token', $rRecord) && (!is_string($rRecord['retire_token']) || !preg_match('/^[0-9a-f]{32}\\z/', $rRecord['retire_token']))) {
+			unset($rRecord['retire_token']);
+		}
 		$rUUID = (string) ($rRecord['uuid'] ?? '');
 		if (!preg_match(AgentConnections::CONN_UUID, $rUUID) || (empty($rRecord['user_id']) && empty($rRecord['hmac_id']))) {
 			return false;
+		}
+		// A viewer MAIN closed while this upsert was on its way (a kick, a limit,
+		// its sweep): the same connection is not opened again. A reconnect is a
+		// new connection, with a lifecycle token of its own (date_start for older agents).
+		if (isset($rRecord['date_start']) && ClusterBus::tombed($rServerID, $rUUID, (int) $rRecord['date_start'], $rRecord['retire_token'] ?? null)) {
+			return true;
 		}
 		$rRecord += ['user_id' => null, 'proxy_id' => null]; // the store reads both
 		$rRecord['server_id'] = $rServerID;
@@ -157,15 +286,18 @@ final class ConnectionIngest {
 				if ((int) ($rExisting['server_id'] ?? 0) !== $rServerID) {
 					return false; // another node's connection
 				}
-				$rWritten = ConnectionTracker::updateConnection($rExisting, $rRecord, $rRecord['hls_end'] ? 'close' : 'open') !== null;
+				$rWritten = ConnectionTracker::updateConnection($rExisting, array_diff_key($rRecord, array_flip(self::OWNER)), $rRecord['hls_end'] ? 'close' : 'open') !== null;
 			} else {
+				if (!self::admitsFirst($rServerID, $rUUID, $rRecord['identity'], $rMint)) {
+					return false;
+				}
 				$rWritten = (bool) ConnectionTracker::createConnection($rRecord);
 			}
 			return $rWritten || self::failed($rFailBatch); // its EXEC failed
 		}
 
 		$rDb = self::db();
-		if (!$rDb->query('SELECT `activity_id`, `server_id` FROM `lines_live` WHERE `uuid` = ?;', $rUUID)) {
+		if (!$rDb->query('SELECT * FROM `lines_live` WHERE `uuid` = ?;', $rUUID)) {
 			return self::failed($rFailBatch); // unread, it would be inserted a second time
 		}
 		$rRow = $rDb->num_rows() > 0 ? $rDb->get_row() : null;
@@ -174,7 +306,20 @@ final class ConnectionIngest {
 			if ((int) $rRow['server_id'] !== $rServerID) {
 				return false;
 			}
-			unset($rColumns['uuid']);
+			if ((int) ($rRow['hls_end'] ?? 0) === 1 && (int) $rRecord['hls_end'] === 0) {
+				// A new lifecycle gets a new physical row even when its seconds
+				// timestamps equal the previous one. Old sweep snapshots cannot match.
+				if (SettingsManager::getBool('cluster_api_enabled') ? !ConnectionRetirement::retire($rRow, (int) ($rRow['hls_last_read'] ?: time())) : (!$rDb->query('DELETE FROM lines_live WHERE activity_id = ? AND hls_end = 1;', $rRow['activity_id']) || $rDb->num_rows() !== 1)) {
+					return self::failed($rFailBatch);
+				}
+				$replacement = array_intersect_key($rRow, array_flip(self::COLUMNS));
+				$replacement = array_replace($replacement, array_diff_key($rColumns, array_flip(self::OWNER)));
+				if (!array_key_exists('retire_token', $rRecord)) {
+					unset($replacement['retire_token']);
+				}
+				return $rDb->query('INSERT INTO lines_live (`' . implode('`,`', array_keys($replacement)) . '`) VALUES (' . implode(',', array_fill(0, count($replacement), '?')) . ');', ...array_values($replacement)) || self::failed($rFailBatch);
+			}
+			unset($rColumns['uuid'], $rColumns['user_id'], $rColumns['hmac_id'], $rColumns['hmac_identifier']);
 			$rWritten = $rDb->query('UPDATE `lines_live` SET ' . implode(', ', array_map(static fn($rColumn) => '`' . $rColumn . '` = ?', array_keys($rColumns))) . ' WHERE `activity_id` = ?;', ...array_values($rColumns), ...[(int) $rRow['activity_id']]);
 			// Nothing changed: the same values again, or MAIN closed this ended row
 			// since it was read (retireEnded) and the viewer would be acknowledged
@@ -184,9 +329,32 @@ final class ConnectionIngest {
 				return self::failed($rFailBatch);
 			}
 		} else {
+			if (!self::admitsFirst($rServerID, $rUUID, $rRecord['identity'], $rMint)) {
+				return false;
+			}
 			$rWritten = $rDb->query('INSERT INTO `lines_live` (`' . implode('`,`', array_keys($rColumns)) . '`) VALUES(' . implode(',', array_fill(0, count($rColumns), '?')) . ');', ...array_values($rColumns));
 		}
 		return $rWritten || self::failed($rFailBatch);
+	}
+
+	/**
+	 * A uuid that first enters MAIN's store, by an event or a snapshot: its
+	 * record's `mint` proves MAIN minted the viewer's token for this identity
+	 * and node (ConnectionAdmission::verifyMint, at any age: a record waits in
+	 * the spool, a movie is opened again, a snapshot brings records back
+	 * after an orphan purge). One that does not is stored and counted under
+	 * `observe`; under `enforce`, for a node whose records prove their mints,
+	 * it is refused and the node's registry told to drop it.
+	 */
+	private static function admitsFirst(int $rServerID, string $rUUID, string $rIdentity, mixed $rMint): bool {
+		$rAge = ConnectionAdmission::verifyMint($rMint, $rIdentity, $rServerID);
+		if ($rAge !== null) {
+			ConnectionAdmission::proved($rServerID, $rAge);
+			return true;
+		}
+		$rRefused = ConnectionAdmission::enforces($rServerID);
+		ConnectionAdmission::unproven($rServerID, false, $rRefused ? $rUUID : null);
+		return !$rRefused;
 	}
 
 	/** @param bool $rFailBatch A store that fails throws (an events batch), rather than answer false. */
@@ -230,8 +398,11 @@ final class ConnectionIngest {
 	 * its activity row, but without the kill and the conn.close command back
 	 * that ConnectionTracker::closeConnection sends: the viewer is already
 	 * gone and the node's registry already dropped it.
+	 *
+	 * @param (callable(callable(): mixed): void)|null $rDefer Runs the activity row's write
+	 *        later (an events batch: at its commit); null writes it now.
 	 */
-	public static function close(int $rServerID, string $rUUID): bool {
+	public static function close(int $rServerID, string $rUUID, ?callable $rDefer = null): bool {
 		if (!preg_match(AgentConnections::CONN_UUID, $rUUID)) {
 			return false;
 		}
@@ -250,7 +421,7 @@ final class ConnectionIngest {
 		if ((int) ($rRow['server_id'] ?? 0) !== $rServerID) {
 			return false;
 		}
-		ConnectionTracker::writeOfflineActivity(
+		$rActivity = static fn() => ConnectionTracker::writeOfflineActivity(
 			SettingsManager::getAll() + ['save_closed_connection' => 0],
 			$rServerID,
 			(int) ($rRow['proxy_id'] ?? 0),
@@ -267,6 +438,10 @@ final class ConnectionIngest {
 			isset($rRow['hmac_id']) ? (int) $rRow['hmac_id'] : null,
 			(string) ($rRow['hmac_identifier'] ?? '')
 		);
+		// The activity row is a file, outside the batch's transaction: an events
+		// batch defers it to its commit ($rDefer), so a batch that fails and is
+		// sent again writes it once.
+		$rDefer !== null ? $rDefer($rActivity) : $rActivity();
 		return self::remove($rServerID, $rUUID, true);
 	}
 
@@ -312,6 +487,10 @@ final class ConnectionIngest {
 		foreach ($rDb->get_rows() ?: [] as $rRow) {
 			$rExpected[(int) $rRow['stream_id']] = DivergenceSink::expected((int) $rRow['bitrate']);
 		}
+		// Order the uuids so two concurrent node reports REPLACE lines_divergence
+		// in the same order and do not deadlock on its uuid index (hex uuids sort
+		// byte by byte with SORT_STRING).
+		ksort($rOwn, SORT_STRING);
 		$rParams = $rLive = [];
 		foreach ($rOwn as $rUUID => [$rStreamID, $rActivityID]) {
 			$rDivergence = DivergenceSink::of($rRates[$rUUID], $rExpected[$rStreamID] ?? 0);
@@ -365,7 +544,9 @@ final class ConnectionIngest {
 				throw new \RuntimeException('store unavailable');
 			}
 			if (ClusterBus::touch($rServerID, array_intersect_key($rTouches, $rOwn))) {
-				return;
+				// QC-BUS-TOUCH : le bus ne sert qu'aux viewers HLS ; le check-in d'un worker TS/VOD (toutes les 300 s)
+				// doit aussi arriver au store, que cron:users lit pour workerGone() : sinon il coupait des clients actifs.
+				$rSkipHls = true;
 			}
 		}
 		$rReads = [];
@@ -373,7 +554,7 @@ final class ConnectionIngest {
 			$rReads[(string) $rUUID] = $rRead;
 		}
 		if (SettingsManager::get('redis_handler')) {
-			self::touchRedis($rServerID, $rReads);
+			self::touchRedis($rServerID, $rReads, $rSkipHls ?? false);
 			return;
 		}
 		foreach (array_chunk($rReads, 1000, true) as $rChunk) {
@@ -383,7 +564,7 @@ final class ConnectionIngest {
 			}
 			$rWhen = 'CASE `uuid`' . str_repeat(' WHEN ? THEN ?', count($rChunk)) . ' ELSE `hls_last_read` END';
 			$rIn = implode(',', array_fill(0, count($rChunk), '?'));
-			if (!self::db()->query('UPDATE `lines_live` SET `hls_last_read` = ' . $rWhen . ' WHERE `server_id` = ? AND `uuid` IN (' . $rIn . ') AND (`hls_last_read` IS NULL OR `hls_last_read` < ' . $rWhen . ');', ...[...$rCase, $rServerID, ...array_map('strval', array_keys($rChunk)), ...$rCase])) {
+			if (!self::db()->query('UPDATE `lines_live` SET `hls_last_read` = ' . $rWhen . ' WHERE `server_id` = ? AND `uuid` IN (' . $rIn . ') AND (`hls_last_read` IS NULL OR `hls_last_read` < ' . $rWhen . ')' . (($rSkipHls ?? false) ? " AND `container` <> 'hls'" : '') . ';', ...[...$rCase, $rServerID, ...array_map('strval', array_keys($rChunk)), ...$rCase])) {
 				throw new \RuntimeException('store unavailable');
 			}
 		}
@@ -396,7 +577,7 @@ final class ConnectionIngest {
 	 *
 	 * @param array<string, int> $rReads uuid => hls_last_read
 	 */
-	private static function touchRedis(int $rServerID, array $rReads): void {
+	private static function touchRedis(int $rServerID, array $rReads, bool $rSkipHls = false): void {
 		$rRedis = RedisManager::instance();
 		if (!$rRedis instanceof \Redis) {
 			throw new \RuntimeException('redis unavailable'); // the batch is not applied; the node resends newer values
@@ -408,7 +589,7 @@ final class ConnectionIngest {
 			$rRedis->watch($rUUID);
 			$rRaw = $rRedis->get($rUUID);
 			$rRecord = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;
-			if (!is_array($rRecord) || (int) ($rRecord['server_id'] ?? 0) !== $rServerID || (int) ($rRecord['hls_last_read'] ?? 0) >= $rRead) {
+			if (!is_array($rRecord) || (int) ($rRecord['server_id'] ?? 0) !== $rServerID || (int) ($rRecord['hls_last_read'] ?? 0) >= $rRead || ($rSkipHls && ($rRecord['container'] ?? '') === 'hls')) {
 				$rRedis->unwatch();
 				continue;
 			}

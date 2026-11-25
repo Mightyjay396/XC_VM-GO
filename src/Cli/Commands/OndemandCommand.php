@@ -113,10 +113,11 @@ class OndemandCommand implements CommandInterface {
 			if ($rAgentViewers) {
 				$rOnline = NodeStreams::viewers(array_map('intval', $rStreamIDs));
 			} elseif (SettingsManager::get('redis_handler') && RedisManager::instance()) {
-				$rConnections = ConnectionTracker::getStreamConnections($rStreamIDs, false, false);
-				$rOnline = [];
-				foreach ($rStreamIDs as $rStreamID) {
-					$rOnline[$rStreamID] = count($rConnections[$rStreamID][SERVER_ID] ?? []);
+				$rOnline = ConnectionTracker::streamViewerCounts($rStreamIDs, (int) SERVER_ID);
+				// Redis did not answer: that is not "no viewers", which stops the stream.
+				if ($rOnline === null) {
+					usleep(800000);
+					continue;
 				}
 			} else {
 				$rOnline = ConnectionTracker::onlineClientCounts($rStreamIDs, SERVER_ID);
@@ -137,11 +138,15 @@ class OndemandCommand implements CommandInterface {
 			}
 
 			foreach ($rRows as $rRow) {
+				$rStreamID = $rRow['stream_id'];
+				$rLastView = STREAMS_PATH . $rStreamID . '_.lastview'; // QC-OD-FAST: 60 s keep-alive after last viewer
 				if ($rRow['online_clients'] > 0 || $rRow['attached'] > 0) {
+					@touch($rLastView);
 					continue;
 				}
-
-				$rStreamID = $rRow['stream_id'];
+				if (file_exists($rLastView) && time() - @filemtime($rLastView) < 60) {
+					continue;
+				}
 				$pidFile = STREAMS_PATH . $rStreamID . '_.pid';
 				$monitorFile = STREAMS_PATH . $rStreamID . '_.monitor';
 
@@ -192,7 +197,8 @@ class OndemandCommand implements CommandInterface {
 				@unlink($queueFile);
 				@unlink(SIGNALS_TMP_PATH . 'admin_' . $rStreamID);
 
-				StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['bitrate' => null, 'current_source' => null, 'to_analyze' => 0, 'pid' => null, 'stream_started' => null, 'stream_info' => null, 'audio_codec' => null, 'video_codec' => null, 'resolution' => null, 'compatible' => 0, 'stream_status' => 0, 'monitor_pid' => null], $db);
+				// stream_info is kept: an adaptive master lists the idle variant by its last probe.
+				StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['bitrate' => null, 'current_source' => null, 'to_analyze' => 0, 'pid' => null, 'stream_started' => null, 'audio_codec' => null, 'video_codec' => null, 'resolution' => null, 'compatible' => 0, 'stream_status' => 0, 'monitor_pid' => null], $db);
 
 				// MAIN refreshes its cache from the node's events once its store keeps the streams.
 				if (!$rLocal) {

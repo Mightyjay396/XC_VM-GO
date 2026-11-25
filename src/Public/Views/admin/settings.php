@@ -3,19 +3,24 @@
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Config\DashboardAlerts;
+use XcVm\Core\Config\Maintenance;
 use XcVm\Core\Reference\DeviceReference;
 use XcVm\Core\Reference\GeoReference;
 use XcVm\Core\Reference\LocaleReference;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\GeoIP\MaxMindUpdater;
 use XcVm\Core\Localization\Translator;
+use XcVm\Core\Reference\UiReference;
 use XcVm\Core\Util\AdminHelpers;
+use XcVm\Domain\Alert\AlertChannels;
+use XcVm\Domain\Alert\ExpiryReminders;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Stream\CategoryService;
-use XcVm\Streaming\Codec\FfmpegBinaries; // Code reconstruction by Squallp
 use XcVm\Streaming\Fanout\FanoutConfig;
 use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Domain\Cluster\ReleaseCanary;
 ?>
 
 <form id="settings-form">
@@ -89,6 +94,113 @@ use XcVm\Domain\Server\ServerRepository;
 					<div class="row">
 						<div class="col-12">
 
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="hide_active_codes">
+									<?= $language::get('hide_active_codes') ?>
+								</label>
+								<div class="col-md-8">
+									<div class="form-check form-switch"><input name="hide_active_codes" id="hide_active_codes" type="checkbox" <?= !empty($rSettings['hide_active_codes']) ? ' checked' : '' ?> class="form-check-input"></div>
+									<div class="form-text"><?= $language::get('hide_active_codes_help') ?></div>
+								</div>
+							</div>
+
+							<?php // Maintenance: the client APIs and resellers are refused; admins and viewers already watching are not. ?>
+							<h5 class="card-title mb-4"><?= $language::get('maintenance_mode') ?></h5>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="maintenance_mode">
+									<?= $language::get('maintenance_mode_on') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('maintenance_mode_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-8">
+									<div class="form-check form-switch"><input name="maintenance_mode" id="maintenance_mode" type="checkbox" <?= !empty($rSettings["maintenance_mode"]) ? ' checked' : '' ?> class="form-check-input"></div>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="maintenance_until"><?= $language::get('maintenance_until') ?></label>
+								<div class="col-md-8">
+									<input type="datetime-local" class="form-control" id="maintenance_until" name="maintenance_until" value="<?= !empty($rSettings["maintenance_until"]) ? date('Y-m-d\TH:i', (int) $rSettings["maintenance_until"]) : '' ?>">
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="maintenance_message"><?= $language::get('maintenance_message') ?></label>
+								<div class="col-md-8">
+									<input type="text" class="form-control" id="maintenance_message" name="maintenance_message" maxlength="255" placeholder="<?= htmlspecialchars(Maintenance::message([]), ENT_QUOTES) ?>" value="<?= htmlspecialchars((string) ($rSettings["maintenance_message"] ?? ''), ENT_QUOTES) ?>">
+								</div>
+							</div>
+
+							<?php // ExpiryReminders (cron:reminders, daily at 09:00): lines that expire within the days below. ?>
+							<h5 class="card-title mb-4"><?= $language::get('reminders') ?></h5>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="reminders_days">
+									<?= $language::get('reminders_days') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('reminders_days_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-8">
+									<input type="text" class="form-control" id="reminders_days" name="reminders_days" maxlength="64" value="<?= htmlspecialchars((string) ($rSettings["reminders_days"] ?? ''), ENT_QUOTES) ?>">
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="reminders_email">
+									<?= $language::get('reminders_email') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('reminders_email_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-8">
+									<div class="form-check form-switch"><input name="reminders_email" id="reminders_email" type="checkbox" <?= !empty($rSettings["reminders_email"]) ? ' checked' : '' ?> class="form-check-input"></div>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="reminders_mag">
+									<?= $language::get('reminders_mag') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('reminders_mag_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-8">
+									<div class="form-check form-switch"><input name="reminders_mag" id="reminders_mag" type="checkbox" <?= !empty($rSettings["reminders_mag"]) ? ' checked' : '' ?> class="form-check-input"></div>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="reminders_webhook">
+									<?= $language::get('reminders_webhook') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('reminders_webhook_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-8">
+									<div class="form-check form-switch"><input name="reminders_webhook" id="reminders_webhook" type="checkbox" <?= !empty($rSettings["reminders_webhook"]) ? ' checked' : '' ?> class="form-check-input"></div>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="reminders_telegram">
+									<?= $language::get('reminders_telegram') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('reminders_telegram_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-8">
+									<select class="form-select" id="reminders_telegram" name="reminders_telegram">
+										<option value="0"><?= $language::get('reminders_telegram_off') ?></option>
+										<?php foreach (AlertChannels::all() as $rChannel): ?>
+											<?php if ($rChannel['type'] === 'telegram'): ?>
+												<option value="<?= (int) $rChannel['id'] ?>" <?= (int) ($rSettings["reminders_telegram"] ?? 0) === $rChannel['id'] ? 'selected' : '' ?>><?= htmlspecialchars($rChannel['name'], ENT_QUOTES) ?></option>
+											<?php endif; ?>
+										<?php endforeach; ?>
+									</select>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="reminders_message">
+									<?= $language::get('reminders_message') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('reminders_message_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-8">
+									<input type="text" class="form-control" id="reminders_message" name="reminders_message" maxlength="255" placeholder="<?= htmlspecialchars(ExpiryReminders::DEFAULT_MESSAGE, ENT_QUOTES) ?>" value="<?= htmlspecialchars((string) ($rSettings["reminders_message"] ?? ''), ENT_QUOTES) ?>">
+								</div>
+							</div>
+
 							<h5 class="card-title mb-4"><?= $language::get('preferences') ?></h5>
 
 							<div class="form-group row mb-4">
@@ -99,6 +211,19 @@ use XcVm\Domain\Server\ServerRepository;
 
 								<div class="col-md-8">
 									<input type="text" class="form-control" id="server_name" name="server_name" value="<?= htmlspecialchars($rSettings["server_name"] ?? '') ?>">
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<div class="col-md-4 col-form-label" id="login_design_label"><?= $language::get('login_design') ?></div>
+								<div class="col-md-8">
+									<div class="btn-group" role="group" aria-labelledby="login_design_label" aria-describedby="login_design_help">
+										<?php foreach (UiReference::loginDesigns() as $rDesign): ?>
+											<input type="radio" class="btn-check" name="login_design" id="login_design_<?= $rDesign ?>" value="<?= $rDesign ?>" <?= UiReference::loginDesign($rSettings['login_design'] ?? null) === $rDesign ? 'checked' : '' ?>>
+											<label class="btn btn-outline-primary" for="login_design_<?= $rDesign ?>"><?= $language::get('login_design_' . $rDesign) ?></label>
+										<?php endforeach; ?>
+									</div>
+									<div class="form-text" id="login_design_help"><?= $language::get('login_design_help') ?></div>
 								</div>
 							</div>
 
@@ -129,7 +254,7 @@ use XcVm\Domain\Server\ServerRepository;
 									<select name="language" id="language" class="form-control" data-toggle="select2">
 										<?php foreach (Translator::available() as $rLangCode): ?>
 											<option value="<?= htmlspecialchars($rLangCode) ?>" <?= ($rSettings["language"] ?? 'en') === $rLangCode ? ' selected' : '' ?>>
-												<?= htmlspecialchars($rLangCode) ?>
+												<?= htmlspecialchars(Translator::displayName($rLangCode)) ?>
 											</option>
 										<?php endforeach; ?>
 									</select>
@@ -171,23 +296,6 @@ use XcVm\Domain\Server\ServerRepository;
 								<div class="col-md-2">
 									<input type="text" class="form-control text-center" id="fails_per_time" name="fails_per_time" value="<?= intval($rSettings["fails_per_time"]) ?>">
 								</div>
-
-								<!--
-													<label class="col-md-4 col-form-label" for="fingerprint_max">
-														Fingerprint Max
-														<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('maximum_number_of_concurrent_fingerprint_tooltip') ?>"></i>
-													</label>
-
-													<div class="col-md-2">
-														<select name="fingerprint_max" id="fingerprint_max" class="form-control" data-toggle="select2">
-															<?php foreach ([0, 5, 10, 25, 50, 100] as $rShow): ?>
-																<option value="<?= $rShow ?>"<?= $rSettings["fingerprint_max"] == $rShow ? ' selected' : '' ?>>
-																	<?= $rShow ?>
-																</option>
-															<?php endforeach; ?>
-														</select>
-													</div>
-													-->
 							</div>
 
 							<div class="form-group row mb-4">
@@ -291,26 +399,6 @@ use XcVm\Domain\Server\ServerRepository;
 									<div class="form-check form-switch"><input name="show_images" id="show_images" type="checkbox" <?= $rSettings["show_images"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
 								</div>
 
-								<label class="col-md-4 col-form-label" for="group_buttons">
-									<?= $language::get('group_buttons') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('group_action_buttons_into_a_tooltip') ?>"></i>
-								</label>
-
-								<div class="col-md-2">
-									<div class="form-check form-switch"><input name="group_buttons" id="group_buttons" type="checkbox" <?= $rSettings["group_buttons"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
-								</div>
-							</div>
-
-							<div class="form-group row mb-4">
-								<label class="col-md-4 col-form-label" for="modal_edit">
-									<?= $language::get('quick_edit_modal') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('when_clicking_edit_open_in_tooltip') ?>"></i>
-								</label>
-
-								<div class="col-md-2">
-									<div class="form-check form-switch"><input name="modal_edit" id="modal_edit" type="checkbox" <?= $rSettings["modal_edit"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
-								</div>
-
 								<label class="col-md-4 col-form-label" for="mysql_sleep_kill">
 									<?= $language::get('mysql_sleep_timeout') ?>
 									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('how_long_to_allow_mysql_tooltip') ?>"></i>
@@ -370,15 +458,6 @@ use XcVm\Domain\Server\ServerRepository;
 							</div>
 
 							<div class="form-group row mb-4">
-								<label class="col-md-4 col-form-label" for="dashboard_display_alt">
-									<?= $language::get('alternate_server_view') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('display_servers_on_the_dashboard_tooltip') ?>"></i>
-								</label>
-
-								<div class="col-md-2">
-									<div class="form-check form-switch"><input name="dashboard_display_alt" id="dashboard_display_alt" type="checkbox" <?= $rSettings["dashboard_display_alt"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
-								</div>
-
 								<label class="col-md-4 col-form-label" for="header_stats_sh">
 									<?= $language::get('show_header_stats') ?>
 									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('show_server_statistics_in_header_menu') ?>"></i>
@@ -387,9 +466,7 @@ use XcVm\Domain\Server\ServerRepository;
 								<div class="col-md-2">
 									<div class="form-check form-switch"><input name="header_stats" id="header_stats_sh" type="checkbox" <?= $rSettings["header_stats"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
 								</div>
-							</div>
 
-							<div class="form-group row mb-4">
 								<label class="col-md-4 col-form-label" for="dashboard_status">
 									<?= $language::get('show_service_status') ?>
 									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('show_warning_information_based_on_server_stats') ?>"></i>
@@ -398,56 +475,31 @@ use XcVm\Domain\Server\ServerRepository;
 								<div class="col-md-2">
 									<div class="form-check form-switch"><input name="dashboard_status" id="dashboard_status" type="checkbox" <?= $rSettings["dashboard_status"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
 								</div>
-
-								<label class="col-md-4 col-form-label" for="threshold_cpu">
-									<?= $language::get('cpu_threshold_not_working') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('when_cpu_usage_is_above_tooltip') ?>"></i>
-								</label>
-
-								<div class="col-md-2">
-									<input type="text" class="form-control text-center" id="threshold_cpu" name="threshold_cpu" value="<?= intval($rSettings["threshold_cpu"]) ?>">
-								</div>
 							</div>
 
+							<?php $xmAlertOptions = DashboardAlerts::options($rSettings); ?>
+							<input type="hidden" name="dashboard_alerts_original" value="<?= htmlspecialchars(json_encode(DashboardAlerts::values($rSettings)), ENT_QUOTES); ?>">
 							<div class="form-group row mb-4">
-								<label class="col-md-4 col-form-label" for="threshold_mem">
-									<?= $language::get('memory_threshold_not_working') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('when_memory_usage_is_above_tooltip') ?>"></i>
-								</label>
-
+								<label class="col-md-4 col-form-label" for="dashboard_alerts"><?= $language::get('dashboard_latest_alerts') ?></label>
 								<div class="col-md-2">
-									<input type="text" class="form-control text-center" id="threshold_mem" name="threshold_mem" value="<?= intval($rSettings["threshold_mem"]) ?>">
+									<div class="form-check form-switch"><input name="dashboard_alerts" id="dashboard_alerts" type="checkbox" <?= $xmAlertOptions['latest_enabled'] ? 'checked' : '' ?> class="form-check-input"></div>
 								</div>
-
-								<label class="col-md-4 col-form-label" for="threshold_disk">
-									<?= $language::get('disk_threshold_not_working') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('when_disk_usage_is_above_tooltip') ?>"></i>
-								</label>
-
+								<label class="col-md-4 col-form-label" for="dashboard_alerts_count"><?= $language::get('dashboard_alert_entries') ?></label>
 								<div class="col-md-2">
-									<input type="text" class="form-control text-center" id="threshold_disk" name="threshold_disk" value="<?= intval($rSettings["threshold_disk"]) ?>">
+									<input type="number" class="form-control text-center" id="dashboard_alerts_count" name="dashboard_alerts_count" min="1" max="50" step="1" value="<?= $xmAlertOptions['latest_count'] ?>">
 								</div>
 							</div>
-
 							<div class="form-group row mb-4">
-								<label class="col-md-4 col-form-label" for="threshold_network">
-									<?= $language::get('network_threshold_not_working') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('when_network_usage_is_above_tooltip') ?>"></i>
-								</label>
-
+								<label class="col-md-4 col-form-label" for="dashboard_alert_history"><?= $language::get('dashboard_alert_history_title') ?></label>
 								<div class="col-md-2">
-									<input type="text" class="form-control text-center" id="threshold_network" name="threshold_network" value="<?= intval($rSettings["threshold_network"]) ?>">
+									<div class="form-check form-switch"><input name="dashboard_alert_history" id="dashboard_alert_history" type="checkbox" <?= $xmAlertOptions['history_enabled'] ? 'checked' : '' ?> class="form-check-input"></div>
 								</div>
-
-								<label class="col-md-4 col-form-label" for="threshold_clients">
-									<?= $language::get('clients_threshold_not_working') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('when_number_of_clients_as_tooltip') ?>"></i>
-								</label>
-
+								<label class="col-md-4 col-form-label" for="dashboard_alert_history_count"><?= $language::get('dashboard_alert_history_entries') ?></label>
 								<div class="col-md-2">
-									<input type="text" class="form-control text-center" id="threshold_clients" name="threshold_clients" value="<?= intval($rSettings["threshold_clients"]) ?>">
+									<input type="number" class="form-control text-center" id="dashboard_alert_history_count" name="dashboard_alert_history_count" min="1" max="200" step="1" value="<?= $xmAlertOptions['history_count'] ?>">
 								</div>
 							</div>
+							<p class="text-body-secondary small mb-4"><?= $language::get('dashboard_alert_history_help') ?></p>
 
 							<h5 class="card-title mb-4"><?= $language::get('search') ?></h5>
 
@@ -1077,6 +1129,17 @@ use XcVm\Domain\Server\ServerRepository;
 							</div>
 
 							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="api_legacy_keys">
+									<?= $language::get('api_legacy_keys') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('api_legacy_keys_tooltip') ?>"></i>
+								</label>
+
+								<div class="col-md-8">
+									<div class="form-check form-switch"><input name="api_legacy_keys" id="api_legacy_keys" type="checkbox" <?= ($rSettings["api_legacy_keys"] ?? 1) == 1 ? ' checked' : '' ?> class="form-check-input"></div>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
 								<label class="col-md-4 col-form-label" for="api_pass">
 									<?= $language::get('api_password') ?>
 									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('password_required_to_access_the_tooltip') ?>"></i>
@@ -1084,6 +1147,21 @@ use XcVm\Domain\Server\ServerRepository;
 
 								<div class="col-md-8">
 									<input type="password" class="form-control" id="api_pass" name="api_pass" value="<?= htmlspecialchars($rSettings["api_pass"] ?? '') ?>">
+								</div>
+							</div>
+
+							<?php // Public/Controllers/Api/MetricsController: /metrics answers this token; empty, it is off. ?>
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="metrics_token">
+									<?= $language::get('metrics_token') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('metrics_token_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-8">
+									<div class="input-group">
+										<input type="text" readonly class="form-control" id="metrics_token" name="metrics_token" autocomplete="off" value="<?= htmlspecialchars((string) ($rSettings["metrics_token"] ?? ''), ENT_QUOTES) ?>">
+										<button class="btn btn-outline-danger" type="button" id="metrics-token-clear"><i class="icon-base ti tabler-x"></i></button>
+										<button class="btn btn-outline-info" type="button" id="metrics-token-new"><i class="icon-base ti tabler-refresh"></i></button>
+									</div>
 								</div>
 							</div>
 
@@ -1135,6 +1213,16 @@ use XcVm\Domain\Server\ServerRepository;
 
 								<div class="col-md-2">
 									<div class="form-check form-switch"><input name="disable_playlist_restreamer" id="disable_playlist_restreamer" type="checkbox" <?= $rSettings["disable_playlist_restreamer"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="disable_playlist_ministra">
+									<?= $language::get('disable_playlist_download_ministra') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('disable_playlist_download_ministra_tooltip') ?>"></i>
+								</label>
+								<div class="col-md-2">
+									<div class="form-check form-switch"><input name="disable_playlist_ministra" id="disable_playlist_ministra" type="checkbox" <?= !empty($rSettings['disable_playlist_ministra']) ? ' checked' : '' ?> class="form-check-input"></div>
 								</div>
 							</div>
 
@@ -1292,26 +1380,6 @@ use XcVm\Domain\Server\ServerRepository;
 
 								<div class="col-md-2">
 									<div class="form-check form-switch"><input name="disable_hls_allow_restream" id="disable_hls_allow_restream" type="checkbox" <?= $rSettings["disable_hls_allow_restream"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
-								</div>
-							</div>
-
-							<div class="form-group row mb-4">
-								<label class="col-md-4 col-form-label" for="disable_rtmp">
-									<?= $language::get('disable_rtmp_output') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('disable_rtmp_for_all_clients_and_devices') ?>"></i>
-								</label>
-
-								<div class="col-md-2">
-									<div class="form-check form-switch"><input name="disable_rtmp" id="disable_rtmp" type="checkbox" <?= $rSettings["disable_rtmp"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
-								</div>
-
-								<label class="col-md-4 col-form-label" for="disable_rtmp_allow_restream">
-									<?= $language::get('allow_restreamers_rtmp') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('override_to_allow_restreamers_to_tooltip_title') ?>"></i>
-								</label>
-
-								<div class="col-md-2">
-									<div class="form-check form-switch"><input name="disable_rtmp_allow_restream" id="disable_rtmp_allow_restream" type="checkbox" <?= $rSettings["disable_rtmp_allow_restream"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
 								</div>
 							</div>
 
@@ -1549,7 +1617,7 @@ use XcVm\Domain\Server\ServerRepository;
 							<div class="form-group row mb-4">
 								<label class="col-md-4 col-form-label" for="fanout_source_backend">
 									<?= $language::get('fanout_source_backend') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="xc_fanout: how a source becomes MPEG-TS, for daemon-pulled and (with supervision on) panel streams. auto = native remuxer where possible, ffmpeg for the rest; ffmpeg = always ffmpeg; native = native remuxer only, no fallback."></i>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="xc_fanout: how a source becomes MPEG-TS -- for daemon-pulled streams and for panel streams whether the daemon supervises them or the PHP monitor runs them (fanout off). auto = native remuxer where possible, ffmpeg for the rest; ffmpeg = always ffmpeg; native = native remuxer only, no fallback."></i>
 								</label>
 								<div class="col-md-2">
 									<select name="fanout_source_backend" id="fanout_source_backend" class="form-control" data-toggle="select2">
@@ -2016,17 +2084,6 @@ use XcVm\Domain\Server\ServerRepository;
 								</div>
 							</div>
 
-							<?php
-							$rFfmpegGpuBuilds = FfmpegBinaries::gpuCapable();
-							$rCpuOpts = array_keys(FfmpegBinaries::available()) ?: ["8.1", "7.1", "4.0"];
-							if (!empty($rSettings["ffmpeg_cpu"]) && !in_array($rSettings["ffmpeg_cpu"], $rCpuOpts, true)) {
-								$rCpuOpts[] = $rSettings["ffmpeg_cpu"];
-							}
-							$rGpuOpts = array_keys($rFfmpegGpuBuilds);
-							if (!empty($rSettings["ffmpeg_gpu"]) && !in_array($rSettings["ffmpeg_gpu"], $rGpuOpts, true)) {
-								$rGpuOpts[] = $rSettings["ffmpeg_gpu"];
-							}
-							?>
 							<div class="form-group row mb-4">
 								<label class="col-md-4 col-form-label" for="ffmpeg_cpu">
 									<?= $language::get('ffmpeg_version_cpu') ?>
@@ -2036,8 +2093,8 @@ use XcVm\Domain\Server\ServerRepository;
 								<div class="col-md-2">
 									<select name="ffmpeg_cpu" id="ffmpeg_cpu" class="form-control" data-toggle="select2">
 										<?php foreach ($rCpuOpts as $rValue): ?>
-											<option value="<?= $rValue ?>" <?= $rSettings["ffmpeg_cpu"] == $rValue ? ' selected' : '' ?>>
-												v<?= $rValue ?><?= isset($rFfmpegGpuBuilds[$rValue]) ? ' (GPU)' : '' ?>
+											<option value="<?= htmlspecialchars($rValue) ?>" <?= $rSettings["ffmpeg_cpu"] == $rValue ? ' selected' : '' ?>>
+												<?= htmlspecialchars($rFfmpegLabels[$rValue]) ?><?= isset($rFfmpegGpuBuilds[$rValue]) ? ' (GPU)' : '' ?>
 											</option>
 										<?php endforeach; ?>
 									</select>
@@ -2052,8 +2109,8 @@ use XcVm\Domain\Server\ServerRepository;
 									<select name="ffmpeg_gpu" id="ffmpeg_gpu" class="form-control" data-toggle="select2">
 										<option value="" <?= empty($rSettings["ffmpeg_gpu"]) ? ' selected' : '' ?>>Same as CPU</option>
 										<?php foreach ($rGpuOpts as $rValue): ?>
-											<option value="<?= $rValue ?>" <?= ($rSettings["ffmpeg_gpu"] ?? '') === $rValue ? ' selected' : '' ?>>
-												v<?= $rValue ?>
+											<option value="<?= htmlspecialchars($rValue) ?>" <?= ($rSettings["ffmpeg_gpu"] ?? '') === $rValue ? ' selected' : '' ?>>
+												<?= htmlspecialchars($rFfmpegLabels[$rValue]) ?>
 											</option>
 										<?php endforeach; ?>
 									</select>
@@ -2313,9 +2370,14 @@ use XcVm\Domain\Server\ServerRepository;
 						['cluster_offline_after_sec', 'number', 'Silence before MAIN marks a node offline (10-300 s).'],
 						['cluster_orphan_conn_ttl_sec', 'number', 'Silence before MAIN purges a node\'s connections (30-3600 s).'],
 						['lb_offline_admission', ['local', 'allow', 'deny'], 'Admission of viewers without a MAIN reservation while MAIN is unreachable.'],
+						['cluster_conn_binding', ['observe', 'enforce'], 'Each viewer record a node sends must prove MAIN minted the viewer\'s token. observe: what does not is counted (Cluster Nodes). enforce: such a record is refused and dropped, from a node whose stream secret MAIN withholds. Switch only once Cluster Nodes shows it ready.'],
 						['cluster_kill_on_line_disable', 'switch', 'Drop live sessions when a line is disabled, banned or expires.'],
 						['cluster_ingest_concurrency', 'number', 'Concurrent ingest permits on MAIN (1-64); half are reserved for P0 events.'],
-						['lb_new_node_mode', ['legacy', 'api'], 'Mode of newly installed LBs. api (no database access) is available from the cutover phase.'],
+						['cluster_auto_mode_down_min', 'number', 'Minutes a load balancer in mode 2 may say that it no longer reads its streams on itself (the Streams not local badge) before MAIN moves it back to mode 1, as Mode down would (0-1440; 0, the default: never). Only a node this page moved to mode 2, still holding its database credentials, heard lately, and MAIN not locked down.'],
+						['lb_new_node_mode', ['legacy', 'api', 'serve_only'], 'Mode of newly installed LBs. api: a new load balancer joins in mode 2, every flow on, with none of MAIN\'s database or Redis credentials. serve_only: as api, and PHP-free - one Go binary (xc_fanout + xc_agent) with no http-nginx (nginx_rtmp kept); MAIN serves everything else. Both need the cluster API on.'],
+						['lb_binary_canary_server', 'number', 'Server ID of the load balancer that takes each xc_fanout/xc_agent release from GitHub first. The other servers, MAIN included, take none newer than what it has run for the hours below, active and heard throughout. 0, the default: off, every server takes the newest.'],
+						['lb_binary_canary_hours', 'number', 'Hours the canary runs a release before the other servers may take it (1-720).'],
+						['gateway_mode', ['off', 'shadow', 'segments', 'segments+playlist'], 'Segment gateway: xc_fanout answers HLS without PHP-FPM. shadow: PHP still serves every request, and the gateway judges a mirrored copy of each one, so its verdicts can be checked first. segments: the gateway serves segments (live and catch-up) and keys. segments+playlist: also a known viewer\'s playlist refresh, and a known MPEG-TS viewer\'s reconnect, on nodes whose viewers are in their agent (the first request of each viewer stays PHP\'s). Whatever the gateway is not sure of it hands back to PHP, which also answers while the gateway is down. Needs fanout on; a node without it stays off. A new panel starts on segments+playlist; off switches it off.'],
 						['servers_stats_retention_days', 'number', 'Days of servers_stats kept (1-365).'],
 						['cluster_audit_retention_days', 'number', 'Days of cluster audit log kept (1-365).'],
 						['cluster_db_allowlist', 'switch', 'Firewall MariaDB (3306) and Redis (6379) on MAIN: only MAIN, LBs and proxies not yet in cluster mode 2, and the extra list below may connect. Applied within a minute by the root cron; check first with console.php cluster:db-allowlist status.'],
@@ -2331,6 +2393,17 @@ use XcVm\Domain\Server\ServerRepository;
 								&middot; <?= $language::get('cluster_https_available') ?>:
 								<strong><?= $rClusterHttps['ok'] ? $language::get('label_yes') : $language::get('label_no') . ' (' . htmlspecialchars($rClusterHttps['reason']) . ')' ?></strong>
 								&middot; <?= $language::get('cluster_grace') ?>: <strong><?= ClusterSettings::graceMin($rClusterRotation) ?> min</strong>
+								<?php
+								// The fleet canary's pin (ReleaseCanary), and the release it has on trial when that is newer.
+								$rClusterPin = (string) ($rSettings['lb_release_pin'] ?? '');
+								if (ClusterSettings::int('lb_binary_canary_server', $rSettings['lb_binary_canary_server'] ?? null) > 0 || $rClusterPin !== ''):
+									$rClusterTrial = ReleaseCanary::trial();
+								?>
+									&middot; <?= $language::get('cluster_release_pin') ?>: <strong><?= $rClusterPin !== '' ? 'v' . htmlspecialchars($rClusterPin) : $language::get('cluster_release_pin_none') ?></strong>
+									<?php if ($rClusterTrial !== null && ($rClusterPin === '' || version_compare($rClusterTrial[0], $rClusterPin, '>'))): ?>
+										(<?= htmlspecialchars(str_replace(['{version}', '{hours}', '{of}'], ['v' . $rClusterTrial[0], (string) intdiv(max(0, time() - $rClusterTrial[1]), 3600), (string) ClusterSettings::int('lb_binary_canary_hours', $rSettings['lb_binary_canary_hours'] ?? null)], $language::get('cluster_release_trial'))) ?>)
+									<?php endif; ?>
+								<?php endif; ?>
 							</div>
 							<?php foreach (array_chunk($rClusterFields, 2) as $rClusterPair): ?>
 								<div class="form-group row mb-4">
@@ -2424,6 +2497,15 @@ use XcVm\Domain\Server\ServerRepository;
 									</label>
 									<div class="col-md-2">
 										<div class="form-check form-switch"><input name="fallback_parser" id="fallback_parser" type="checkbox" <?= $rSettings["fallback_parser"] == 1 ? ' checked' : '' ?> class="form-check-input"></div>
+									</div>
+							</div>
+							<div class="form-group row mb-4">
+									<label class="col-md-4 col-form-label" for="tmdb_episode_by_title">
+										<?= $language::get('tmdb_episode_by_title') ?>
+										<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('tmdb_episode_by_title_tooltip') ?>"></i>
+									</label>
+									<div class="col-md-2">
+										<div class="form-check form-switch"><input name="tmdb_episode_by_title" id="tmdb_episode_by_title" type="checkbox" <?= ($rSettings["tmdb_episode_by_title"] ?? 0) == 1 ? ' checked' : '' ?> class="form-check-input"></div>
 									</div>
 							</div>
 
@@ -2827,8 +2909,10 @@ use XcVm\Domain\Server\ServerRepository;
 								259200   => "3 Days",
 								604800   => "7 Days",
 								1209600  => "14 Days",
-								16934400 => "28 Days",
+								2419200  => "28 Days",
 								15552000 => "180 Days",
+								// It was labelled "28 Days" but always kept 196: the value stays, so no saved choice changes.
+								16934400 => "196 Days",
 								31536000 => "365 Days",
 							];
 							?>
@@ -2957,6 +3041,26 @@ use XcVm\Domain\Server\ServerRepository;
 									</select>
 								</div>
 							</div>
+
+							<div class="form-group row mb-4">
+								<label class="col-md-3 col-form-label">
+									<?= $language::get('system_logs') ?>
+								</label>
+
+								<label class="col-md-3 offset-md-3 col-form-label" for="keep_syslog">
+									<?= $language::get('keep_logs_for') ?>
+								</label>
+
+								<div class="col-md-3">
+									<select name="keep_syslog" id="keep_syslog" class="form-control" data-toggle="select2">
+										<?php foreach ($rLogKeepOptions as $rValue => $rText): ?>
+											<option value="<?= $rValue ?>" <?= ($rSettings["keep_syslog"] ?? 0) == $rValue ? ' selected' : '' ?>>
+												<?= $rText ?>
+											</option>
+										<?php endforeach; ?>
+									</select>
+								</div>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -2984,7 +3088,7 @@ use XcVm\Domain\Server\ServerRepository;
 							?>
 							<?php foreach (array_filter([$language::get('versions') => $rVersions, $language::get('cluster') => $clusterInfo ?? null]) as $rTitle => $rRows): ?>
 							<h4 class="card-title mb-4"><?= htmlspecialchars((string) $rTitle, ENT_QUOTES); ?></h4>
-							<table class="table table-striped table-bordered">
+							<table class="table table-striped table-bordered mb-5">
 								<tbody>
 									<?php foreach (array_chunk($rRows, 2) as $rPair): ?>
 										<tr>
@@ -3015,7 +3119,6 @@ use XcVm\Domain\Server\ServerRepository;
 								</thead>
 
 								<tbody>
-									<?php $rFfmpegBuilds = FfmpegBinaries::available(); ?>
 									<?php if (empty($rFfmpegBuilds)): ?>
 										<tr>
 											<td colspan="4" class="text-center" style="font-size: 0.85rem;">N/A</td>
@@ -3024,7 +3127,7 @@ use XcVm\Domain\Server\ServerRepository;
 										<?php foreach ($rFfmpegBuilds as $rVer => $rInfo): ?>
 											<tr>
 												<td class="text-center" style="font-size: 0.85rem;">
-													<button type="button" class="btn btn-info btn-sm" style="font-size: 0.85rem;">v<?= htmlspecialchars($rVer) ?></button>
+													<button type="button" class="btn btn-info btn-sm" style="font-size: 0.85rem;"><?= htmlspecialchars($rFfmpegLabels[$rVer]) ?></button>
 												</td>
 												<td class="text-center" style="font-size: 0.8rem;"><?= htmlspecialchars($rInfo['banner']) ?></td>
 												<td class="text-center">
@@ -3203,7 +3306,7 @@ LayoutRenderer::renderFooter('admin');
 		}
 
 		// numeric-only inputs
-		['log_clear', 'on_demand_instant_off_grace', 'vod_bitrate_plus', 'vod_limit_perc', 'user_auto_kick_hours', 'flood_limit', 'flood_seconds', 'auth_flood_seconds', 'auth_flood_limit', 'auth_flood_sleep', 'bruteforce_mac_attempts', 'bruteforce_username_attempts', 'bruteforce_frequency', 'login_flood', 'client_prebuffer', 'restreamer_prebuffer', 'fanout_hls_window', 'fanout_grace_sec', 'fanout_write_timeout_sec', 'fanout_chunk_bytes', 'fanout_max_gop_bytes', 'fanout_default_prebuffer_sec', 'fanout_idle_buffer_grace_sec', 'read_buffer_size', 'stream_max_analyze', 'probesize', 'stream_start_delay', 'online_capacity_interval', 'on_demand_wait_time', 'seg_time', 'stream_fail_sleep', 'probe_extra_wait', 'seg_list_size', 'cpu_limit', 'mem_limit', 'playback_limit', 'connection_loop_per', 'connection_loop_count', 'max_simultaneous_downloads', 'cache_playlists', 'seg_delete_threshold', 'fails_per_time', 'create_expiration', 'max_encode_movies', 'max_encode_cc', 'queue_loop', 'player_blur', 'player_opacity', 'disallow_2nd_ip_max', 'probesize_ondemand', 'segment_wait_time', 'on_demand_scan_time', 'on_demand_max_probe', 'on_demand_scan_keep', 'stop_failures', 'mysql_sleep_kill', 'threshold_cpu', 'threshold_mem', 'threshold_disk', 'threshold_network', 'threshold_clients'].forEach(function(id) {
+		['log_clear', 'on_demand_instant_off_grace', 'vod_bitrate_plus', 'vod_limit_perc', 'user_auto_kick_hours', 'flood_limit', 'flood_seconds', 'auth_flood_seconds', 'auth_flood_limit', 'auth_flood_sleep', 'bruteforce_mac_attempts', 'bruteforce_username_attempts', 'bruteforce_frequency', 'login_flood', 'client_prebuffer', 'restreamer_prebuffer', 'fanout_hls_window', 'fanout_grace_sec', 'fanout_write_timeout_sec', 'fanout_chunk_bytes', 'fanout_max_gop_bytes', 'fanout_default_prebuffer_sec', 'fanout_idle_buffer_grace_sec', 'read_buffer_size', 'stream_max_analyze', 'probesize', 'stream_start_delay', 'online_capacity_interval', 'on_demand_wait_time', 'seg_time', 'stream_fail_sleep', 'probe_extra_wait', 'seg_list_size', 'cpu_limit', 'mem_limit', 'playback_limit', 'connection_loop_per', 'connection_loop_count', 'max_simultaneous_downloads', 'cache_playlists', 'seg_delete_threshold', 'fails_per_time', 'create_expiration', 'max_encode_movies', 'max_encode_cc', 'queue_loop', 'player_blur', 'player_opacity', 'disallow_2nd_ip_max', 'probesize_ondemand', 'segment_wait_time', 'on_demand_scan_time', 'on_demand_max_probe', 'on_demand_scan_keep', 'stop_failures', 'mysql_sleep_kill'].forEach(function(id) {
 			var el = document.getElementById(id);
 			if (el) {
 				el.addEventListener('input', function() {
@@ -3281,6 +3384,22 @@ LayoutRenderer::renderFooter('admin');
 		}
 
 		// Address helpers (crypto-donation table on the Info tab).
+		// Metrics Token: 40 hexadecimal digits from the browser's cryptographic source.
+		(function() {
+			var field = document.getElementById('metrics_token');
+			if (!field) {
+				return;
+			}
+			document.getElementById('metrics-token-new').addEventListener('click', function() {
+				field.value = Array.from(crypto.getRandomValues(new Uint8Array(20)), function(b) {
+					return ('0' + b.toString(16)).slice(-2);
+				}).join('');
+			});
+			document.getElementById('metrics-token-clear').addEventListener('click', function() {
+				field.value = '';
+			});
+		})();
+
 		window.showQR = function(btnEl) {
 			var row = btnEl.closest('tr');
 			var addrCell = row ? row.querySelector('td.text-monospace') : null;

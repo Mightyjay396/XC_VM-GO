@@ -11,6 +11,7 @@
  * the list.
  */
 
+use XcVm\Core\Auth\TwoFactor;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\User\GroupService;
 use XcVm\Domain\User\UserRepository;
@@ -19,6 +20,9 @@ use XcVm\Core\Util\LayoutRenderer;
 $rIsEdit    = (bool) ($rUser ?? null);
 $rOverrides = ($rIsEdit && !empty($rUser['override_packages'])) ? (json_decode((string) $rUser['override_packages'], true) ?: []) : [];
 $rMinPwLen  = max(10, (int) ($rPermissions['minimum_password_length'] ?? 10));
+// An administrator group is given out by a full administrator: the others are
+// offered the groups a save takes from them (and the one the user is in).
+$rReserved  = GroupService::reservedGroups();
 ?>
 
 <?php if (!isset($_GET['modal'])): ?>
@@ -31,6 +35,8 @@ $rMinPwLen  = max(10, (int) ($rPermissions['minimum_password_length'] ?? 10));
 <form id="user-form" autocomplete="off">
     <?php if ($rIsEdit): ?>
         <input type="hidden" name="edit" value="<?= (int) $rUser['id']; ?>">
+        <input type="hidden" name="credits_shown" value="<?= htmlspecialchars((string) $rUser['credits'], ENT_QUOTES); ?>">
+        <input type="hidden" name="bouquet_limit_revision" value="<?= \XcVm\Domain\Bouquet\ResellerBouquetPolicy::allowanceRevision($rUser); ?>">
     <?php endif; ?>
 
     <div class="card mb-6">
@@ -63,6 +69,9 @@ $rMinPwLen  = max(10, (int) ($rPermissions['minimum_password_length'] ?? 10));
                             <label class="form-label" for="member_group_id"><?= $language::get('member_group'); ?></label>
                             <select name="member_group_id" id="member_group_id" class="form-select">
                                 <?php foreach (GroupService::getAll() as $rGroup): ?>
+                                    <?php if (in_array((int) $rGroup['group_id'], $rReserved) && !($rIsEdit && (int) $rUser['member_group_id'] === (int) $rGroup['group_id'])) {
+                                        continue;
+                                    } ?>
                                     <option value="<?= (int) $rGroup['group_id']; ?>" <?= ($rIsEdit && (int) $rUser['member_group_id'] === (int) $rGroup['group_id']) ? 'selected' : ''; ?>><?= htmlspecialchars((string) $rGroup['group_name'], ENT_QUOTES); ?></option>
                                 <?php endforeach; ?>
                             </select>
@@ -107,10 +116,33 @@ $rMinPwLen  = max(10, (int) ($rPermissions['minimum_password_length'] ?? 10));
                         <input type="text" class="form-control" id="reseller_dns" name="reseller_dns" value="<?= $rIsEdit ? htmlspecialchars((string) $rUser['reseller_dns'], ENT_QUOTES) : ''; ?>">
                     </div>
 
+                    <div class="mb-6">
+                        <?php $allowedBouquets = \XcVm\Domain\Bouquet\ResellerBouquetPolicy::allowed($rUser ?? []); ?>
+                        <label class="form-label" for="bouquet_limit_enabled">Reseller bouquet access</label>
+                        <select class="form-select mb-3" name="bouquet_limit_enabled" id="bouquet_limit_enabled">
+                            <option value="0" <?= $allowedBouquets === null ? 'selected' : ''; ?>>All package bouquets</option>
+                            <option value="1" <?= $allowedBouquets !== null ? 'selected' : ''; ?>>Only selected bouquets</option>
+                        </select>
+                        <select class="form-select" name="allowed_bouquets[]" id="allowed_bouquets" multiple size="8" aria-label="Allowed bouquets">
+                            <?php foreach (\XcVm\Domain\Bouquet\BouquetService::getAll() ?: [] as $bouquet): ?>
+                                <option value="<?= (int) $bouquet['id']; ?>" <?= in_array((int) $bouquet['id'], $allowedBouquets ?? [], true) ? 'selected' : ''; ?>>#<?= (int) $bouquet['id']; ?> — <?= htmlspecialchars((string) $bouquet['bouquet_name'], ENT_QUOTES); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <div class="form-text">Packages still define the default bouquets for Create Line and Generate Trial. This limit applies to new customers and the next save of existing customers. An empty restricted selection allows no bouquets.</div>
+                    </div>
+
                     <div>
                         <label class="form-label" for="notes"><?= $language::get('notes'); ?></label>
                         <textarea id="notes" name="notes" class="form-control" rows="3"><?= $rIsEdit ? htmlspecialchars((string) $rUser['notes'], ENT_QUOTES) : ''; ?></textarea>
                     </div>
+
+                    <?php if ($rIsEdit && TwoFactor::of((int) $rUser['id']) !== null): ?>
+                        <div class="form-check form-switch mt-6">
+                            <?php // For an account that lost its authenticator app and recovery codes. ?>
+                            <input class="form-check-input" type="checkbox" id="reset_2fa" name="reset_2fa" value="1">
+                            <label class="form-check-label" for="reset_2fa"><?= $language::get('twofactor_reset'); ?></label>
+                        </div>
+                    <?php endif; ?>
                 </div>
 
                 <?php if ($rIsEdit): ?>

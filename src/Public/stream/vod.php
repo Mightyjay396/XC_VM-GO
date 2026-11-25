@@ -4,6 +4,7 @@ use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Cache\CacheReader;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -26,26 +27,6 @@ use XcVm\Streaming\Lifecycle\ShutdownHandler;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-
-// ─── Go xc_ts_server integration (ADR-GO) ────────────────────────────
-// For VOD, PHP always handles auth and enforcement first. If the Go
-// server is running, PHP hands off file delivery to Go via X-Accel-Redirect
-// (Go provides efficient Range/seek support). If Go is not running,
-// PHP falls back to its own file delivery.
-function goTsServerAvailable(): bool {
-	static $available = null;
-	if ($available === null) {
-		$pidFile = '/home/xc_vm/bin/xc_ts_server/ts_server.pid';
-		if (!file_exists($pidFile)) {
-			$available = false;
-		} else {
-			$pid = intval(file_get_contents($pidFile));
-			$available = ($pid > 0 && file_exists("/proc/{$pid}"));
-		}
-	}
-	return $available;
-}
-
 set_time_limit(0);
 register_shutdown_function([ShutdownHandler::class, 'handle'], 'vod');
 unset($rSettings['watchdog_data'], $rSettings['server_hardware']);
@@ -62,7 +43,8 @@ $rCloseCon = false;
 $rPID = getmypid();
 $rIsMag = false;
 
-if (isset($rRequest['token'])) {
+// A link is one plain value: a request that sends a list of them has none.
+if (isset($rRequest['token']) && !is_array($rRequest['token'])) {
 	$rTokenData = StreamAuthMiddleware::decryptToken($rRequest['token'], $rSettings, $rServers, $rIP);
 
 	if (isset($rTokenData['hmac_id'])) {
@@ -122,31 +104,52 @@ if ($rChannelInfo) {
 		$rProxyID = null;
 	}
 
-	if ($rSettings['redis_handler']) {
-		RedisManager::ensureConnected();
-	} else {
-		DatabaseFactory::connectLazy();
-	}
+	ConnectionTracker::openStore($rSettings);
 
 	// A player's HTTP Range request may come without the uuid: match it on the
-	// line (or HMAC key), container, agent and stream instead (table path).
+	// line (or HMAC key), container, agent, stream and address instead (table
+	// path). The address, so the line's other device is not taken for this one;
+	// where ip_subnet_match makes an IPv4 subnet one viewer the match leaves it
+	// out, and the row it finds is checked below. Not where the daemon serves
+	// the file: it counts the viewer under the uuid it is handed, so the request
+	// keeps a row of its own under it, and fanout_sync closes the earlier one
+	// once its viewer has left.
 	$rRangeMatch = [];
-	if (!empty($_SERVER['HTTP_RANGE'])) {
+	if (!empty($_SERVER['HTTP_RANGE']) && !$rFileDaemon) {
 		$rRangeMatch = (!isset($rIsHMAC) && is_null($rIsHMAC)) ? ['user_id' => $rUserInfo['id']] : ['hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
-		$rRangeMatch += ['container' => 'VOD', 'user_agent' => $rUserAgent, 'stream_id' => $rStreamID];
+		$rRangeMatch += ['container' => 'VOD', 'user_agent' => $rUserAgent, 'stream_id' => $rStreamID] + (($rSettings['ip_subnet_match'] && strpos($rIP, ':') === false) ? [] : ['user_ip' => $rIP]);
 	}
-	$rConnection = ConnectionTracker::findByUuid($rSettings, $rTokenData['uuid'], '`server_id`, `activity_id`, `pid`, `user_ip`', $rRangeMatch);
+	// The line's limit is checked under the link's own uuid, as its newest
+	// request's, whichever row the request goes on to keep.
+	$rLinkUUID = $rTokenData['uuid'];
+	$rConnection = ConnectionTracker::findByUuid($rSettings, $rTokenData['uuid'], '`server_id`, `activity_id`, `pid`, `user_ip`, `uuid`, `hls_end`', $rRangeMatch);
+	if ($rConnection !== null) {
+		$rIPMatch = NetworkUtils::ipMatches((bool) $rSettings['ip_subnet_match'], $rConnection['user_ip'], $rIP);
+
+		// A row found by that match, not by this link's uuid, at an address that
+		// is not this viewer's is the line's other device: no match.
+		if (!$rIPMatch && (string) ($rConnection['uuid'] ?? $rTokenData['uuid']) !== (string) $rTokenData['uuid']) {
+			$rConnection = null;
+		} elseif (!$rFileDaemon && !empty($rConnection['uuid'])) {
+			// The row it keeps is its connection: a worker that serves the file
+			// checks in and ends under the row's uuid, whichever link found it.
+			// Two requests of one viewer at once share the row: the one that
+			// joined last ends it, and the earlier worker stops at its next
+			// check-in.
+			$rTokenData['uuid'] = $rConnection['uuid'];
+		}
+	}
 	if ($rConnection === null) {
 		unset($rConnection);
 	}
 
 	if (!isset($rConnection)) {
-		if (file_exists(CONS_TMP_PATH . $rTokenData['uuid']) || ($rActivityStart + $rCreateExpiration) - intval($rServers[SERVER_ID]['time_offset']) >= time()) {
+		if (file_exists(CONS_TMP_PATH . $rTokenData['uuid']) || $rActivityStart + $rCreateExpiration >= StreamAuthMiddleware::mainNow($rServers)) {
 		} else {
 			generateError('TOKEN_EXPIRED');
 		}
 
-		$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset']);
+		$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0);
 		if (!isset($rIsHMAC) && is_null($rIsHMAC)) {
 			$rOwner = ['user_id' => $rUserInfo['id']];
 			$rIdentity = $rUserInfo['id'];
@@ -155,10 +158,8 @@ if ($rChannelInfo) {
 			$rIdentity = $rIsHMAC . '_' . $rIdentifier;
 		}
 		$rConnectionData = $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rConnPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => 0, 'identity' => $rIdentity, 'uuid' => $rTokenData['uuid']];
-		$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rConnPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset']));
+		$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rConnPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset'] ?? 0));
 	} else {
-		$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rConnection['user_ip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1)) : $rConnection['user_ip'] == $rIP);
-
 		if ($rIPMatch || !$rSettings['restrict_same_ip']) {
 		} else {
 			DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'IP_MISMATCH', $rIP);
@@ -176,7 +177,7 @@ if ($rChannelInfo) {
 			}
 		}
 
-		$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rConnPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])]);
+		$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rConnPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0)]);
 	}
 
 	if (!$rResult) {
@@ -185,7 +186,7 @@ if ($rChannelInfo) {
 		generateError('LINE_CREATE_FAIL');
 	}
 
-	StreamAuth::validateConnections($rUserInfo, $rIsHMAC, $rIdentifier, $rIP, $rUserAgent, $rTokenData['uuid']);
+	StreamAuth::validateConnections($rUserInfo, $rIsHMAC, $rIdentifier, $rIP, $rUserAgent, $rLinkUUID);
 
 	if ($rSettings['redis_handler']) {
 		RedisManager::closeInstance();
@@ -204,20 +205,6 @@ if ($rChannelInfo) {
 	}
 
 	touch(CONS_TMP_PATH . $rTokenData['uuid']);
-
-	// ─── Go xc_ts_server VOD handoff (ADR-GO) ───────────────────────
-	// When the Go server is running and this is a local (non-proxy) VOD
-	// file, hand off to Go via X-Accel-Redirect. Go serves the file with
-	// native HTTP Range support (206/416), proper Content-Type, and
-	// connection heartbeat. Falls back to PHP when Go is not available.
-	// Direct-proxy VOD (fetched from remote source) stays in PHP.
-	if (!$rDirectProxy && goTsServerAvailable() && file_exists($rRequest)) {
-		header("X-Accel-Redirect: /xc_vod_go/" . intval($rStreamID)
-			. "?uuid=" . rawurlencode($rTokenData['uuid'])
-			. "&ext=" . rawurlencode($rExtension));
-		exit();
-	}
-
 
 	if (!$rDirectProxy) {
 		$rConSpeedFile = DIVERGENCE_TMP_PATH . $rTokenData['uuid'];
@@ -240,6 +227,7 @@ if ($rChannelInfo) {
 		}
 
 		if (!file_exists($rRequest)) {
+			generateError('VOD_DOESNT_EXIST');
 		} else {
 			$rFP = @fopen($rRequest, 'rb');
 			$rSize = filesize($rRequest);
@@ -309,10 +297,7 @@ if ($rChannelInfo) {
 					$rConnection = null;
 					$rSettings = CacheReader::get('settings');
 
-					$rConnection = ConnectionTracker::heartbeat($rSettings, $rTokenData['uuid'], time() - intval($rServers[SERVER_ID]['time_offset']));
-
-					if (!(!is_array($rConnection) || $rConnection['hls_end'] != 0 || $rConnection['pid'] != $rPID)) {
-					} else {
+					if (!ConnectionTracker::checkIn($rSettings, $rTokenData['uuid'], time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0), $rPID, $rLastCheck)) {
 						exit();
 					}
 				}
@@ -417,4 +402,3 @@ if ($rChannelInfo) {
 } else {
 	generateError('TOKEN_ERROR');
 }
-

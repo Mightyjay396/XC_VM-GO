@@ -167,9 +167,9 @@ class ArchiveCommand implements CommandInterface {
 			// guarantees that ffmpeg has finished writing N.
 			if (!$rSegExists || !$rNextExists) {
 				$rWaitCount++;
-				// Check the playlist every ~3 s (300 iterations × 10 ms) to detect
+				// Check the playlist every ~3 s (60 iterations × 50 ms) to detect
 				// segment counter gaps caused by stream restarts or ffmpeg jumps.
-				if ($rWaitCount % 300 === 0) {
+				if ($rWaitCount % 60 === 0) {
 					$rFreshContent = @file_get_contents($rPlaylist);
 					preg_match_all('/_(\d+)\.ts/', ($rFreshContent ?: ''), $rFreshMatches);
 					$rFreshSeg = !empty($rFreshMatches[1]) ? (int) end($rFreshMatches[1]) : -1;
@@ -197,7 +197,9 @@ class ArchiveCommand implements CommandInterface {
 						}
 					}
 				}
-				usleep(10000);
+				// 50 ms: a segment is seconds long, and 10 ms was some 200 stat
+				// calls a second for every archived channel.
+				usleep(50000);
 				continue;
 			}
 
@@ -208,7 +210,14 @@ class ArchiveCommand implements CommandInterface {
 
 			// Stream the completed segment into the current archive minute file.
 			// A minute boundary check inside the inner loop triggers file rotation.
-			$rSegFP = fopen($rSegFile, 'r');
+			$rSegFP = @fopen($rSegFile, 'r');
+			if ($rSegFP === false) {
+				// Pruned between the check above and here: feof(false) is a
+				// TypeError that ends the archive. The next segment.
+				$this->logStatus('Segment #' . $rSegNum . ' is gone before it could be read. Skipping.');
+				$rSegNum++;
+				continue;
+			}
 			while (!feof($rSegFP)) {
 				// Rotate to a new archive minute file when the wall-clock minute changes.
 				if (gmdate('Y-m-d:H-i') != $rFileTime) {
@@ -291,17 +300,23 @@ class ArchiveCommand implements CommandInterface {
 	 * @param int $rDuration Maximum retention duration in days.
 	 */
 	private function deleteSegments(int $rStreamID, int $rDuration): void {
-		$rSegmentCount = intval(count(scandir(ARCHIVE_PATH . $rStreamID . '/')) - 2);
-		if ($rDuration * 24 * 60 < $rSegmentCount) {
-			$rDelta = $rSegmentCount - $rDuration * 24 * 60;
-			$this->logStatus('Segment limit exceeded, removing ' . $rDelta . ' old file(s).');
-			$rFiles = array_values(array_filter(explode("\n", shell_exec('ls -tr ' . ARCHIVE_PATH . intval($rStreamID) . " | sed -e 's/\\s\\+/\\n/g'"))));
-			for ($i = 0; $i < $rDelta; $i++) {
-				if (!empty($rFiles[$i])) {
-					unlink(ARCHIVE_PATH . $rStreamID . '/' . $rFiles[$i]);
-					$this->logStatus('Deleted old segment: ' . $rFiles[$i]);
-				}
-			}
+		$rDir = ARCHIVE_PATH . $rStreamID . '/';
+		// Count only the segment files, not their companion .offset index files,
+		// or retention keeps half the configured minutes (each minute = segment + .offset).
+		$rSegments = array_values(array_filter(scandir($rDir) ?: [], static function (string $rName) use ($rDir): bool {
+			return $rName !== '.' && $rName !== '..' && !str_ends_with($rName, '.offset') && is_file($rDir . $rName);
+		}));
+		$rLimit = $rDuration * 24 * 60;
+		if ($rLimit >= count($rSegments)) {
+			return;
+		}
+		usort($rSegments, static fn(string $rA, string $rB): int => filemtime($rDir . $rA) <=> filemtime($rDir . $rB));
+		$rDelta = count($rSegments) - $rLimit;
+		$this->logStatus('Segment limit exceeded, removing ' . $rDelta . ' old file(s).');
+		for ($i = 0; $i < $rDelta; $i++) {
+			@unlink($rDir . $rSegments[$i]);
+			@unlink($rDir . $rSegments[$i] . '.offset');
+			$this->logStatus('Deleted old segment: ' . $rSegments[$i]);
 		}
 	}
 

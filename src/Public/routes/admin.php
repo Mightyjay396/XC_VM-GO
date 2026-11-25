@@ -5,10 +5,13 @@ use XcVm\Public\Controllers\Admin\ActiveCodeDetailsController;
 use XcVm\Public\Controllers\Admin\ActiveCodesBatchController;
 use XcVm\Public\Controllers\Admin\ActiveCodesController;
 use XcVm\Public\Controllers\Admin\ActiveCodesMassController;
+use XcVm\Public\Controllers\Admin\AdminActionController;
 use XcVm\Public\Controllers\Admin\AdminLogoutController;
 use XcVm\Public\Controllers\Admin\AdminResizeController;
 use XcVm\Public\Controllers\Admin\Ajax\ActiveCodeAjaxController;
+use XcVm\Public\Controllers\Admin\Ajax\AlertAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\BackupAjaxController;
+use XcVm\Public\Controllers\Admin\Ajax\BackupTargetAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\BlocklistAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\CacheAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\CategoryTemplateAjaxController;
@@ -24,8 +27,10 @@ use XcVm\Public\Controllers\Admin\Ajax\ServerAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\StatsAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\StreamAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\StreamToolsAjaxController;
+use XcVm\Public\Controllers\Admin\Ajax\TranslationAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\UserAjaxController;
 use XcVm\Public\Controllers\Admin\AjaxController;
+use XcVm\Public\Controllers\Admin\AlertController;
 use XcVm\Public\Controllers\Admin\ArchiveController;
 use XcVm\Public\Controllers\Admin\AsnsController;
 use XcVm\Public\Controllers\Admin\BackupsController;
@@ -95,6 +100,8 @@ use XcVm\Public\Controllers\Admin\ProfileEditController;
 use XcVm\Public\Controllers\Admin\ProviderController;
 use XcVm\Public\Controllers\Admin\ProviderEditController;
 use XcVm\Public\Controllers\Admin\ProxiesController;
+use XcVm\Public\Controllers\Admin\SourceProxiesController; // srcproxy
+use XcVm\Public\Controllers\Admin\Ajax\SourceProxyAjaxController;
 use XcVm\Public\Controllers\Admin\ProxyController;
 use XcVm\Public\Controllers\Admin\QueueController;
 use XcVm\Public\Controllers\Admin\QuickToolsController;
@@ -135,6 +142,8 @@ use XcVm\Public\Controllers\Admin\TicketController;
 use XcVm\Public\Controllers\Admin\TicketsController;
 use XcVm\Public\Controllers\Admin\TicketViewController;
 use XcVm\Public\Controllers\Admin\TmdbController;
+use XcVm\Public\Controllers\Admin\TranslationsController;
+use XcVm\Public\Controllers\Admin\ReportIssueController;
 use XcVm\Public\Controllers\Admin\UseragentController;
 use XcVm\Public\Controllers\Admin\UseragentsController;
 use XcVm\Public\Controllers\Admin\UserController;
@@ -189,6 +198,8 @@ $router->get('bouquet_sort', [BouquetSortController::class, 'index']);
 // ─── Simple Listings ───────────────────────────────
 
 $router->get('login_logs', [LoginLogController::class, 'index']);
+$router->get('admin_actions', [AdminActionController::class, 'index']);
+$router->get('alerts', [AlertController::class, 'index']);
 $router->get('mysql_syslog', [MysqlSyslogController::class, 'index']);
 $router->get('mag_events', [MagEventController::class, 'index']);
 $router->get('restream_logs', [RestreamLogController::class, 'index']);
@@ -206,8 +217,10 @@ $router->get('server_install', [ServerInstallController::class, 'index']);
 // ─── Settings ──────────────────────────────────────
 
 $router->get('settings', [SettingsController::class, 'index']);
-$router->any('modules', [ModulesController::class, 'index']);
-$router->get('magscan_settings', [MagscanSettingsController::class, 'index']);
+$router->get('modules', [ModulesController::class, 'index']);
+$router->any('magscan_settings', [MagscanSettingsController::class, 'index']);
+$router->get('translations', [TranslationsController::class, 'index']);
+$router->get('report_issue', [ReportIssueController::class, 'index']);
 
 // ─── Lines ─────────────────────────────────────────
 
@@ -312,6 +325,10 @@ $router->get('credit_logs', [CreditLogsController::class, 'index']);
 $router->get('edit_profile', [EditProfileController::class, 'index']);
 $router->get('fingerprint', [FingerprintController::class, 'index']);
 $router->get('proxies', [ProxiesController::class, 'index']);
+$router->get('source_proxies', [SourceProxiesController::class, 'index']);
+$router->api('source_proxy_save', [SourceProxyAjaxController::class, 'save']);
+$router->api('source_proxy_delete', [SourceProxyAjaxController::class, 'delete']);
+$router->api('source_proxy_test', [SourceProxyAjaxController::class, 'test']);
 $router->any('proxy', [ProxyController::class, 'index']);
 $router->any('review', [ReviewController::class, 'index']);
 $router->any('archive', [ArchiveController::class, 'index']);
@@ -356,6 +373,10 @@ $router->api('install_status', [ServerAjaxController::class, 'installStatus']);
 $router->api('reinstall_server', [ServerAjaxController::class, 'reinstallServer']);
 $router->api('fpm_status', [ServerAjaxController::class, 'fpmStatus']);
 $router->api('update_all_servers', [ServerAjaxController::class, 'updateAllServers']);
+$router->api('rolling_update_start', [ServerAjaxController::class, 'rollingUpdateStart']);
+$router->api('rolling_update_cancel', [ServerAjaxController::class, 'rollingUpdateCancel']);
+$router->api('rolling_update_status', [ServerAjaxController::class, 'rollingUpdateStatus']);
+$router->api('placement_advice', [ServerAjaxController::class, 'placementAdvice']);
 $router->api('update_all_binaries', [ServerAjaxController::class, 'updateAllBinaries']);
 
 // ─── Blocklists & Security ─────────────────────────
@@ -377,6 +398,7 @@ $router->api('send_event', [DeviceAjaxController::class, 'sendEvent']);
 $router->api('epg', [EpgAjaxController::class, 'epg']);
 $router->api('epglist', [EpgAjaxController::class, 'epglist']);
 $router->api('force_epg', [EpgAjaxController::class, 'forceEpg']);
+$router->api('epg_search', [EpgAjaxController::class, 'epgSearch']);
 $router->api('epg_auto_assign', [EpgAjaxController::class, 'epgAutoAssign']);
 $router->api('epg_categories', [EpgAjaxController::class, 'epgCategories']);
 $router->api('provider_import_epg', [EpgAjaxController::class, 'providerImportEpg']);
@@ -412,9 +434,28 @@ $router->api('category_template_get', [CategoryTemplateAjaxController::class, 'g
 $router->api('graph_stats', [StatsAjaxController::class, 'graphStats']);
 $router->api('stats', [StatsAjaxController::class, 'stats']);
 $router->api('header_stats', [StatsAjaxController::class, 'headerStats']);
+$router->api('stream_events', [StatsAjaxController::class, 'streamEvents']);
 $router->api('save_ui_prefs', [StatsAjaxController::class, 'saveUiPrefs']);
 
 // ─── Backups, Logs & Reports ───────────────────────
+// Alerts (Domain\\Alert): channels and rules.
+$router->api('alert_channel_save', [AlertAjaxController::class, 'saveChannel']);
+$router->api('alert_channel_delete', [AlertAjaxController::class, 'deleteChannel']);
+$router->api('alert_channel_test', [AlertAjaxController::class, 'testChannel']);
+$router->api('alert_rules_save', [AlertAjaxController::class, 'saveRules']);
+
+// Translations (Core\\Localization\\TranslationStore): the editor's keys and save, the upload.
+$router->api('translation_keys', [TranslationAjaxController::class, 'keys']);
+$router->api('translation_save', [TranslationAjaxController::class, 'save']);
+$router->api('translation_upload', [TranslationAjaxController::class, 'upload']);
+
+// Off-site backups (Domain\\Backup): targets, recovery bundle, restore test.
+$router->api('backup_target_save', [BackupTargetAjaxController::class, 'save']);
+$router->api('backup_target_delete', [BackupTargetAjaxController::class, 'delete']);
+$router->api('backup_target_test', [BackupTargetAjaxController::class, 'test']);
+$router->api('backup_bundle_passphrase', [BackupTargetAjaxController::class, 'passphrase']);
+$router->api('backup_verify_now', [BackupTargetAjaxController::class, 'verifyNow']);
+
 $router->api('clear_logs', [BackupAjaxController::class, 'clearLogs']);
 $router->api('backup', [BackupAjaxController::class, 'backup']);
 $router->api('report', [BackupAjaxController::class, 'report']);
@@ -444,6 +485,9 @@ $router->api('save_activation_key', [MiscAjaxController::class, 'saveActivationK
 // ─── Users & Lines ─────────────────────────────────
 $router->api('line', [UserAjaxController::class, 'line']);
 $router->api('module', [ModuleAjaxController::class, 'module']);
+$router->api('module_status', [ModuleAjaxController::class, 'status']);
+$router->api('module_upload', [ModuleAjaxController::class, 'upload']);
+$router->api('module_store', [ModuleAjaxController::class, 'store']);
 $router->api('line_activity', [UserAjaxController::class, 'lineActivity']);
 $router->api('adjust_credits', [UserAjaxController::class, 'adjustCredits']);
 $router->api('reg_user', [UserAjaxController::class, 'regUser']);

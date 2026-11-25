@@ -48,6 +48,29 @@ class LineService {
 	}
 
 	/**
+	 * The expiry a mass edit sets (lines, MAG and Enigma devices): null for
+	 * "no expiry", a Unix time for a date, and false to leave each line's own.
+	 * False for the box ticked with no date, or with one that is not a date:
+	 * `new DateTime('')` is now, and every selected line expired at once.
+	 *
+	 * @param array<string, mixed> $rData The form: `exp_date`, `no_expire`.
+	 */
+	public static function massExpiry(array $rData): string|false|null {
+		if (isset($rData['no_expire'])) {
+			return null;
+		}
+		$rDate = trim((string) ($rData['exp_date'] ?? ''));
+		if ($rDate === '') {
+			return false;
+		}
+		try {
+			return (new \DateTime($rDate))->format('U');
+		} catch (\Exception) {
+			return false;
+		}
+	}
+
+	/**
 	 * Apply bulk edits to selected lines.
 	 *
 	 * @param array $rData Selected ids plus the fields/values to apply.
@@ -93,14 +116,9 @@ class LineService {
 			}
 
 			if (isset($rData['c_exp_date'])) {
-				if (isset($rData['no_expire'])) {
-					$rArray['exp_date'] = null;
-				} else {
-					try {
-						$rDate = new \DateTime($rData['exp_date']);
-						$rArray['exp_date'] = $rDate->format('U');
-					} catch (\Exception $e) {
-					}
+				$rExpiry = self::massExpiry($rData);
+				if ($rExpiry !== false) {
+					$rArray['exp_date'] = $rExpiry;
 				}
 			}
 
@@ -121,6 +139,8 @@ class LineService {
 				}
 				$rArray['bouquet'] = AdminHelpers::sortArrayByArray($rArray['bouquet'], array_keys(BouquetService::getOrder()));
 				$rArray['bouquet'] = '[' . implode(',', array_map('intval', $rArray['bouquet'])) . ']';
+				// A bulk replacement deliberately returns all selected lines to global order.
+				$rArray['bouquet_order_custom'] = 0;
 			}
 
 			if (isset($rData['reset_isp_lock'])) {
@@ -157,9 +177,20 @@ class LineService {
 	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processLine', $rData)) {
+			$rLine = null;
+
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'edit_user')) {
-					$rArray = AdminHelpers::overwriteData(UserRepository::getLineById($rData['edit']), $rData);
+					// The edit starts from the line as stored: the row cleaner's
+					// escaping would be written back into every field not sent.
+					$db->query('SELECT * FROM `lines` WHERE `id` = ?;', intval($rData['edit']));
+					$rLine = $db->get_raw_row();
+					if (isset($rData['bouquet_order'], $rData['bouquet_order_revision'])
+						&& !hash_equals(\XcVm\Domain\Bouquet\ResellerBouquetPolicy::orderRevision($rLine ?? []), (string) $rData['bouquet_order_revision'])
+					) {
+						return ['status' => STATUS_INVALID_DATA, 'data' => $rData + ['bouquet_order_conflict' => true]];
+					}
+					$rArray = AdminHelpers::overwriteData($rLine, $rData);
 				} else {
 					exit();
 				}
@@ -181,10 +212,22 @@ class LineService {
 				$rArray['password'] = AdminHelpers::generateString(10);
 			}
 
+			// Neither holds the separator of the line's playback addresses; a
+			// line keeps the value it has until it is changed.
+			if (!self::credentialAllowed($rArray['username'], $rLine['username'] ?? null)) {
+				return ['status' => STATUS_INVALID_USERNAME, 'data' => $rData];
+			}
+
+			if (!self::credentialAllowed($rArray['password'], $rLine['password'] ?? null)) {
+				return ['status' => STATUS_INVALID_PASSWORD, 'data' => $rData];
+			}
+
+			// A new line starts at 1; an edit keeps the line's own value unless
+			// the request sends one (the form has no enabled or admin_enabled).
 			foreach (['max_connections', 'enabled', 'admin_enabled'] as $rSelection) {
 				if (isset($rData[$rSelection])) {
 					$rArray[$rSelection] = intval($rData[$rSelection]);
-				} else {
+				} elseif (!$rLine) {
 					$rArray[$rSelection] = 1;
 				}
 			}
@@ -218,7 +261,9 @@ class LineService {
 				$rArray['exp_date'] = null;
 			}
 
-			if (!$rArray['member_id']) {
+			// A new line without an owner is the saving user's; a line whose
+			// owner was deleted keeps none until the request names one.
+			if (!$rArray['member_id'] && !($rLine && is_null($rArray['member_id']))) {
 				$rArray['member_id'] = $GLOBALS['rAdminUserInfo']['id'];
 			}
 
@@ -253,6 +298,15 @@ class LineService {
 			$rArray['allowed_outputs'] = '[' . implode(',', array_map('intval', $rOutputs)) . ']';
 
 			$rArray = \XcVm\Domain\Stream\CategoryTemplateService::applyCustomData($rData, $rArray);
+			$rArray = \XcVm\Domain\Bouquet\ResellerBouquetPolicy::preserveOrder($rArray, $rLine ?? []);
+			$rArray = \XcVm\Domain\Bouquet\ResellerBouquetPolicy::constrainOwner($rArray, $db);
+			if (array_key_exists('bouquet_order', $rData)) {
+				$rArray['bouquet'] = json_encode(\XcVm\Domain\Bouquet\ResellerBouquetPolicy::order(
+					\XcVm\Domain\Bouquet\ResellerBouquetPolicy::ids($rArray['bouquet']),
+					$rData['bouquet_order']
+				), JSON_THROW_ON_ERROR);
+				$rArray['bouquet_order_custom'] = 1;
+			}
 
 			$rEditID = (isset($rData['edit']) ? intval($rData['edit']) : null);
 
@@ -275,6 +329,21 @@ class LineService {
 			return ['status' => STATUS_EXISTS_USERNAME, 'data' => $rData];
 		}
 		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+	}
+
+	/**
+	 * Whether a line may be given this username or password. Each is one
+	 * segment of the line's playback addresses (/live/<username>/<password>/<id>)
+	 * and of the play tokens built from them, so neither is set to a value that
+	 * holds the character that separates the segments. A line keeps the value
+	 * it has until that value is changed.
+	 *
+	 * @param mixed $rValue  The username or password to store.
+	 * @param mixed $rStored The one the line has now; null for a new line.
+	 * @return bool False when the value is refused.
+	 */
+	public static function credentialAllowed(mixed $rValue, mixed $rStored = null): bool {
+		return !str_contains((string) $rValue, '/') || (string) $rValue === (string) $rStored;
 	}
 
 	/**
@@ -332,6 +401,20 @@ class LineService {
 			SignalDispatcher::cache(intval($rMainID), ['type' => 'update_lines', 'id' => $rUserIDs], true, false, $db);
 			return;
 		}
+	}
+
+	/** Refresh bulk-edited lines on the next read without loading the whole cache listing into memory. */
+	public static function invalidateCachedLines(string $rPath = LINES_TMP_PATH): void {
+		$rDirectory = @opendir($rPath);
+		if ($rDirectory === false) {
+			return;
+		}
+		while (($rFile = readdir($rDirectory)) !== false) {
+			if (str_starts_with($rFile, 'line_i_')) {
+				@unlink($rPath . $rFile);
+			}
+		}
+		closedir($rDirectory);
 	}
 
 	/**
@@ -449,10 +532,14 @@ class LineService {
 	/**
 	 * Check whether a user may still generate trial lines.
 	 *
-	 * @param int $rUserID User id.
+	 * The group's allowance is for one period (a day or a month) and counts the
+	 * trials the user holds: a trial is held by the reseller that made it.
+	 *
+	 * @param int $rUserID   User id.
+	 * @param int $rQuantity Trials about to be generated.
 	 * @return bool True if trial generation is allowed.
 	 */
-	public static function canGenerateTrials(int $rUserID) {
+	public static function canGenerateTrials(int $rUserID, int $rQuantity = 1) {
 		$db = self::db();
 		global $rSettings;
 		$rUser = UserRepository::getRegisteredUserById($rUserID);
@@ -475,13 +562,40 @@ class LineService {
 		$rTotalIn = $rPermissions['total_allowed_gen_in'];
 
 		if ($rTotalIn == 'hours') {
-			$rTime = time() - intval($rTotal) * 3600;
+			$rTime = time() - 3600;
+		} elseif ($rTotalIn == 'month') {
+			$rTime = strtotime('-1 month');
 		} else {
-			$rTime = time() - intval($rTotal) * 3600 * 24;
+			$rTime = time() - 3600 * 24;
 		}
 
 		$db->query('SELECT COUNT(`id`) AS `count` FROM `lines` WHERE `member_id` = ? AND `created_at` >= ? AND `is_trial` = 1;', $rUser['id'], $rTime);
 
-		return $db->get_row()['count'] < $rTotal;
+		return $db->get_row()['count'] + $rQuantity <= $rTotal;
+	}
+
+	/**
+	 * Hold a user's trials for one request. A trial is counted against the
+	 * allowance (canGenerateTrials()) and stored afterwards, so of two requests
+	 * at once each would count before the other has stored: each takes the
+	 * user's trials before it counts and gives them back with unlockTrials()
+	 * after it stored. A request waits its turn for ten seconds, then goes on
+	 * without it; a connection that ends gives back what it held.
+	 *
+	 * @param int $rUserID User id.
+	 * @return void
+	 */
+	public static function lockTrials(int $rUserID) {
+		self::db()->query("SELECT GET_LOCK(CONCAT(DATABASE(), '.trials_', ?), 10);", $rUserID);
+	}
+
+	/**
+	 * Give a user's trials taken with lockTrials() back to its other requests.
+	 *
+	 * @param int $rUserID User id.
+	 * @return void
+	 */
+	public static function unlockTrials(int $rUserID) {
+		self::db()->query("SELECT RELEASE_LOCK(CONCAT(DATABASE(), '.trials_', ?));", $rUserID);
 	}
 }

@@ -142,12 +142,14 @@ LayoutRenderer::renderFooter('admin');
         var esc = function(s) {
             var d = document.createElement('div');
             d.textContent = (s == null ? '' : String(s));
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         };
         var isLocal = function(ip) {
             return !ip || ip === '127.0.0.1' || ip === '::1';
         };
         var canEdit = <?= $rCanEdit ? 'true' : 'false'; ?>;
+        // The groups whose members a full administrator manages: no row action is offered on them.
+        var reservedGroups = <?= json_encode(GroupService::reservedGroups()); ?>;
         var lang = {
             edit: <?= json_encode($language::get('edit')); ?>,
             adjust: <?= json_encode($language::get('adjust_credits')); ?>,
@@ -286,7 +288,7 @@ LayoutRenderer::renderFooter('admin');
                     searchable: false,
                     className: 'text-center',
                     render: function(d, t, row) {
-                        if (!canEdit) {
+                        if (!canEdit || reservedGroups.indexOf(Number(row.member_group_id)) !== -1) {
                             if (row.notes) {
                                 return '<i class="icon-base ti tabler-note text-primary" title="' + esc(row.notes) + '"></i>';
                             }

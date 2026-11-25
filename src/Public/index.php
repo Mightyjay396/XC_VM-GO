@@ -1,5 +1,7 @@
 <?php
 
+use XcVm\Core\Audit\AdminAudit;
+use XcVm\Core\Error\ErrorResponder;
 use XcVm\Core\Http\Router;
 use XcVm\Core\Module\ModuleLoader;
 use XcVm\Infrastructure\Bootstrap\ScopeBootstrapFactory;
@@ -9,7 +11,7 @@ use XcVm\Public\Controllers\Api\ActiveCodeApiController;
 use XcVm\Public\Controllers\Api\AdminApiController;
 use XcVm\Public\Controllers\Api\Enigma2ApiController;
 use XcVm\Public\Controllers\Api\EpgApiController;
-use XcVm\Public\Controllers\Api\InternalApiController;
+use XcVm\Public\Controllers\Api\MetricsController;
 use XcVm\Public\Controllers\Api\PlayerApiController;
 use XcVm\Public\Controllers\Api\PlaylistApiController;
 use XcVm\Public\Controllers\Api\ResellerRestApiController;
@@ -173,9 +175,11 @@ if (isset($rawScope) && $rawScope === 'api' && !empty($_SERVER['XC_API'])) {
 		'xplugin'    => [XPluginApiController::class,  'web'],
 		'epg'        => [EpgApiController::class,      'web'],
 		'playlist'     => [PlaylistApiController::class,     'web'],
-		'internal'     => [InternalApiController::class,     'web'],
 		'active_code'  => [ActiveCodeApiController::class,   'web'],
 		'active_codes' => [ActiveCodeApiController::class,   'web'],
+		// MAIN only: nginx routes them there, and the load balancer build has no controller.
+		'metrics'      => [MetricsController::class,         'web'],
+		'healthz'      => [MetricsController::class,         'web'],
 	];
 
 	if (!isset($rApiEndpoints[$rApiName])) {
@@ -184,7 +188,7 @@ if (isset($rawScope) && $rawScope === 'api' && !empty($_SERVER['XC_API'])) {
 	}
 
 	[$rControllerClass, $rBootstrapKind] = $rApiEndpoints[$rApiName];
-	$rFilename = ($rApiName === 'internal') ? 'api' : (in_array($rApiName, ['active_code', 'active_codes'], true) ? 'active_code' : $rApiName);
+	$rFilename = (in_array($rApiName, ['active_code', 'active_codes'], true) ? 'active_code' : $rApiName);
 
 	if ($rBootstrapKind === 'stream') {
 		StreamingRequestBootstrap::init($rFilename);
@@ -245,9 +249,7 @@ if (in_array($pageName, $noBootstrapPages, true)) {
 	if ($router->dispatch($pageName, $method)) {
 		exit;
 	}
-	http_response_code(404);
-	echo '404 Not Found';
-	exit;
+	ErrorResponder::emit(ErrorResponder::respondPage(404, '404 Not Found'));
 }
 
 // 7b. Bootstrap the request scope: session lifecycle → framework + user context.
@@ -302,6 +304,10 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 // dispatchApi must run BEFORE dispatch('api') because dispatch() exits inside AjaxController.
 if ($pageName === 'api' && !empty($_REQUEST['action'])) {
 	$action = $_REQUEST['action'];
+	// The admin action trail: a signed-in admin's Ajax action, unless it only reads.
+	if ($scope === 'admin' && isset($_SESSION['hash']) && !in_array($action, AdminAudit::PANEL_READS, true)) {
+		AdminAudit::start('panel', (string) $action, $GLOBALS['rUserInfo'] ?? ['id' => $_SESSION['hash']], $_REQUEST);
+	}
 	if ($router->dispatchApi($action)) {
 		exit;
 	}
@@ -311,7 +317,10 @@ if ($router->dispatch($pageName, $method)) {
 	exit;
 }
 
-// 11. 404
+// 11. 404: the error page for a browser asking for a page, else what it always was.
+if (ErrorResponder::wantsHtml()) {
+	ErrorResponder::emit(ErrorResponder::respondPage(404));
+}
 http_response_code(404);
 
 if (function_exists('generate404')) {

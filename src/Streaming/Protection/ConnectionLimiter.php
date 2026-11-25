@@ -2,10 +2,12 @@
 
 namespace XcVm\Streaming\Protection;
 
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Redis\RedisManager;
+use XcVm\Streaming\Lifecycle\ShutdownHandler;
 
 /**
  * ConnectionLimiter — connection limiter
@@ -42,7 +44,10 @@ class ConnectionLimiter {
 	 */
 	public static function closeConnections(?int $rUserID, int $rMaxConnections, ?int $rIsHMAC = null, string $rIdentifier = '', ?string $rIP = null, ?string $rUserAgent = null, ?string $rCurrentUUID = null) {
 		global $rSettings, $rServers, $db;
-		$redis = RedisManager::instance();
+		// Asked for only where the viewers are: with them in MySQL (the default)
+		// every viewer request still connected to Redis, authenticated and
+		// pinged it, from a load balancer over the network to MAIN.
+		$redis = $rSettings['redis_handler'] ? RedisManager::instance() : null;
 		if ($rSettings['redis_handler']) {
 			if (!$redis instanceof \Redis) {
 				return null;
@@ -180,7 +185,7 @@ class ConnectionLimiter {
 
 	public static function closeConnection($rActivityInfo) {
 		global $rSettings, $rServers, $db;
-		$redis = RedisManager::instance();
+		$redis = $rSettings['redis_handler'] ? RedisManager::instance() : null;
 		if (empty($rActivityInfo)) {
 			return false;
 		}
@@ -201,6 +206,11 @@ class ConnectionLimiter {
 
 		if (!is_array($rActivityInfo)) {
 			return false;
+		}
+		// Another node's viewer, closed by MAIN: before the store changes, so an
+		// upsert of it already on its way cannot open it again (ConnectionIngest).
+		if (($rActivityInfo['server_id'] ?? SERVER_ID) != SERVER_ID && class_exists(ClusterRoute::class)) {
+			ClusterRoute::tombstone(intval($rActivityInfo['server_id']), (string) ($rActivityInfo['uuid'] ?? ''), intval($rActivityInfo['date_start'] ?? 0), $rActivityInfo['retire_token'] ?? null);
 		}
 
 		if ($rActivityInfo['container'] == 'rtmp') {
@@ -263,15 +273,26 @@ class ConnectionLimiter {
 	}
 
 	/**
-	 * An RTMP client's play ended (nginx-rtmp's play_done): its connection is
-	 * removed and its activity written, in either store. In Redis the record is
+	 * An RTMP client's play ended (nginx-rtmp's play_done): on a node whose
+	 * agent holds the viewer it ends there (the agent tells MAIN); otherwise its
+	 * connection is removed and its activity written, in either store. In Redis the record is
 	 * named after the client id (rtmp.php: md5) and only this server's RTMP
 	 * record for that client is closed, as ended: the client is gone, so
 	 * nothing is dropped.
 	 */
 	public static function closeRTMP($rPID) {
-		global $db, $rSettings;
+		global $db, $rSettings, $rServers;
 		if (empty($rPID)) {
+			return false;
+		}
+
+		// A viewer this node's agent holds (CONNECTIONS on): it ends there, and
+		// the agent tells MAIN, as a worker's viewer ends (ShutdownHandler).
+		if (ShutdownHandler::closeInRegistry(ConnectionTracker::rtmpUuid($rPID), (int) $rPID, time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0))) {
+			return true;
+		}
+		// A node in mode 2 has no other store: its agent did not answer.
+		if (NodeRole::refusesConnects()) {
 			return false;
 		}
 

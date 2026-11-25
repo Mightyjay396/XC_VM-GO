@@ -28,6 +28,9 @@ class Database {
 	/** Last PDO error message (empty when the last query succeeded). */
 	protected $lastError = '';
 
+	/** SQLSTATE of the most recent failed query ('' when it succeeded); '40001' is a deadlock. */
+	protected string $lastErrorCode = '';
+
 	protected $dbuser;
 
 	protected $dbpassword;
@@ -37,6 +40,9 @@ class Database {
 	protected $dbhost;
 
 	protected $dbport;
+
+	/** The backup database (xc_vm_migrate), not the panel's: what a reconnect must return to. */
+	protected bool $migrate = false;
 
 	/**
 	 * Constructor - Initializes database connection
@@ -54,6 +60,7 @@ class Database {
 		$this->dbname = $db_name;
 		$this->dbhost = $this->normalizeHost($host);
 		$this->dbport = $db_port;
+		$this->migrate = (bool) $migrate;
 		$this->db_connect($migrate);
 	}
 
@@ -277,19 +284,20 @@ class Database {
 			$this->result = $this->dbh->prepare($query);
 			$this->result->execute($next_arg_list);
 		} catch (\Exception $e) {
-			$rDebugParts = explode('Sent SQL:', $this->debugString($this->result));
-			$actual_query = isset($rDebugParts[1]) ? trim(explode("\n", $rDebugParts[1])[0]) : '';
-
-			if (strlen($actual_query) == 0) {
-				$actual_query = $query;
-			}
-
 			// Keep the raw driver message so callers can surface the real cause
 			// of a failed write (e.g. LINE_CREATE_FAIL) even when FileLogger's
 			// noise filter drops the 'pdo' entry (duplicate entry / timeouts).
 			$this->lastError = $e->getMessage();
+			// SQLSTATE 40001 (serialization failure) is an InnoDB deadlock: the
+			// server rolled the whole transaction back, so the caller may retry.
+			$this->lastErrorCode = (string) $e->getCode();
 
-			FileLogger::log('pdo', $e->getMessage(), $actual_query, $e->getLine());
+			// The statement with its placeholders: bound values stay out of the log.
+			// So does what the server quotes of them in its message ("Incorrect
+			// integer value: 'x'", a syntax error's "near '... 'x''"): masked up to
+			// the last quote, as a quote inside the value is not escaped there.
+			// error() keeps the message whole for the caller.
+			FileLogger::log('pdo', (string) preg_replace("/\\b(value: |near )'.*'/s", "$1'?'", $e->getMessage()), $query, $e->getLine());
 
 			return false;
 		} finally {
@@ -301,6 +309,7 @@ class Database {
 		}
 
 		$this->lastError = '';
+		$this->lastErrorCode = '';
 		return true;
 	}
 
@@ -311,6 +320,15 @@ class Database {
 	 */
 	public function error(): string {
 		return $this->lastError;
+	}
+
+	/**
+	 * Whether the most recent failed query was an InnoDB deadlock (SQLSTATE
+	 * 40001, "Serialization failure"). The server rolls the whole transaction
+	 * back, so the caller may begin a fresh transaction and retry.
+	 */
+	public function wasDeadlock(): bool {
+		return $this->lastErrorCode === '40001';
 	}
 
 	/**

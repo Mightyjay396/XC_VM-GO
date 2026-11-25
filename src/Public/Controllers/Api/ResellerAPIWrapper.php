@@ -2,16 +2,21 @@
 
 namespace XcVm\Public\Controllers\Api;
 
+use XcVm\Core\Auth\ApiTokens;
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Device\EnigmaService;
 use XcVm\Domain\Device\MagService;
 use XcVm\Domain\Line\ActiveCodeService;
 use XcVm\Domain\Line\LineService;
 use XcVm\Domain\Line\PackageService;
-use XcVm\Domain\Server\ServerRepository;
+use XcVm\Domain\User\GroupService;
 use XcVm\Domain\User\ResellerAPI;
+use XcVm\Domain\User\UserCredits;
 use XcVm\Domain\User\UserRepository;
 use XcVm\Domain\User\UserService;
+use XcVm\Public\Controllers\Reseller\ResellerTableController;
 
 class ResellerAPIWrapper {
 	public static $db;
@@ -61,32 +66,35 @@ class ResellerAPIWrapper {
 	}
 
 	public static function TableAPI($rID, $rStart = 0, $rLimit = 10, $rData = [], $rShowColumns = [], $rHideColumns = []) {
-		$rTableAPI = 'http://127.0.0.1:' . ServerRepository::getAll()[SERVER_ID]['http_broadcast_port'] . '/' . trim(dirname($_SERVER['PHP_SELF']), '/') . '/table.php';
+		// This asked `<code>/table.php` on the broadcast port over HTTP. Under the
+		// front controller there is no such path (SCRIPT_NAME is /public/index.php
+		// for every access code), so the answer was always null. The table is
+		// rendered in this request instead, as AdminAPIWrapper::TableAPI() does:
+		// ResellerTableController::index() checks the key, echoes the JSON and exits.
 		$rData['api_key'] = self::$rKey;
 		$rData['id'] = $rID;
 		$rData['start'] = $rStart;
 		$rData['length'] = $rLimit;
 		$rData['show_columns'] = $rShowColumns;
 		$rData['hide_columns'] = $rHideColumns;
-		$ch = curl_init();
-		curl_setopt($ch, CURLOPT_URL, $rTableAPI);
-		curl_setopt($ch, CURLOPT_POST, 1);
-		curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($rData));
-		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-		curl_setopt($ch, CURLOPT_HTTPHEADER, ['X-Requested-With: xmlhttprequest']);
-		$rReturn = json_decode(curl_exec($ch), true);
-		curl_close($ch);
-		return $rReturn;
+		$rData['draw'] = 0;
+
+		RequestManager::set(array_merge(RequestManager::getAll(), $rData));
+		$_SERVER['HTTP_X_REQUESTED_WITH'] = 'xmlhttprequest';
+
+		(new ResellerTableController())->index();
+		return null; // not reached: the table echoes its answer and exits
 	}
 
 	public static function createSession() {
 		global $rUserInfo;
 		global $rPermissions;
-		self::$db->query('SELECT * FROM `users` LEFT JOIN `users_groups` ON `users_groups`.`group_id` = `users`.`member_group_id` WHERE `api_key` = ? AND LENGTH(`api_key`) > 0 AND `is_reseller` = 1 AND `status` = 1;', self::$rKey);
-		if (0 >= self::$db->num_rows()) {
+		// A token or a legacy key (ApiTokens): a token's scope then narrows what it runs.
+		$rUserID = ApiTokens::userFor((string) self::$rKey, (string) NetworkUtils::getUserIP(), 'reseller');
+		if ($rUserID === null) {
 			return false;
 		}
-		ResellerAPI::init(self::$db->get_row()['id']);
+		ResellerAPI::init($rUserID);
 		unset(ResellerAPI::$rUserInfo['password']);
 		$rUserInfo = ResellerAPI::$rUserInfo;
 		$rPermissions = ResellerAPI::$rPermissions;
@@ -114,10 +122,15 @@ class ResellerAPIWrapper {
 		$rPackages = [];
 		$rOverride = json_decode($rUserInfo['override_packages'], true);
 		foreach (PackageService::getAll($rUserInfo['member_group_id']) as $rPackage) {
+			// A package that neither sells subscriptions nor gives trials sells
+			// a reseller nothing.
+			if (!$rPackage['is_official'] && !$rPackage['is_trial']) {
+				continue;
+			}
 			if (isset($rOverride[$rPackage['id']]['official_credits']) && (string) $rOverride[$rPackage['id']]['official_credits'] !== '') {
-				$rPackage['official_credits'] = intval($rOverride[$rPackage['id']]['official_credits']);
+				$rPackage['official_credits'] = ResellerAPI::amount($rOverride[$rPackage['id']]['official_credits']);
 			} else {
-				$rPackage['official_credits'] = intval($rPackage['official_credits']);
+				$rPackage['official_credits'] = ResellerAPI::amount($rPackage['official_credits']);
 			}
 			$rPackages[] = $rPackage;
 		}
@@ -158,7 +171,11 @@ class ResellerAPIWrapper {
 	}
 
 	public static function deleteLine($rID) {
-		if (UserRepository::getLineById($rID)) {
+		// The group permission the panel asks for (Reseller\Ajax\LineAjaxController::line).
+		if (!Authorization::hasResellerPermissions('create_line')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		if (UserRepository::getLineById($rID) && Authorization::check('line', $rID)) {
 			if (LineService::deleteLineById($rID)) {
 				return ['status' => 'STATUS_SUCCESS'];
 			}
@@ -167,18 +184,30 @@ class ResellerAPIWrapper {
 	}
 
 	public static function disableLine($rID) {
-		if (!UserRepository::getLineById($rID)) {
+		// The group permission the panel asks for (Reseller\Ajax\LineAjaxController::line).
+		if (!Authorization::hasResellerPermissions('create_line')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		if (!UserRepository::getLineById($rID) || !Authorization::check('line', $rID)) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rID);
+		LineService::updateLineSignal(intval($rID));
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
 	public static function enableLine($rID) {
-		if (!UserRepository::getLineById($rID)) {
+		// The group permission the panel asks for (Reseller\Ajax\LineAjaxController::line).
+		if (!Authorization::hasResellerPermissions('create_line')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		$rLine = UserRepository::getLineById($rID);
+		// A line that waits for its activation code is switched on by redeeming the code.
+		if (!$rLine || !Authorization::check('line', $rID) || ActiveCodeService::lineAwaitsRedemption($rLine)) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rID);
+		LineService::updateLineSignal(intval($rID));
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -218,7 +247,11 @@ class ResellerAPIWrapper {
 	}
 
 	public static function deleteMAG($rID) {
-		if (MagService::getById($rID)) {
+		// The group permission the panel asks for (Reseller\Ajax\DeviceAjaxController::mag).
+		if (!Authorization::hasResellerPermissions('create_mag')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		if (($rDevice = MagService::getById($rID)) && Authorization::check('line', $rDevice['user_id'])) {
 			if (MagService::deleteDevice($rID)) {
 				return ['status' => 'STATUS_SUCCESS'];
 			}
@@ -227,24 +260,39 @@ class ResellerAPIWrapper {
 	}
 
 	public static function disableMAG($rID) {
-		if (!($rDevice = MagService::getById($rID))) {
+		// The group permission the panel asks for (Reseller\Ajax\DeviceAjaxController::mag).
+		if (!Authorization::hasResellerPermissions('create_mag')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		if (!($rDevice = MagService::getById($rID)) || !Authorization::check('line', $rDevice['user_id'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
+		LineService::updateLineSignal($rDevice['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
 	public static function enableMAG($rID) {
-		if (!($rDevice = MagService::getById($rID))) {
+		// The group permission the panel asks for (Reseller\Ajax\DeviceAjaxController::mag).
+		if (!Authorization::hasResellerPermissions('create_mag')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		// A line that waits for an activation code is switched on by redeeming the code.
+		if (!($rDevice = MagService::getById($rID)) || !Authorization::check('line', $rDevice['user_id']) || ActiveCodeService::lineAwaitsRedemption($rDevice['user'] ?: [])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
+		LineService::updateLineSignal($rDevice['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
 	public static function convertMAG($rID) {
 		global $db;
-		if (!($rDevice = MagService::getById($rID))) {
+		// The group permission the panel asks for (Reseller\Ajax\DeviceAjaxController::mag).
+		if (!Authorization::hasResellerPermissions('create_mag')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		if (!($rDevice = MagService::getById($rID)) || !Authorization::check('line', $rDevice['user_id'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		MagService::deleteDevice($rID, false, false, true);
@@ -287,7 +335,11 @@ class ResellerAPIWrapper {
 	}
 
 	public static function deleteEnigma($rID) {
-		if (EnigmaService::getById($rID)) {
+		// The group permission the panel asks for (Reseller\Ajax\DeviceAjaxController::enigma).
+		if (!Authorization::hasResellerPermissions('create_enigma')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		if (($rDevice = EnigmaService::getById($rID)) && Authorization::check('line', $rDevice['user_id'])) {
 			if (EnigmaService::deleteDevice($rID)) {
 				return ['status' => 'STATUS_SUCCESS'];
 			}
@@ -296,24 +348,39 @@ class ResellerAPIWrapper {
 	}
 
 	public static function disableEnigma($rID) {
-		if (!($rDevice = EnigmaService::getById($rID))) {
+		// The group permission the panel asks for (Reseller\Ajax\DeviceAjaxController::enigma).
+		if (!Authorization::hasResellerPermissions('create_enigma')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		if (!($rDevice = EnigmaService::getById($rID)) || !Authorization::check('line', $rDevice['user_id'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
+		LineService::updateLineSignal($rDevice['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
 	public static function enableEnigma($rID) {
-		if (!($rDevice = EnigmaService::getById($rID))) {
+		// The group permission the panel asks for (Reseller\Ajax\DeviceAjaxController::enigma).
+		if (!Authorization::hasResellerPermissions('create_enigma')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		// A line that waits for an activation code is switched on by redeeming the code.
+		if (!($rDevice = EnigmaService::getById($rID)) || !Authorization::check('line', $rDevice['user_id']) || ActiveCodeService::lineAwaitsRedemption($rDevice['user'] ?: [])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
+		LineService::updateLineSignal($rDevice['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
 	public static function convertEnigma($rID) {
 		global $db;
-		if (!($rDevice = EnigmaService::getById($rID))) {
+		// The group permission the panel asks for (Reseller\Ajax\DeviceAjaxController::enigma).
+		if (!Authorization::hasResellerPermissions('create_enigma')) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		if (!($rDevice = EnigmaService::getById($rID)) || !Authorization::check('line', $rDevice['user_id'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		EnigmaService::deleteDevice($rID, false, false, true);
@@ -324,6 +391,9 @@ class ResellerAPIWrapper {
 		if (!($rUser = UserRepository::getRegisteredUserById($rID)) || !Authorization::check('user', $rUser['id'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
+		// Never a sub-reseller's password hash or API key, whatever columns are
+		// asked for: get_user, and the row create_user and edit_user answer with.
+		unset($rUser['password'], $rUser['api_key']);
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rUser];
 	}
 
@@ -351,16 +421,43 @@ class ResellerAPIWrapper {
 	}
 
 	public static function deleteUser($rID) {
-		if (($rUser = self::getUser($rID)) && isset($rUser['data'])) {
-			if (UserService::deleteRegisteredUser($rID)) {
-				return ['status' => 'STATUS_SUCCESS'];
-			}
+		global $rUserInfo;
+		global $rPermissions;
+		// The group permissions the panel asks for (Reseller\Ajax\UserAjaxController::regUser).
+		if (empty($rPermissions['create_sub_resellers']) || empty($rPermissions['delete_users'])) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
 		}
-		return ['status' => 'STATUS_FAILURE'];
+		// Neither the reseller's own account nor an administrator's is a reseller's to delete (GroupService::reservedGroups).
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data']) || $rUser['data']['id'] == $rUserInfo['id'] || in_array(intval($rUser['data']['member_group_id']), GroupService::reservedGroups())) {
+			return ['status' => 'STATUS_FAILURE'];
+		}
+		$rUser = $rUser['data'];
+		// As in the panel: the deleted user's credits return to the reseller and
+		// its lines and sub-resellers become the reseller's, in one transaction.
+		// A user whose credits could not be moved is not deleted. The user's row
+		// is held from this read to the delete, so what it holds here is what is moved.
+		self::$db->beginTransaction();
+		$rHeld = (self::$db->query('SELECT ROUND(COALESCE(`credits`, 0), 4) FROM `users` WHERE `id` = ? FOR UPDATE;', intval($rUser['id'])) ? floatval(self::$db->get_col()) : null);
+		$rReturned = UserCredits::transferAll(intval($rUser['id']), $rUserInfo['id']);
+		if ($rHeld === null || ($rReturned == 0 && $rHeld != 0) || !UserService::deleteRegisteredUser($rUser['id'], false, false, $rUserInfo['id'])) {
+			self::$db->rollback();
+			return ['status' => 'STATUS_FAILURE'];
+		}
+		self::$db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rUserInfo['id'], $rUserInfo['id'], $rReturned, time(), 'Deleted user: ' . $rUser['username']);
+		self::$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'user', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'delete', $rUser['id'], intval($rReturned), intval(UserCredits::balance($rUserInfo['id'])), time(), json_encode($rUser));
+		self::$db->commit();
+		return ['status' => 'STATUS_SUCCESS'];
 	}
 
 	public static function disableUser($rID) {
-		if (!($rUser = self::getUser($rID)) || !isset($rUser['data'])) {
+		global $rUserInfo;
+		global $rPermissions;
+		// The group permission the panel asks for (Reseller\Ajax\UserAjaxController::regUser).
+		if (empty($rPermissions['create_sub_resellers'])) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		// Neither the reseller's own account nor an administrator's is a reseller's to switch off or on (GroupService::reservedGroups).
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data']) || $rUser['data']['id'] == $rUserInfo['id'] || in_array(intval($rUser['data']['member_group_id']), GroupService::reservedGroups())) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `users` SET `status` = 0 WHERE `id` = ?;', $rID);
@@ -368,7 +465,14 @@ class ResellerAPIWrapper {
 	}
 
 	public static function enableUser($rID) {
-		if (!($rUser = self::getUser($rID)) || !isset($rUser['data'])) {
+		global $rUserInfo;
+		global $rPermissions;
+		// The group permission the panel asks for (Reseller\Ajax\UserAjaxController::regUser).
+		if (empty($rPermissions['create_sub_resellers'])) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
+		// Neither the reseller's own account nor an administrator's is a reseller's to switch off or on (GroupService::reservedGroups).
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data']) || $rUser['data']['id'] == $rUserInfo['id'] || in_array(intval($rUser['data']['member_group_id']), GroupService::reservedGroups())) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `users` SET `status` = 1 WHERE `id` = ?;', $rID);
@@ -377,18 +481,24 @@ class ResellerAPIWrapper {
 
 	public static function adjustCredits($rID, $rCredits, $rNote) {
 		global $rUserInfo;
+		global $rPermissions;
+		// The group permission the panel asks for (Reseller\Ajax\UserAjaxController::adjustCredits).
+		if (empty($rPermissions['create_sub_resellers'])) {
+			return ['status' => 'STATUS_NO_PERMISSIONS'];
+		}
 		if (strlen($rNote) == 0) {
 			$rNote = 'Reseller API Adjustment';
 		}
-		if (($rUser = self::getUser($rID)) && isset($rUser['data'])) {
+		// An administrator's account keeps its credits: they are not a reseller's to move (GroupService::reservedGroups).
+		if (($rUser = self::getUser($rID)) && isset($rUser['data']) && !in_array(intval($rUser['data']['member_group_id']), GroupService::reservedGroups())) {
 			if (is_numeric($rCredits)) {
-				$rOwnerCredits = intval($rUserInfo['credits']) - intval($rCredits);
-				$rNewCredits = intval($rUser['data']['credits']) + intval($rCredits);
-				if (0 <= $rNewCredits && 0 <= $rOwnerCredits) {
-					self::$db->query('UPDATE `users` SET `credits` = ? WHERE `id` = ?;', $rOwnerCredits, $rUserInfo['id']);
-					self::$db->query('UPDATE `users` SET `credits` = ? WHERE `id` = ?;', $rNewCredits, $rUser['data']['id']);
+				// Whole credits move, and the logs say what moved: "2.9" moved 2 and was logged as 2.9.
+				$rCredits = intval($rCredits);
+				// Credits move between the reseller and one of its sub-resellers:
+				// each side gives only what its balance holds now.
+				if (UserCredits::transfer($rUserInfo['id'], $rUser['data']['id'], $rCredits)) {
 					self::$db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rUser['data']['id'], $rUserInfo['id'], $rCredits, time(), $rNote);
-					self::$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'user', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'adjust_credits', $rID, intval($rCredits), $rOwnerCredits, time(), json_encode($rUser['data']));
+					self::$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'user', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'adjust_credits', $rID, intval($rCredits), intval(UserCredits::balance($rUserInfo['id'])), time(), json_encode($rUser['data']));
 					return ['status' => 'STATUS_SUCCESS'];
 				}
 			}

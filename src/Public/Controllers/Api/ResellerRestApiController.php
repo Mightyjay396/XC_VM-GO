@@ -2,7 +2,11 @@
 
 namespace XcVm\Public\Controllers\Api;
 
+use XcVm\Core\Auth\ApiTokens;
+use XcVm\Core\Config\Maintenance;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Domain\Line\ActiveCodeService;
 
 /**
  * ResellerRestApiController — reseller rest api controller
@@ -25,6 +29,12 @@ class ResellerRestApiController {
 				$_ERRORS[intval($rValue)] = $rKey;
 			}
 		}
+		// Maintenance mode: the reseller API is closed with the panel.
+		if (Maintenance::active(SettingsManager::getAll())) {
+			http_response_code(503);
+			echo json_encode(['status' => 'STATUS_FAILURE', 'error' => Maintenance::message(SettingsManager::getAll())]);
+			return;
+		}
 		$rData = RequestManager::getAll();
 		ResellerAPIWrapper::$db = &$db;
 		ResellerAPIWrapper::$rKey = $rData['api_key'] ?? '';
@@ -42,6 +52,11 @@ class ResellerRestApiController {
 				$rHideColumns = explode(',', RequestManager::get('hide_columns'));
 			} else {
 				$rHideColumns = null;
+			}
+			// A token runs only what its scope allows (ApiTokens::allows()).
+			if (!ApiTokens::allows($rAction)) {
+				echo json_encode(['status' => 'STATUS_NO_PERMISSIONS']);
+				return;
 			}
 			switch ($rAction) {
 				case 'packages':
@@ -138,9 +153,6 @@ class ResellerRestApiController {
 					echo json_encode(ResellerAPIWrapper::convertEnigma(RequestManager::get('id')));
 					break;
 				case 'get_user':
-					if (!in_array('password', $rHideColumns)) {
-						$rHideColumns[] = 'password';
-					}
 					echo json_encode(ResellerAPIWrapper::filterRow(ResellerAPIWrapper::getUser($rData['id']), $rShowColumns, $rHideColumns));
 					break;
 				case 'create_user':
@@ -167,7 +179,7 @@ class ResellerRestApiController {
 					echo json_encode(ResellerAPIWrapper::getActiveCodes($rStart, $rLimit, $rData, $rShowColumns, $rHideColumns));
 					break;
 				case 'get_active_code':
-					echo json_encode(ResellerAPIWrapper::getActiveCode($rData['id'] ?? RequestManager::get('code') ?? 0));
+					echo json_encode(ResellerAPIWrapper::getActiveCode(ActiveCodeService::reference($rData['id'] ?? null, RequestManager::get('code'))));
 					break;
 				case 'generate_active_codes':
 				case 'create_active_code':
@@ -188,7 +200,7 @@ class ResellerRestApiController {
 					echo json_encode(ResellerAPIWrapper::enableActiveCode($rData['id'] ?? 0));
 					break;
 				case 'reset_active_code_device':
-					echo json_encode(ResellerAPIWrapper::resetActiveCodeDevice($rData['id'] ?? RequestManager::get('code') ?? 0));
+					echo json_encode(ResellerAPIWrapper::resetActiveCodeDevice(ActiveCodeService::reference($rData['id'] ?? null, RequestManager::get('code'))));
 					break;
 				case 'mass_active_codes':
 					echo json_encode(ResellerAPIWrapper::massActiveCodes($rData['sub_action'] ?? $rData['action_type'] ?? '', $rData['ids'] ?? [], $rData));

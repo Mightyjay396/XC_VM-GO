@@ -15,24 +15,15 @@
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Enum\Theme;
 use XcVm\Core\Module\NavbarItem;
 use XcVm\Core\Module\NavbarRegistry;
+use XcVm\Domain\User\UiPrefs;
 
 if (count(get_included_files()) == 1) {
     exit();
 }
 
 $rUpdate  = (json_decode((string) SettingsManager::getAll()['update_data'], true) ?: []);
-$xmIsDark = Theme::fromId($rUserInfo['theme'] ?? 0)->isDark();
-
-// Per-user Bootstrap 5 customizer state (see config.js + StatsAjaxController::saveUiPrefs).
-// The stored theme wins for the initial data-bs-theme paint; 'system'/unset falls
-// back to the legacy per-user theme column so there is no flash.
-$xmUiPrefs   = json_decode($rUserInfo['ui_prefs'] ?? '', true) ?: [];
-$xmThemePref = $xmUiPrefs['theme'] ?? null;
-$xmBsTheme   = $xmThemePref === 'dark' ? 'dark' : ($xmThemePref === 'light' ? 'light' : ($xmIsDark ? 'dark' : 'light'));
-
 /**
  * Shared navbar helpers (identical contract to legacy header.php). Guarded so a
  * single request only ever defines them once regardless of which header ran.
@@ -67,10 +58,8 @@ if (!function_exists('_xc_nav_label')) {
 }
 $xmCurrentLang = \XcVm\Core\Localization\Translator::current();
 $xmIsRtl       = \XcVm\Core\Localization\Translator::isRtl($xmCurrentLang);
-// The Vuexy customizer (config.js) derives the text direction from the per-user
-// `rtl` pref, not the language. Bind it to the language so an RTL language
-// mirrors the layout and switching back to an LTR language clears it.
-$xmUiPrefs['rtl'] = $xmIsRtl;
+// Customizer prefs; see UiPrefs::pageState() and layouts/ui_prefs_head.php.
+[$xmUiPrefs, $xmBsTheme] = UiPrefs::pageState($rUserInfo ?? [], $xmIsRtl);
 ?>
 <!doctype html>
 <html
@@ -115,19 +104,10 @@ $xmUiPrefs['rtl'] = $xmIsRtl;
         <link rel="stylesheet" href="assets/xcvm/rtl.css">
     <?php endif; ?>
 
-    <!-- Helpers + template customizer must precede config.js -->
-    <script src="assets/vendor/js/helpers.js"></script>
-    <script src="assets/vendor/js/template-customizer.js"></script>
-    <!-- Per-user customizer state (server-authoritative) consumed by config.js -->
-    <script>
-        window.XC_VM = window.XC_VM || {};
-        window.XC_VM.uiPrefsUrl = './api?action=save_ui_prefs';
-        window.XC_VM_UIPrefs = <?= json_encode($xmUiPrefs, JSON_UNESCAPED_SLASHES); ?>;
-    </script>
-    <script src="assets/js/config.js"></script>
+    <?php require __DIR__ . '/../layouts/ui_prefs_head.php'; ?>
 </head>
 
-<?php if (!empty($GLOBALS['_SETUP'])): /* setup wizard — branded bare shell: no sidebar / navbar / menu, and never touches $rUserInfo */ ?>
+<?php if (!empty($GLOBALS['_SETUP'])): /* Setup skips user-dependent navigation; UI prefs use available user data or first-run defaults. */ ?>
 
     <body>
         <!-- Setup top bar: brand only (no sidebar / navbar / user menu / header stats) -->
@@ -222,6 +202,32 @@ $xmUiPrefs['rtl'] = $xmIsRtl;
                                                 <!-- NOTE: the tickets dropdown (legacy header ran raw $db queries inline here)
                                  is intentionally deferred; it will return fed by a controller/provider,
                                  not inline DB access in the shell. -->
+
+                                                <!-- tickets_icon: plain link to the tickets page (no DB access in the shell) -->
+                                                <?php
+                                                // tickets_icon2: open tickets the admin has not read yet, one COUNT cached 30 s on disk.
+                                                $rTkNew = 0;
+                                                $rTkCache = '/home/xc_vm/tmp/tickets_unread.cache';
+                                                if (is_file($rTkCache) && time() - filemtime($rTkCache) < 30) {
+                                                    $rTkNew = (int) @file_get_contents($rTkCache);
+                                                } else {
+                                                    global $db;
+                                                    try {
+                                                        $rTkNew = isset($db) ? (int) $db->fetchValue('SELECT COUNT(*) FROM `tickets` WHERE `admin_read` = 0 AND `status` <> 0;') : 0;
+                                                        @file_put_contents($rTkCache, (string) $rTkNew);
+                                                    } catch (\Throwable $e) {
+                                                        $rTkNew = 0;
+                                                    }
+                                                }
+                                                ?>
+                                                <li class="nav-item">
+                                                    <a class="nav-link btn btn-icon rounded-pill position-relative <?= $rTkNew > 0 ? 'btn-text-warning text-warning' : 'btn-text-secondary'; ?>" href="tickets" title="<?= htmlspecialchars($language::get('tickets'), ENT_QUOTES); ?><?= $rTkNew > 0 ? ' (' . $rTkNew . ')' : ''; ?>">
+                                                        <i class="icon-base ti tabler-ticket icon-22px"></i>
+                                                        <?php if ($rTkNew > 0): ?>
+                                                            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:0.65rem;"><?= $rTkNew; ?></span>
+                                                        <?php endif; ?>
+                                                    </a>
+                                                </li>
 
                                                 <!-- Theme switcher (light / dark / system) -->
                                                 <li class="nav-item dropdown">

@@ -5,6 +5,7 @@ use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Server\ProxyRoute;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Cache\CacheReader;
@@ -44,7 +45,8 @@ $rCloseCon = false;
 $rPID = getmypid();
 $rStartTime = time();
 
-if (isset($rRequest['token'])) {
+// A link is one plain value: a request that sends a list of them has none.
+if (isset($rRequest['token']) && !is_array($rRequest['token'])) {
 	$rTokenData = StreamAuthMiddleware::decryptToken($rRequest['token'], $rSettings, $rServers, $rIP);
 
 	$rUsername = $rTokenData['username'];
@@ -52,7 +54,7 @@ if (isset($rRequest['token'])) {
 	$rStreamID = $rTokenData['stream'];
 	$rExtension = $rTokenData['extension'];
 	$rStartDate = $rTokenData['start'];
-	$rDuration = $rTokenData['duration'];
+	$rDuration = intval($rTokenData['duration']);
 	$rRedirectID = $rTokenData['redirect_id'];
 	$rOriginatorID = ($rTokenData['originator_id'] ?: null);
 	$rUserInfo = $rTokenData['user_info'];
@@ -71,6 +73,12 @@ if ($rSettings['use_buffer'] == 0) {
 	header('X-Accel-Buffering: no');
 }
 
+// A start is a Unix time, YYYYMMDD-HH or YYYY-MM-DD:HH-MM, with or without
+// seconds (its minute is what is read): nothing else is read as one.
+if (!(is_string($rStartDate) || is_int($rStartDate)) || !preg_match('/^(\d+|\d{8}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2}:\d{1,2}-\d{1,2}(?:[:-]\d{1,2})?)\z/', (string) $rStartDate)) {
+	generateError('NO_TIMESTAMP');
+}
+
 if (!is_numeric($rStartDate)) {
 	if (substr_count($rStartDate, '-') == 1) {
 		list($rDate, $rTime) = explode('-', $rStartDate);
@@ -87,7 +95,7 @@ if (!is_numeric($rStartDate)) {
 
 	$rTimestamp = mktime($rHour, $rMinutes, 0, $rMonth, $rDay, $rYear);
 } else {
-	$rTimestamp = $rStartDate;
+	$rTimestamp = intval($rStartDate);
 }
 
 $rFile = ARCHIVE_PATH . $rStreamID . '/' . gmdate('Y-m-d:H-i', $rTimestamp) . '.ts';
@@ -104,8 +112,12 @@ if (file_exists($rFile) && is_readable($rFile)) {
 
 $rQueue = [];
 
+// No minute after the present one has been recorded: the scan ends there,
+// however long a duration was asked for.
+$rScan = min($rDuration, intdiv(time(), 60) - intdiv($rTimestamp, 60) + 1);
+
 // Batch check files using async operations
-for ($i = 0; $i < $rDuration; $i++) {
+for ($i = 0; $i < $rScan; $i++) {
 	$rFile = ARCHIVE_PATH . $rStreamID . '/' . gmdate('Y-m-d:H-i', $rTimestamp + $i * 60) . '.ts';
 
 	if (@stat($rFile) !== false) {
@@ -135,11 +147,7 @@ if ($rUserInfo) {
 		$rServerID = ($rRedirectID ?: SERVER_ID);
 	}
 
-	if ($rSettings['redis_handler']) {
-		RedisManager::ensureConnected();
-	} else {
-		DatabaseFactory::connectLazy();
-	}
+	ConnectionTracker::openStore($rSettings);
 
 	$rConnection = null;
 
@@ -148,16 +156,16 @@ if ($rUserInfo) {
 			$rConnection = ConnectionTracker::findByUuid($rSettings, $rTokenData['uuid'], '`activity_id`, `pid`, `user_ip`');
 
 			if (!$rConnection) {
-				if (file_exists(CONS_TMP_PATH . $rTokenData['uuid']) || ($rActivityStart + $rCreateExpiration) - intval($rServers[SERVER_ID]['time_offset']) >= time()) {
+				if (file_exists(CONS_TMP_PATH . $rTokenData['uuid']) || $rActivityStart + $rCreateExpiration >= StreamAuthMiddleware::mainNow($rServers)) {
 				} else {
 					generateError('TOKEN_EXPIRED');
 				}
 
-				$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset']);
+				$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0);
 				$rConnectionData = ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'hls', 'pid' => null, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => 0, 'identity' => $rUserInfo['id'], 'uuid' => $rTokenData['uuid']];
-				$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'hls', 'pid' => null, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset']));
+				$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'hls', 'pid' => null, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset'] ?? 0));
 			} else {
-				$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rConnection['user_ip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1)) : $rConnection['user_ip'] == $rIP);
+				$rIPMatch = NetworkUtils::ipMatches((bool) $rSettings['ip_subnet_match'], $rConnection['user_ip'], $rIP);
 
 				if ($rIPMatch || !$rSettings['restrict_same_ip']) {
 				} else {
@@ -165,7 +173,7 @@ if ($rUserInfo) {
 					generateError('IP_MISMATCH');
 				}
 
-				$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])]);
+				$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0)]);
 			}
 
 			if ($rResult) {
@@ -183,6 +191,8 @@ if ($rUserInfo) {
 				DatabaseFactory::close();
 			}
 
+			// The connection id is 32 hex characters: decryptToken() refuses any other.
+			// nosemgrep: php.lang.security.injection.tainted-filename.tainted-filename
 			touch(CONS_TMP_PATH . $rTokenData['uuid']);
 			$rOutput = "#EXTM3U\n";
 			$rOutput .= "#EXT-X-VERSION:3\n";
@@ -192,9 +202,13 @@ if ($rUserInfo) {
 
 			for ($i = 0; $i < count($rQueue); $i++) {
 				$rOutput .= "#EXTINF:60.0,\n";
-				$rOutput .= (($rProxyID ? '/' . ProxyRoute::segment((int) $rProxyID, (int) $rServerID, $rServers) : '')) . '/hls/' . ViewerKey::mintOwn('TS/' . $rUsername . '/' . $rPassword . '/' . $rIP . '/' . $rDuration . '/' . $rStartDate . '/' . $rStreamID . '_' . basename($rQueue[$i]['filename']) . '_' . (($i == 0 ? $rOffset : 0)) . '/' . $rTokenData['uuid'] . '/' . $rServerID, $rSettings) . "\n";
+				// segment.php reads the link's fields by position: the start is written
+				// as the time it was read as, the line's names encoded.
+				$rOutput .= (($rProxyID ? '/' . ProxyRoute::segment((int) $rProxyID, (int) $rServerID, $rServers) : '')) . '/hls/' . ViewerKey::mintOwn('TS/' . rawurlencode((string) $rUsername) . '/' . rawurlencode((string) $rPassword) . '/' . $rIP . '/' . $rDuration . '/' . $rTimestamp . '/' . $rStreamID . '_' . basename($rQueue[$i]['filename']) . '_' . (($i == 0 ? $rOffset : 0)) . '/' . $rTokenData['uuid'] . '/' . $rServerID, $rSettings) . "\n";
 			}
 			$rOutput .= '#EXT-X-ENDLIST';
+			// The connection id is 32 hex characters: decryptToken() refuses any other.
+			// nosemgrep: php.lang.security.injection.tainted-filename.tainted-filename
 			touch(CONS_TMP_PATH . $rTokenData['uuid']);
 			ob_end_clean();
 			header('Content-Type: application/x-mpegurl');
@@ -208,21 +222,23 @@ if ($rUserInfo) {
 			// the connection is the daemon's, recorded with pid 0 as a live viewer's.
 			$rFileDaemon = !FanoutMode::legacyDelivery($rSettings) && LicenseGate::fanoutUsable() && FanoutClient::supportsFiles();
 			$rConnPID = $rFileDaemon ? 0 : $rPID;
-			// A player's HTTP Range request may come without the uuid (table path).
-			$rRangeMatch = empty($_SERVER['HTTP_RANGE']) ? [] : ['user_id' => $rUserInfo['id'], 'container' => 'hls', 'user_agent' => $rUserAgent, 'stream_id' => $rStreamID];
-			$rConnection = ConnectionTracker::findByUuid($rSettings, $rTokenData['uuid'], '`server_id`, `activity_id`, `pid`, `user_ip`', $rRangeMatch);
+			// By its uuid alone: a Range request is not matched to another connection
+			// of the line (the one it was matched to was a playlist viewer's).
+			$rConnection = ConnectionTracker::findByUuid($rSettings, $rTokenData['uuid'], '`server_id`, `activity_id`, `pid`, `user_ip`, `hls_end`');
 
 			if (!$rConnection) {
-				if (file_exists(CONS_TMP_PATH . $rTokenData['uuid']) || ($rActivityStart + $rCreateExpiration) - intval($rServers[SERVER_ID]['time_offset']) >= time()) {
+				// The connection id is 32 hex characters: decryptToken() refuses any other.
+				// nosemgrep: php.lang.security.injection.tainted-filename.tainted-filename
+				if (file_exists(CONS_TMP_PATH . $rTokenData['uuid']) || $rActivityStart + $rCreateExpiration >= StreamAuthMiddleware::mainNow($rServers)) {
 				} else {
 					generateError('TOKEN_EXPIRED');
 				}
 
-				$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset']);
+				$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0);
 				$rConnectionData = ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rConnPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => 0, 'identity' => $rUserInfo['id'], 'uuid' => $rTokenData['uuid']];
-				$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rConnPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset']));
+				$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rConnPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset'] ?? 0));
 			} else {
-				$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rConnection['user_ip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1)) : $rConnection['user_ip'] == $rIP);
+				$rIPMatch = NetworkUtils::ipMatches((bool) $rSettings['ip_subnet_match'], $rConnection['user_ip'], $rIP);
 
 				if ($rIPMatch || !$rSettings['restrict_same_ip']) {
 				} else {
@@ -240,7 +256,7 @@ if ($rUserInfo) {
 					}
 				}
 
-				$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rConnPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])]);
+				$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rConnPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0)]);
 			}
 
 			if ($rResult) {
@@ -269,13 +285,16 @@ if ($rUserInfo) {
 				}
 			}
 
+			// The connection id is 32 hex characters: decryptToken() refuses any other.
+			// nosemgrep: php.lang.security.injection.tainted-filename.tainted-filename
 			touch(CONS_TMP_PATH . $rTokenData['uuid']);
 			header('Content-Type: video/mp2t');
 			$rConSpeedFile = DIVERGENCE_TMP_PATH . $rTokenData['uuid'];
 			// The response is the queued minute files back to back, the first one
-			// from its .offset (a partial first minute).
+			// from its .offset (a partial first minute). Its bitrate is over the
+			// minutes it holds: a link may ask for more than were recorded.
 			$rSize = getLength($rQueue) - $rOffset;
-			$rBitrate = ($rSize * 0.008) / ($rDuration * 60);
+			$rBitrate = ($rSize * 0.008) / (count($rQueue) * 60);
 			$rDownloadBytes = $rBitrate * 125;
 			$rDownloadBytes += $rDownloadBytes * $rSettings['vod_bitrate_plus'] * 0.01;
 			if ($rFileDaemon) {
@@ -366,6 +385,8 @@ if ($rUserInfo) {
 					}
 					if (30 > time() - $rTimeStart) {
 					} else {
+						// Named by the connection id, 32 hex characters (decryptToken() refuses any other).
+						// nosemgrep: php.lang.security.injection.tainted-filename.tainted-filename
 						file_put_contents($rConSpeedFile, intval($rBytesRead / 1024 / 30));
 						$rTimeStart = time();
 						$rBytesRead = 0;
@@ -386,10 +407,7 @@ if ($rUserInfo) {
 						$rConnection = null;
 						$rSettings = CacheReader::get('settings');
 
-						$rConnection = ConnectionTracker::heartbeat($rSettings, $rTokenData['uuid'], time() - intval($rServers[SERVER_ID]['time_offset']));
-
-						if (!(!is_array($rConnection) || $rConnection['hls_end'] != 0 || $rConnection['pid'] != $rPID)) {
-						} else {
+						if (!ConnectionTracker::checkIn($rSettings, $rTokenData['uuid'], time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0), $rPID, $rLastCheck)) {
 							exit();
 						}
 					}

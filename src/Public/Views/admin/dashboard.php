@@ -11,6 +11,7 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Config\DashboardAlerts;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Util\LayoutRenderer;
@@ -35,11 +36,13 @@ $xmAccents  = ['primary', 'success', 'info', 'warning', 'danger'];
 // The "/ total" secondary is "this server / whole fleet", so it only means
 // something with a server selected; in the fleet view it duplicates or reads 0.
 $xmPerServer = $xmServerId !== null;
+$xmConnectionLink = 'live_connections' . ($xmServerId > 0 ? '?server_id=' . $xmServerId : '');
+$xmStreamServerQuery = $xmServerId > 0 ? '&server_id=' . $xmServerId : '';
 $xmTiles = [
-    ['active-connections', 'ti tabler-plug-connected', 'primary', $language::get('dashboard_online_connections'), Authorization::check('adv', 'live_connections') ? 'live_connections' : null, $xmPerServer, ''],
-    ['online-users',       'ti tabler-users',          'success', $language::get('dashboard_active_lines'),        Authorization::check('adv', 'live_connections') ? 'live_connections' : null, $xmPerServer, ''],
-    ['active-streams',     'ti tabler-player-play',    'info',    $language::get('dashboard_live_streams'),        Authorization::check('adv', 'streams') ? 'streams?filter=1' : null, false, ''],
-    ['offline-streams',    'ti tabler-alert-triangle', 'danger',  $language::get('dashboard_down_streams'),        Authorization::check('adv', 'streams') ? 'streams?filter=2' : null, false, ''],
+    ['active-connections', 'ti tabler-plug-connected', 'primary', $language::get('dashboard_online_connections'), Authorization::check('adv', 'live_connections') ? $xmConnectionLink : null, $xmPerServer, ''],
+    ['online-users',       'ti tabler-users',          'success', $language::get('dashboard_active_lines'),        Authorization::check('adv', 'live_connections') ? $xmConnectionLink : null, $xmPerServer, ''],
+    ['active-streams',     'ti tabler-player-play',    'info',    $language::get('dashboard_live_streams'),        Authorization::check('adv', 'streams') ? 'streams?filter=1' . $xmStreamServerQuery : null, false, ''],
+    ['offline-streams',    'ti tabler-alert-triangle', 'danger',  $language::get('dashboard_down_streams'),        Authorization::check('adv', 'streams') ? 'streams?filter=2' . $xmStreamServerQuery : null, false, ''],
     ['output-flow',        'ti tabler-arrow-up-right', 'primary', $language::get('dashboard_network_output'),      null, false, 'Mbps'],
     ['input-flow',         'ti tabler-arrow-down-left', 'warning', $language::get('dashboard_network_input'),       null, false, 'Mbps'],
 ];
@@ -89,14 +92,15 @@ if (!LicenseGate::licensed()):
                     <?php endif; ?>
                 </div>
             </div>
-            <a href="https://www.xcvm.tech/activate" target="_blank" rel="noopener" class="btn btn-sm btn-label-warning">
-                <?= $language::get('activation_get_key'); ?>
-            </a>
         </div>
         <form id="activation-form" class="d-flex flex-wrap gap-2" onsubmit="return false;">
-            <input type="text" id="activation-key-input" class="form-control form-control-sm flex-grow-1" style="min-width:260px;"
+            <input type="text" id="activation-key-input" class="form-control form-control-sm" style="flex:1 1 260px;min-width:0;max-width:720px;"
                 autocomplete="off" spellcheck="false"
                 placeholder="<?= htmlspecialchars($language::get('activation_key_placeholder'), ENT_QUOTES); ?>">
+            <a href="https://www.xcvm.tech/activate" target="_blank" rel="noopener" id="activation-get-key" class="btn btn-sm btn-primary"
+                data-hwid="<?= htmlspecialchars($xmHwid, ENT_QUOTES); ?>">
+                <i class="icon-base ti tabler-copy me-1"></i><?= $language::get('activation_copy_hwid_get_key'); ?>
+            </a>
             <button type="submit" id="activation-submit" class="btn btn-sm btn-warning">
                 <?= $language::get('activation_activate'); ?>
             </button>
@@ -107,6 +111,31 @@ if (!LicenseGate::licensed()):
         (function () {
             var form = document.getElementById('activation-form');
             if (!form) return;
+            // The key is issued for this HWID: copy it on the way to the store
+            // (the link still opens it). Over plain HTTP there is no
+            // navigator.clipboard, so a hidden textarea and execCommand do it.
+            document.getElementById('activation-get-key').addEventListener('click', function () {
+                var hwid = this.dataset.hwid || '';
+                if (!hwid) return;
+                var done = function () {
+                    if (window.xcToast) window.xcToast(<?= json_encode($language::get('activation_hwid_copied')); ?>, 'success');
+                };
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(hwid).then(done, function () {});
+                    return;
+                }
+                var area = document.createElement('textarea');
+                area.value = hwid;
+                area.setAttribute('readonly', '');
+                area.style.position = 'fixed';
+                area.style.opacity = '0';
+                document.body.appendChild(area);
+                area.select();
+                try {
+                    if (document.execCommand('copy')) done();
+                } catch (e) {}
+                document.body.removeChild(area);
+            });
             form.addEventListener('submit', function () {
                 var input = document.getElementById('activation-key-input');
                 var msg = document.getElementById('activation-msg');
@@ -131,6 +160,14 @@ if (!LicenseGate::licensed()):
             });
         })();
     </script>
+<?php endif; ?>
+
+<?php // Maintenance mode is on (Core\Config\Maintenance): left on, it is an outage of its own. ?>
+<?php if (isset($rMaintenance)): ?>
+    <div class="alert alert-warning mb-4" role="alert">
+        <i class="icon-base ti tabler-tool me-1"></i><?= htmlspecialchars($rMaintenance > 0 ? $language::get('maintenance_banner_until', ['{until}' => date('Y-m-d H:i', $rMaintenance)]) : $language::get('maintenance_banner'), ENT_QUOTES); ?>
+        <a href="settings" class="alert-link ms-1"><?= $language::get('settings'); ?></a>
+    </div>
 <?php endif; ?>
 
 <?php // The Cluster Nodes page's licence and certificate warnings (ClusterOverview::dashboardBanners). ?>
@@ -195,6 +232,158 @@ if (!LicenseGate::licensed()):
         </div>
     </div>
 </div>
+
+<?php if (Authorization::check('adv', 'streams')):
+    $xmAlertOptions = DashboardAlerts::options($rSettings);
+?>
+<div class="card mb-4 <?= $xmAlertOptions['latest_enabled'] ? '' : 'd-none'; ?>" id="latest-alerts">
+    <div class="card-header py-3 d-flex align-items-center gap-2">
+        <i class="icon-base ti tabler-bell icon-22px text-warning"></i>
+        <h5 class="card-title mb-0"><?= $language::get('dashboard_latest_alerts'); ?></h5>
+        <small class="text-body-secondary ms-auto" id="latest-alerts-count"></small>
+    </div>
+    <div class="card-body pt-0 pb-2">
+        <div class="d-flex flex-wrap align-items-center gap-2 pb-2 d-none" id="latest-alerts-summary" aria-live="polite" aria-atomic="true"></div>
+        <div id="latest-alerts-scroll" style="max-height: <?= $xmAlertOptions['latest_count'] * 44; ?>px; overflow-y: auto" tabindex="0" role="region" aria-label="<?= $language::get('dashboard_latest_alerts'); ?>">
+            <ul class="list-unstyled mb-0" id="latest-alerts-list"></ul>
+        </div>
+        <small class="text-body-secondary d-block pb-2" id="latest-alerts-empty"><?= $language::get('no_results_found'); ?></small>
+    </div>
+</div>
+<script>
+(function() {
+    var latestCard = document.getElementById('latest-alerts');
+    var list = document.getElementById('latest-alerts-list');
+    var empty = document.getElementById('latest-alerts-empty');
+    var scroll = document.getElementById('latest-alerts-scroll');
+    var count = document.getElementById('latest-alerts-count');
+    var summary = document.getElementById('latest-alerts-summary');
+    var previousSummary = null;
+    var previous = null;
+    var options = <?= json_encode($xmAlertOptions, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+    var styles = {
+        STREAM_START: ['success', 'tabler-player-play'],
+        STREAM_STOP: ['info', 'tabler-player-stop'],
+        STREAM_START_FAIL: ['danger', 'tabler-alert-triangle'],
+        STREAM_FAILED: ['danger', 'tabler-alert-triangle'],
+        FFMPEG_ERROR: ['danger', 'tabler-alert-triangle'],
+        AUDIO_LOSS: ['warning', 'tabler-volume-off']
+    };
+    function renderSummary(groups) {
+        var signature = JSON.stringify(groups);
+        if (signature === previousSummary) return;
+        previousSummary = signature;
+        summary.replaceChildren();
+        summary.classList.toggle('d-none', groups.length === 0);
+        if (!groups.length) return;
+        var caption = document.createElement('small');
+        caption.className = 'text-body-secondary';
+        caption.textContent = <?= json_encode($language::get('dashboard_alert_summary_window'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+        summary.appendChild(caption);
+        groups.forEach(function(group) {
+            var style = styles[group.action] || ['warning', 'tabler-bell'];
+            var badge = document.createElement('span');
+            badge.className = 'badge bg-label-' + style[0];
+            badge.textContent = Number(group.count).toLocaleString() + ' ' + group.label;
+            summary.appendChild(badge);
+        });
+    }
+    function renderRows(target, emptyState, events) {
+        target.replaceChildren();
+        emptyState.classList.toggle('d-none', events.length > 0);
+        events.forEach(function(event) {
+            var style = styles[event.action] || ['warning', 'tabler-bell'];
+            var row = document.createElement('li');
+            row.className = 'd-flex align-items-center gap-3 py-2';
+            row.style.minHeight = '44px';
+            row.style.boxSizing = 'border-box';
+            row.dataset.eventId = String(event.id);
+            var icon = document.createElement('i');
+            icon.className = 'icon-base ti ' + style[1] + ' text-' + style[0] + ' icon-20px flex-shrink-0';
+            var message = document.createElement('div');
+            message.className = 'flex-grow-1 min-w-0 text-truncate';
+            var stream = document.createElement('span');
+            stream.className = 'fw-medium';
+            stream.textContent = event.stream + (event.server ? ' (' + event.server + ')' : '');
+            var label = document.createElement('span');
+            label.className = 'text-body-secondary';
+            label.textContent = ' · ' + event.label;
+            message.append(stream, label);
+            message.title = stream.textContent + label.textContent;
+            var time = document.createElement('time');
+            time.className = 'small text-body-secondary flex-shrink-0 tabular-nums';
+            var date = new Date(event.time * 1000);
+            time.dateTime = date.toISOString();
+            time.textContent = date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+            time.title = date.toLocaleString();
+            row.append(icon, message, time);
+            target.appendChild(row);
+        });
+    }
+    function render(data) {
+        options = data.options || options;
+        latestCard.classList.toggle('d-none', !options.latest_enabled);
+        var capacity = options.history_enabled ? Math.max(options.latest_count, options.history_count) : options.latest_count;
+        var events = options.latest_enabled ? data.events.slice(0, capacity) : [];
+        scroll.style.maxHeight = (options.latest_count * 44) + 'px';
+        var signature = JSON.stringify(events);
+        if (signature !== previous) {
+            previous = signature;
+            var oldTop = scroll.scrollTop;
+            var anchor = null;
+            if (oldTop > 0) {
+                var viewportTop = scroll.getBoundingClientRect().top;
+                Array.prototype.some.call(list.children, function(row) {
+                    var bounds = row.getBoundingClientRect();
+                    if (bounds.bottom > viewportTop) {
+                        anchor = {id: row.dataset.eventId, offset: bounds.top - viewportTop};
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            renderRows(list, empty, events);
+            scroll.scrollTop = oldTop;
+            if (anchor) {
+                Array.prototype.some.call(list.children, function(row) {
+                    if (row.dataset.eventId === anchor.id) {
+                        scroll.scrollTop += row.getBoundingClientRect().top - scroll.getBoundingClientRect().top - anchor.offset;
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+        count.textContent = events.length + ' / ' + capacity;
+        if (Array.isArray(data.summary)) renderSummary(data.summary);
+    }
+    function poll() {
+        if (document.hidden) {
+            setTimeout(poll, 5000);
+            return;
+        }
+        var controller = new AbortController();
+        var timeout = setTimeout(function() { controller.abort(); }, 10000);
+        fetch('./api?action=stream_events&latest=1', {
+            signal: controller.signal,
+            cache: 'no-store',
+            headers: {'X-Requested-With': 'XMLHttpRequest'}
+        }).then(function(response) {
+            if (!response.ok) throw new Error('Alerts unavailable');
+            return response.json();
+        }).then(function(data) {
+            if (Array.isArray(data.events)) render(data);
+        }).catch(function() {
+            // Keep the last successful result until the next refresh.
+        }).finally(function() {
+            clearTimeout(timeout);
+            setTimeout(poll, 5000);
+        });
+    }
+    poll();
+})();
+</script>
+<?php endif; ?>
 
 <div class="row g-4 mb-4">
     <?php if ($rSettings['dashboard_status']): ?>

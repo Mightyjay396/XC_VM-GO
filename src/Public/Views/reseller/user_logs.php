@@ -3,7 +3,7 @@
 /**
  * Reseller logs (Bootstrap 5). Full-parity port of admin/user_logs.php adapted to
  * the reseller contract: clean-JSON keyed serverSide DataTable
- * (ResellerTableRenderer::handleRegUserLogs emits data-only rows) with the
+ * (ResellerTableController::handleRegUserLogs emits data-only rows) with the
  * server-composed action text, permission-gated owner link (plus an indirect
  * marker) and the resolved target line/user/mag/enigma link rendered client-side.
  * Read-only log — no per-row actions.
@@ -89,7 +89,7 @@ LayoutRenderer::renderFooter('reseller');
         var esc = function(s) {
             var d = document.createElement('div');
             d.textContent = (s == null ? '' : String(s));
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         };
         var fmtDate = function(ts) {
             return ts ? new Date(ts * 1000).toLocaleString() : '';

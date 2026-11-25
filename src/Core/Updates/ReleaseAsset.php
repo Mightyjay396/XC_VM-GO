@@ -79,6 +79,7 @@ final class ReleaseAsset {
 		$rMajor = (int) explode('.', $rVersion)[0];
 		return match (true) {
 			$rId === 'ubuntu' && in_array($rMajor, [20, 22, 24], true) => 'ubuntu_' . $rMajor . '.tar.gz',
+			$rId === 'ubuntu' && $rMajor === 26 => 'ubuntu_24.tar.gz',
 			$rId === 'debian' && in_array($rMajor, [12, 13], true) => 'debian_' . $rMajor . '.tar.gz',
 			default => null,
 		};

@@ -6,7 +6,6 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Module\ModuleManager;
-use XcVm\Domain\Server\ServerRepository;
 
 /**
  * ModuleInstallCommand — install a module on a load balancer (files only).
@@ -16,20 +15,19 @@ use XcVm\Domain\Server\ServerRepository;
  *   {"action":"install_module","source":"platform|local","name":"…","version":"…"}
  *
  * - source = platform : the LB downloads the module from the store itself,
- *                       using the shared platform API key (settings.platform_api_key)
+ *                       using the shared platform API key (settings.platform_api_key,
+ *                       needed only for a paid module)
  *                       and its OWN install_id. Files only — no DB migrations
  *                       (the shared DB was already migrated by MAIN).
- * - source = local    : the module is a custom one not on the store. The LB
- *                       pulls the {name}_{version}.zip archive back from MAIN
- *                       over the internal system API (action=getFile) and
- *                       installs its files.
- *                       Over the cluster API the archive is an artefact
- *                       instead: cluster:root stages it in root's own stage
- *                       and checks its size and SHA-256 against MAIN's signed
- *                       grant, and the payload names that copy as `archive`
- *                       (with the grant as `artefact`); it is checked again
- *                       here, refused and audited as an artefact when it is
- *                       not the grant's, and nothing is pulled from MAIN.
+ * - source = local    : the module is a custom one not on the store. Its
+ *                       archive arrives as a cluster artefact: cluster:root
+ *                       stages it in root's own stage and checks its size and
+ *                       SHA-256 against MAIN's signed grant, and the payload
+ *                       names that copy as `archive` (with the grant as
+ *                       `artefact`); it is checked again here, refused and
+ *                       audited as an artefact when it is not the grant's.
+ *                       Without a grant nothing installs: MAIN's `/api`
+ *                       getFile it was once pulled with is gone (PR #392).
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -73,13 +71,13 @@ class ModuleInstallCommand implements CommandInterface {
 
 		try {
 			if ($rSource === 'platform') {
+				// Without a key only a free module installs: the store refuses a paid one.
 				$rApiKey = (string) (SettingsManager::get('platform_api_key') ?? '');
-				if ($rApiKey === '') {
-					echo "module:install: platform_api_key is not set in settings.\n";
-					return 1;
-				}
 				echo "Installing store module '{$rName}' v{$rVersion} from platform...\n";
-				$rManager->deployFromPlatformFilesOnly($rName, $rVersion, $rApiKey);
+				// The store knows the module by its store id (hash_id); a payload
+				// from an older MAIN carries only the name, then taken as the id.
+				$rStoreId = (string) ($rPayload['store_id'] ?? '') ?: $rName;
+				$rInstalledName = $rManager->deployFromPlatformFilesOnly($rStoreId, $rVersion, $rApiKey);
 			} elseif (isset($rPayload['archive'])) {
 				// Staged by cluster:root from MAIN's grant: only that copy, only its bytes.
 				$rStaged = (string) $rPayload['archive'];
@@ -90,18 +88,13 @@ class ModuleInstallCommand implements CommandInterface {
 					return 1;
 				}
 				echo "Installing custom module '{$rName}' v{$rVersion} from the archive MAIN granted...\n";
-				$rManager->deployFromArchiveFilesOnly($rStaged);
+				$rInstalledName = $rManager->deployFromArchiveFilesOnly($rStaged);
 			} else {
-				echo "Installing custom module '{$rName}' v{$rVersion} from MAIN...\n";
-				$rArchive = $this->fetchArchiveFromMain($rManager->archivePathFor($rName, $rVersion), $rPayload);
-				try {
-					$rManager->deployFromArchiveFilesOnly($rArchive);
-				} finally {
-					@unlink($rArchive);
-				}
+				echo "module:install: no archive granted for '{$rName}' v{$rVersion} (a custom module reaches a load balancer only as a cluster artefact: COMMANDS, root_ready, agent feature 'artefact').\n";
+				return 1;
 			}
 
-			$this->fixOwnership($rName);
+			$this->fixOwnership($rInstalledName);
 			echo "module:install: '{$rName}' installed.\n";
 			return 0;
 		} catch (\Throwable $e) {
@@ -125,86 +118,6 @@ class ModuleInstallCommand implements CommandInterface {
 	}
 
 	/**
-	 * Pull a custom module archive from MAIN over the internal system API
-	 * (action=getFile). Returns the path to a downloaded temp file, which is
-	 * the archive the payload announced (announced()).
-	 *
-	 * @param array<string, mixed> $rPayload
-	 * @throws \RuntimeException If MAIN cannot be located or the download fails.
-	 */
-	private function fetchArchiveFromMain(string $rArchivePath, array $rPayload): string {
-		$rMain = null;
-		foreach (ServerRepository::getAll() as $rServer) {
-			if (!empty($rServer['is_main'])) {
-				$rMain = $rServer;
-				break;
-			}
-		}
-
-		if (!$rMain || empty($rMain['server_ip'])) {
-			throw new \RuntimeException('Could not locate the MAIN server to fetch the module archive.');
-		}
-
-		$rPass = (string) (SettingsManager::get('live_streaming_pass') ?? '');
-		$rUrl  = 'http://' . $rMain['server_ip'] . ':' . intval($rMain['http_broadcast_port'])
-			. '/api?password=' . urlencode($rPass)
-			. '&action=getFile&filename=' . urlencode($rArchivePath);
-
-		$rTmp = rtrim(sys_get_temp_dir(), '/') . '/xc_lbmod_' . bin2hex(random_bytes(8)) . '.zip';
-		$rFp  = @fopen($rTmp, 'wb');
-		if (!$rFp) {
-			throw new \RuntimeException('Unable to create temporary archive file.');
-		}
-
-		$rCh = curl_init();
-		curl_setopt($rCh, CURLOPT_URL, $rUrl);
-		curl_setopt($rCh, CURLOPT_FILE, $rFp);
-		curl_setopt($rCh, CURLOPT_FOLLOWLOCATION, false);
-		curl_setopt($rCh, CURLOPT_CONNECTTIMEOUT, 10);
-		curl_setopt($rCh, CURLOPT_TIMEOUT, 120);
-		$rOk   = curl_exec($rCh);
-		$rCode = curl_getinfo($rCh, CURLINFO_RESPONSE_CODE);
-		curl_close($rCh);
-		fclose($rFp);
-
-		// serveFile() answers with a JSON {"result":false,...} body (HTTP 200)
-		// when the file is missing/invalid — detect that by checking the zip
-		// magic bytes instead of trusting the status code alone.
-		$rMagic = @file_get_contents($rTmp, false, null, 0, 2);
-		if (!$rOk || $rCode < 200 || $rCode >= 300 || $rMagic !== 'PK') {
-			@unlink($rTmp);
-			throw new \RuntimeException("Failed to download module archive from MAIN (HTTP {$rCode}).");
-		}
-		$rWrong = self::announced($rTmp, $rPayload);
-		if ($rWrong !== null) {
-			@unlink($rTmp);
-			throw new \RuntimeException('The module archive from MAIN is not the one it announced: ' . $rWrong . '.');
-		}
-
-		return $rTmp;
-	}
-
-	/**
-	 * Is $rFile the archive the payload announced (its `size` and `sha256`,
-	 * ModuleManager::lbInstallPayload)? Null when it is, or when the payload
-	 * announces neither (a MAIN from before them: the zip magic is then the
-	 * only check, as before); else why not.
-	 *
-	 * @param array<string, mixed> $rPayload
-	 */
-	public static function announced(string $rFile, array $rPayload): ?string {
-		$rSize = $rPayload['size'] ?? null;
-		$rSha = $rPayload['sha256'] ?? null;
-		if ($rSize === null && $rSha === null) {
-			return null;
-		}
-		if (!is_int($rSize) || !is_string($rSha) || !preg_match('/^[0-9a-f]{64}$/', $rSha)) {
-			return 'a malformed size or SHA-256';
-		}
-		return ArtefactStage::matches($rFile, $rSize, $rSha) ? null : 'size or SHA-256 mismatch';
-	}
-
-	/**
 	 * Hand the freshly installed module directory back to the panel user, since
 	 * this command runs as root from the signals cron.
 	 */
@@ -212,9 +125,24 @@ class ModuleInstallCommand implements CommandInterface {
 		if (!preg_match('/^[a-z0-9][a-z0-9\-]*$/', $rName)) {
 			return;
 		}
-		$rDir = (defined('MAIN_HOME') ? MAIN_HOME : '') . 'Modules/' . $rName;
-		if (is_dir($rDir)) {
-			shell_exec('sudo chown -R xc_vm:xc_vm ' . escapeshellarg($rDir) . ' 2>/dev/null');
+		$rBase = (defined('MAIN_HOME') ? MAIN_HOME : '') . 'Modules/';
+		$rOwned = false;
+		foreach (array_merge([$rBase . $rName], glob($rBase . $rName . '_[a-f0-9][a-f0-9][a-f0-9][a-f0-9][a-f0-9]', GLOB_ONLYDIR) ?: []) as $rDir) {
+			if (!is_dir($rDir) || is_link($rDir)) {
+				continue;
+			}
+			$rMeta = json_decode((string) @file_get_contents($rDir . '/module.json'), true);
+			if (!is_array($rMeta) || ($rMeta['name'] ?? null) !== $rName) {
+				continue;
+			}
+			exec('sudo chown -R xc_vm:xc_vm ' . escapeshellarg($rDir) . ' 2>/dev/null', $rOutput, $rStatus);
+			if ($rStatus !== 0) {
+				throw new \RuntimeException('Cannot set ownership of ' . $rDir);
+			}
+			$rOwned = true;
+		}
+		if (!$rOwned) {
+			throw new \RuntimeException('Installed module directory not found for ' . $rName);
 		}
 	}
 }

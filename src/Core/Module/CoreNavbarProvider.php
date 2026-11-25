@@ -81,13 +81,15 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 			->parent('servers')->url('servers')
 			->label('manage_servers')->permissions(['servers'])->order(20));
 
-		NavbarRegistry::add((new NavbarItem('servers.cluster'))
-			->parent('servers')->url('cluster_nodes')
-			->label('cluster_nodes')->permissions(['servers'])->order(25));
+		// Cluster Nodes is folded into Manage Servers (servers.manage); no separate entry.
 
 		NavbarRegistry::add((new NavbarItem('servers.proxies'))
 			->parent('servers')->url('proxies')
 			->label('manage_proxies')->permissions(['proxies'])->order(30));
+
+		NavbarRegistry::add((new NavbarItem('servers.source_proxies')) // srcproxy
+			->parent('servers')->url('source_proxies')
+			->label('', 'Proxys sources (HTTP)')->permissions(['servers'])->order(31));
 
 		NavbarRegistry::add((new NavbarItem('servers.order'))
 			->parent('servers')->url('server_order')
@@ -129,19 +131,19 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 			->url('#')->label('active_codes')
 			->icon('ti tabler-key')
 			->permissions(['add_user', 'users', 'mass_edit_lines'])
-			->order(310));
+			->settingDisabled('hide_active_codes')->order(310));
 		NavbarRegistry::add((new NavbarItem('active_codes.add'))
 			->parent('active_codes')->url('active_code')
-			->label('generate_codes')->permissions(['add_user'])->order(10));
+			->label('generate_codes')->permissions(['add_user'])->settingDisabled('hide_active_codes')->order(10));
 		NavbarRegistry::add((new NavbarItem('active_codes.manage'))
 			->parent('active_codes')->url('active_codes')
-			->label('manage_active_codes')->permissions(['users'])->order(20));
+			->label('manage_active_codes')->permissions(['users'])->settingDisabled('hide_active_codes')->order(20));
 		NavbarRegistry::add((new NavbarItem('active_codes.batch'))
 			->parent('active_codes')->url('active_codes_batch')
-			->label('batch_manager')->permissions(['users'])->order(25));
+			->label('batch_manager')->permissions(['users'])->settingDisabled('hide_active_codes')->order(25));
 		NavbarRegistry::add((new NavbarItem('active_codes.mass'))
 			->parent('active_codes')->url('active_codes_mass')
-			->label('mass_edit_active_codes')->permissions(['mass_edit_lines'])->order(30));
+			->label('mass_edit_active_codes')->permissions(['mass_edit_lines'])->settingDisabled('hide_active_codes')->order(30));
 
 		// MAG Devices
 		NavbarRegistry::add((new NavbarItem('mag'))
@@ -403,7 +405,7 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 		NavbarRegistry::add((new NavbarItem('logs'))
 			->url('#')->label('logs')
 			->icon('fas fa-clipboard-list')
-			->permissions(['movies', 'streams', 'connection_logs', 'client_request_log', 'login_logs', 'panel_logs', 'credits_log', 'live_connections', 'manage_events', 'reg_userlog', 'stream_errors', 'restream_logs', 'episodes', 'series'])
+			->permissions(['movies', 'streams', 'connection_logs', 'client_request_log', 'login_logs', 'admin_audit', 'panel_logs', 'credits_log', 'live_connections', 'manage_events', 'reg_userlog', 'stream_errors', 'restream_logs', 'episodes', 'series'])
 			->order(500));
 
 		// Connections
@@ -443,7 +445,7 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 		// System
 		NavbarRegistry::add((new NavbarItem('logs.system'))
 			->parent('logs')->url('#')
-			->label('logs_group_system')->permissions(['panel_logs', 'login_logs', 'streams', 'episodes', 'series'])->order(30));
+			->label('logs_group_system')->permissions(['panel_logs', 'login_logs', 'admin_audit', 'streams', 'episodes', 'series'])->order(30));
 		NavbarRegistry::add((new NavbarItem('logs.system.panel'))
 			->parent('logs.system')->url('panel_logs')
 			->label('', 'Panel Errors')->permissions(['panel_logs'])->order(10));
@@ -453,6 +455,9 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 		NavbarRegistry::add((new NavbarItem('logs.system.login'))
 			->parent('logs.system')->url('login_logs')
 			->label('', 'Login Logs')->permissions(['login_logs'])->order(30));
+		NavbarRegistry::add((new NavbarItem('logs.system.admin'))
+			->parent('logs.system')->url('admin_actions')
+			->label('', 'Admin Actions')->permissions(['admin_audit'])->order(35));
 		NavbarRegistry::add((new NavbarItem('logs.system.queue'))
 			->parent('logs.system')->url('queue')
 			->label('', 'Encoding Queue')->permissions(['streams', 'episodes', 'series'])->order(40));
@@ -606,6 +611,19 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 		NavbarRegistry::add((new NavbarItem('profile.settings'))
 			->parent('profile')->url('settings')
 			->label('general_settings')->permissions(['settings'])->order(20));
+
+		NavbarRegistry::add((new NavbarItem('profile.alerts'))
+			->parent('profile')->url('alerts')
+			->label('alerts')->permissions(['settings'])->order(25));
+
+		NavbarRegistry::add((new NavbarItem('profile.translations'))
+			->parent('profile')->url('translations')
+			->label('translations')->permissions(['settings'])->order(27));
+
+		// No permission: reporting an issue is open to every administrator, like the profile itself.
+		NavbarRegistry::add((new NavbarItem('profile.report_issue'))
+			->parent('profile')->url('report_issue')
+			->label('report_issue')->order(28));
 
 		NavbarRegistry::add((new NavbarItem('profile.backups'))
 			->parent('profile')->url('backups')

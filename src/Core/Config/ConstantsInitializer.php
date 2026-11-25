@@ -11,7 +11,7 @@ use RuntimeException;
 defined('DB_ACCESS_ENABLED') || define('DB_ACCESS_ENABLED', false);
 defined('DB_ACCESS_PWD') || define('DB_ACCESS_PWD', '');
 defined('DEV_MODE') || define('DEV_MODE', false);
-defined('XC_VM_VERSION') || define('XC_VM_VERSION', '2.6.1');
+defined('XC_VM_VERSION') || define('XC_VM_VERSION', '2.7.4-p1');
 // Per-build watermark stamped into the deploy root by `make main` (see the
 // Makefile stamp_release_id target). A source/dev checkout is never stamped, so
 // runtime and the licence activation call report 'dev'. Unique per build, so a
@@ -156,9 +156,10 @@ class ConstantsInitializer {
 			'DEV_MODE'          => DEV_MODE,
 			'XC_VM_VERSION'     => XC_VM_VERSION,
 			'GIT_OWNER'         => 'Vateron-Media',
-			'GIT_REPO_MAIN'     => 'XC_VM',
+			'GIT_OWNER_MAIN'    => 'Mightyjay396',
+			'GIT_REPO_MAIN'     => 'XC_VM-GO',
 			'GIT_REPO_DEV'      => 'XC_VM_Dev',
-			'GIT_REPO_UPDATE'   => 'XC_VM_Update',
+			'GIT_REPO_UPDATE'   => 'XC_VM_GeoLite',
 			'GIT_REPO_BIN'      => 'XC_VM_Binaries',
 			'GIT_REPO_FANOUT'   => 'XC_VM_Fanout',
 			'GIT_REPO_PROXY'    => 'XC_VM_Proxy',
@@ -247,6 +248,9 @@ class ConstantsInitializer {
 			'STATUS_NO_TITLE'            => 47,
 			'STATUS_NO_SOURCE'           => 48,
 			'STATUS_PORT_IN_USE'         => 49,
+			'STATUS_2FA_REQUIRED'        => 50,
+			'STATUS_2FA_INVALID'         => 51,
+			'STATUS_2FA_LOCKED'          => 52,
 		];
 	}
 

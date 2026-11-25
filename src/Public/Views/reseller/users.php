@@ -3,7 +3,7 @@
 /**
  * Reseller Users (Bootstrap 5). Full-parity port of admin/users.php adapted to the
  * reseller contract: clean-JSON keyed serverSide DataTable
- * (ResellerTableRenderer::handleRegUsers emits data-only rows), with the status
+ * (ResellerTableController::handleRegUsers emits data-only rows), with the status
  * icon, credit / line-count badges, IP whois link and the per-row action dropdown
  * all rendered client-side.
  *
@@ -15,13 +15,16 @@
  * (Global / Direct Reports / Indirect Reports) mapped to the `reseller` (owner_id)
  * param, not an ajax reguser search; edit navigates to `user?id=…` (the reseller
  * user editor has no iframe-modal shell). Row actions are wired ONLY to endpoints
- * ResellerApiDispatcher exposes: `action=reg_user&sub=enable|disable|delete`
+ * Reseller\Ajax exposes: `action=reg_user&sub=enable|disable|delete`
  * (delete gated by `delete_users`) and `action=adjust_credits`. Permission gating
  * uses $rPermissions['create_sub_resellers'], not Authorization::check.
  */
 
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\LayoutRenderer;
+use XcVm\Domain\User\GroupService;
+
+global $db;
 
 if (empty($rPermissions['create_sub_resellers'])):
 ?>
@@ -41,6 +44,14 @@ $rSelectedFilter = RequestManager::has('filter') ? (string) RequestManager::get(
 $rDirectReports = (array) ($rPermissions['direct_reports'] ?? []);
 $rAllReports = (array) ($rPermissions['all_reports'] ?? []);
 $rReportUsers = (array) ($rPermissions['users'] ?? []);
+
+// An administrator's account in the tree is a full administrator's to manage
+// (GroupService::reservedGroups): no row action is offered on it.
+$rReservedUsers = [];
+if (count($rAllReports) > 0 && count($rReservedGroups = GroupService::reservedGroups()) > 0) {
+    $db->query('SELECT `id` FROM `users` WHERE `id` IN (' . implode(',', array_map('intval', $rAllReports)) . ') AND `member_group_id` IN (' . implode(',', $rReservedGroups) . ');');
+    $rReservedUsers = array_map('intval', array_column($db->get_rows(), 'id'));
+}
 ?>
 
 <div class="card">
@@ -153,9 +164,10 @@ LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function() {
-        var esc = function(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; };
+        var esc = function(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); };
         var isLocal = function(ip) { return !ip || ip === '127.0.0.1' || ip === '::1'; };
         var canDelete = <?= $rCanDelete ? 'true' : 'false'; ?>;
+        var reservedUsers = <?= json_encode($rReservedUsers); ?>;
         var lang = {
             edit: <?= json_encode($language::get('edit')); ?>,
             adjust: <?= json_encode($language::get('adjust_credits')); ?>,
@@ -218,6 +230,9 @@ LayoutRenderer::renderFooter('reseller');
                     searchable: false,
                     className: 'text-center',
                     render: function(d, t, row) {
+                        if (reservedUsers.indexOf(Number(row.id)) !== -1) {
+                            return row.notes ? '<i class="icon-base ti tabler-note text-primary" title="' + esc(row.notes) + '"></i>' : '';
+                        }
                         var items = '';
                         items += '<a class="dropdown-item" href="user?id=' + encodeURIComponent(row.id) + '">' + esc(lang.edit) + '</a>';
                         if (row.is_reseller) {

@@ -71,6 +71,13 @@ class WatchdogCommand implements CommandInterface {
 		$rCPUAverage = ($rWatchdog['cpu_average_array'] ?? []);
 
 		while (true) {
+			// Mode 2 is decided at the start: a generation that began on the
+			// other side of the move ends here, and the next one starts right.
+			if ($rApi !== NodeRole::refusesConnects()) {
+				echo "Mode changed! Break.\n";
+				break;
+			}
+
 			// Survive a MariaDB outage on the main: WAIT for the DB instead of
 			// exiting. A respawned process dies in bootstrap while the DB is
 			// down, which used to break the heartbeat chain on every node
@@ -125,7 +132,10 @@ class WatchdogCommand implements CommandInterface {
 			if (NodeFlows::on(NodeFlows::TELEMETRY) || $rApi) {
 				self::writeLocalTelemetry($rRequestsPerSecond);
 				sleep(2);
-				break;
+				// The next pass, in this process: a `break` here ended the
+				// generation after every pass, and restartDaemon() booted a new
+				// PHP process every 2 s on every node with TELEMETRY.
+				continue;
 			}
 
 			// ── CPU stats ────────────────────────────────────────
@@ -157,6 +167,7 @@ class WatchdogCommand implements CommandInterface {
 
 			// ── xc_fanout daemon health (admin "Service Status" panel) ──
 			$rStats['fanout'] = FanoutClient::status();
+			$rStats['qc_go'] = self::qcGo(); // QC-GO-DELIVERY
 
 			// ── PHP PIDs ─────────────────────────────────────────
 			// FPM worker pids, which connection rows record; the pool pid
@@ -176,7 +187,7 @@ class WatchdogCommand implements CommandInterface {
 			}
 
 			if ($rResult) {
-				if ($rServers[SERVER_ID]['is_main']) {
+				if ($rServers[SERVER_ID]['is_main'] ?? 0) {
 					if (SettingsManager::get('redis_handler')) {
 						// Redis down: keep the last known connections/users totals
 						// for this round instead of overwriting them with garbage.
@@ -298,6 +309,17 @@ class WatchdogCommand implements CommandInterface {
 		if (!is_dir($rDir)) {
 			return;
 		}
-		LocalTelemetry::refresh($rDir, TMP_PATH . 'watchdog_devices.json', time(), ['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status()], static fn(): array => SystemInfo::getDevices(LocalTelemetry::PROBE_TIMEOUT));
+		LocalTelemetry::refresh($rDir, TMP_PATH . 'watchdog_devices.json', time(), ['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status(), 'qc_go' => self::qcGo()], static fn(): array => SystemInfo::getDevices(LocalTelemetry::PROBE_TIMEOUT));
+	}
+
+	/** QC-GO-DELIVERY : 1 quand la delivery Go QC (odrelay 8147 / livehold 8150 / ckts 8160) écoute sur ce serveur (badge du tableau de bord). */
+	public static function qcGo(): int {
+		foreach ([8147, 8150, 8160] as $rPort) {
+			if ($rSock = @fsockopen('127.0.0.1', $rPort, $rErrNo, $rErrStr, 0.2)) {
+				fclose($rSock);
+				return 1;
+			}
+		}
+		return 0;
 	}
 }

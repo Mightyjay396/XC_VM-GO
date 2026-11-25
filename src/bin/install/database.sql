@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS `activation_codes` (
   `bouquets` mediumtext COLLATE utf8_unicode_ci DEFAULT NULL,
   `is_adult` tinyint(1) NOT NULL DEFAULT '0',
   `is_trial` tinyint(1) NOT NULL DEFAULT '0',
-  `purchase_cost` decimal(10,2) NOT NULL DEFAULT '0.00',
+  `purchase_cost` decimal(16,4) NOT NULL DEFAULT '0.0000',
   `dns_base` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `forced_country` varchar(3) COLLATE utf8_unicode_ci DEFAULT NULL,
   `max_connections` int(11) NOT NULL DEFAULT '1',
@@ -119,6 +119,23 @@ CREATE TABLE IF NOT EXISTS `blocked_uas` (
   PRIMARY KEY (`id`),
   KEY `exact_match` (`exact_match`),
   KEY `user_agent` (`user_agent`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `backup_targets`
+--
+
+CREATE TABLE IF NOT EXISTS `backup_targets` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `type` varchar(16) COLLATE utf8_unicode_ci NOT NULL,
+  `name` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `enabled` tinyint(1) NOT NULL DEFAULT '1',
+  `keep` int(11) NOT NULL DEFAULT '0',
+  `config` text COLLATE utf8_unicode_ci,
+  `created` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -390,6 +407,73 @@ CREATE TABLE IF NOT EXISTS `cluster_stream_ver` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `alert_channels`
+--
+
+CREATE TABLE IF NOT EXISTS `alert_channels` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `type` varchar(16) COLLATE utf8_unicode_ci NOT NULL,
+  `name` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `enabled` tinyint(1) NOT NULL DEFAULT '1',
+  `config` text COLLATE utf8_unicode_ci,
+  `created` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `alert_rules`
+--
+
+CREATE TABLE IF NOT EXISTS `alert_rules` (
+  `rule` varchar(32) COLLATE utf8_unicode_ci NOT NULL,
+  `enabled` tinyint(1) NOT NULL DEFAULT '1',
+  `threshold` int(11) NOT NULL DEFAULT '0',
+  `minutes` int(11) NOT NULL DEFAULT '0',
+  `channels` text COLLATE utf8_unicode_ci,
+  PRIMARY KEY (`rule`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `alert_state`
+--
+
+CREATE TABLE IF NOT EXISTS `alert_state` (
+  `rule` varchar(32) COLLATE utf8_unicode_ci NOT NULL,
+  `subject` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `label` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `active` tinyint(1) NOT NULL DEFAULT '0',
+  `since` int(11) NOT NULL DEFAULT '0',
+  `notified` tinyint(1) NOT NULL DEFAULT '0',
+  `sent` tinyint(1) NOT NULL DEFAULT '0',
+  `fired_at` int(11) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`rule`, `subject`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `alert_log`
+--
+
+CREATE TABLE IF NOT EXISTS `alert_log` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `date` int(11) NOT NULL,
+  `rule` varchar(32) COLLATE utf8_unicode_ci NOT NULL,
+  `kind` varchar(16) COLLATE utf8_unicode_ci NOT NULL,
+  `title` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `text` text COLLATE utf8_unicode_ci,
+  `results` text COLLATE utf8_unicode_ci,
+  PRIMARY KEY (`id`),
+  KEY `date` (`date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `crontab`
 --
 
@@ -402,7 +486,7 @@ CREATE TABLE IF NOT EXISTS `crontab` (
   PRIMARY KEY (`id`),
   KEY `enabled` (`enabled`),
   KEY `filename` (`filename`)
-) ENGINE=InnoDB AUTO_INCREMENT=31 DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=34 DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 --
 -- Dumping data for table `crontab`
@@ -419,7 +503,7 @@ INSERT INTO `crontab` (`id`, `filename`, `time`, `enabled`, `role`) VALUES
 (10, 'errors', '* * * * *', 1, 'all'),
 (11, 'tmdb', '0 * * * *', 1, 'main'),
 (12, 'tmp', '* * * * *', 1, 'all'),
-(13, 'users', '* * * * *', 1, 'legacy'),
+(13, 'users', '* * * * *', 1, 'main'),
 (14, 'vod', '* * * * *', 1, 'all'),
 (15, 'series', '* * * * *', 1, 'main'),
 (16, 'watch', '*/5 * * * *', 1, 'main'),
@@ -434,7 +518,10 @@ INSERT INTO `crontab` (`id`, `filename`, `time`, `enabled`, `role`) VALUES
 (27, 'plex', '*/5 * * * *', 1, 'main'),
 (28, 'maxmind', '0 4 * * 2', 1, 'all'),
 (29, 'proxy', '0 5 * * *', 1, 'main'),
-(30, 'cluster', '* * * * *', 1, 'main');
+(30, 'cluster', '* * * * *', 1, 'main'),
+(31, 'alerts', '* * * * *', 1, 'main'),
+(32, 'reminders', '0 9 * * *', 1, 'main'),
+(33, 'backup_verify', '0 5 * * 0', 1, 'main');
 
 -- --------------------------------------------------------
 
@@ -530,8 +617,12 @@ CREATE TABLE IF NOT EXISTS `epg` (
   `days_keep` int(11) DEFAULT '7',
   `data` longtext COLLATE utf8_unicode_ci,
   `offset` int(11) DEFAULT '0',
+  `merge_config` mediumtext DEFAULT NULL,
+  `merge_status` mediumtext DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+INSERT INTO `epg` (`epg_name`, `epg_file`, `days_keep`) SELECT 'Created Channels', '', 7 WHERE NOT EXISTS (SELECT 1 FROM `epg` WHERE `epg_name` = 'Created Channels');
 
 -- --------------------------------------------------------
 
@@ -568,7 +659,8 @@ CREATE TABLE IF NOT EXISTS `epg_data` (
   KEY `start` (`start`),
   KEY `end` (`end`),
   KEY `lang` (`lang`),
-  KEY `channel_id` (`channel_id`)
+  KEY `channel_id` (`channel_id`),
+  KEY `epg_merge_lookup` (`epg_id`,`channel_id`,`end`,`start`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- --------------------------------------------------------
@@ -588,6 +680,35 @@ CREATE TABLE IF NOT EXISTS `hmac_keys` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `telegram_chats`
+--
+
+CREATE TABLE IF NOT EXISTS `telegram_chats` (
+  `username` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `chat_id` varchar(32) COLLATE utf8_unicode_ci NOT NULL,
+  `updated` int(11) DEFAULT NULL,
+  PRIMARY KEY (`username`),
+  KEY `chat_id` (`chat_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `line_reminders`
+--
+
+CREATE TABLE IF NOT EXISTS `line_reminders` (
+  `line_id` int(11) NOT NULL,
+  `exp_date` int(11) NOT NULL,
+  `days` int(11) NOT NULL,
+  `sent` int(11) DEFAULT NULL,
+  PRIMARY KEY (`line_id`, `exp_date`, `days`),
+  KEY `exp_date` (`exp_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `lines`
 --
 
@@ -602,6 +723,7 @@ CREATE TABLE IF NOT EXISTS `lines` (
   `enabled` int(11) DEFAULT '1',
   `admin_notes` text COLLATE utf8_unicode_ci,
   `reseller_notes` text COLLATE utf8_unicode_ci,
+  `bouquet_order_custom` tinyint(1) NOT NULL DEFAULT '0',
   `bouquet` mediumtext COLLATE utf8_unicode_ci,
   `allowed_outputs` mediumtext COLLATE utf8_unicode_ci,
   `max_connections` int(11) DEFAULT '1',
@@ -625,6 +747,7 @@ CREATE TABLE IF NOT EXISTS `lines` (
   `package_id` int(11) DEFAULT NULL,
   `access_token` varchar(32) COLLATE utf8_unicode_ci DEFAULT NULL,
   `contact` text COLLATE utf8_unicode_ci,
+  `telegram` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
   `last_activity` int(11) DEFAULT NULL,
   `last_activity_array` mediumtext COLLATE utf8_unicode_ci,
   `updated` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -727,6 +850,7 @@ CREATE TABLE IF NOT EXISTS `lines_live` (
   `hmac_id` tinyint(4) DEFAULT NULL,
   `hmac_identifier` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `uuid` varchar(32) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `retire_token` char(32) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
   PRIMARY KEY (`activity_id`),
   KEY `user_agent` (`user_agent`),
   KEY `user_ip` (`user_ip`),
@@ -766,7 +890,8 @@ CREATE TABLE IF NOT EXISTS `lines_logs` (
   `date` int(11) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `stream_id` (`stream_id`),
-  KEY `user_id` (`user_id`)
+  KEY `user_id` (`user_id`),
+  KEY `date` (`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -784,7 +909,8 @@ CREATE TABLE IF NOT EXISTS `login_logs` (
   `login_ip` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `date` int(11) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `user_id` (`user_id`)
+  KEY `user_id` (`user_id`),
+  KEY `date` (`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -887,6 +1013,9 @@ CREATE TABLE IF NOT EXISTS `mag_devices` (
   `units` varchar(20) COLLATE utf8_unicode_ci DEFAULT 'metric',
   `token` varchar(32) COLLATE utf8_unicode_ci DEFAULT NULL,
   `lock_device` tinyint(4) DEFAULT '0',
+  `lock_user_agent` tinyint(1) NOT NULL DEFAULT '0',
+  `allowed_user_agents` mediumtext COLLATE utf8_unicode_ci DEFAULT NULL,
+  `last_user_agent` varchar(1024) COLLATE utf8_unicode_ci DEFAULT NULL,
   `theme_type` tinyint(1) DEFAULT '0',
   `mac_filter` varchar(50) COLLATE utf8_unicode_ci DEFAULT NULL,
   PRIMARY KEY (`mag_id`),
@@ -971,7 +1100,8 @@ CREATE TABLE IF NOT EXISTS `ondemand_check` (
   `fps` int(11) DEFAULT NULL,
   `errors` mediumtext COLLATE utf8_unicode_ci,
   `date` int(11) DEFAULT NULL,
-  PRIMARY KEY (`id`) USING BTREE
+  PRIMARY KEY (`id`) USING BTREE,
+  KEY `date` (`date`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -1266,6 +1396,7 @@ CREATE TABLE IF NOT EXISTS `servers` (
   `relay_seal` tinyint(1) NOT NULL DEFAULT '0',
   `proxy_key_gen` int(11) NOT NULL DEFAULT '0',
   `proxy_signed` tinyint(1) NOT NULL DEFAULT '0',
+  `serve_only` tinyint(1) NOT NULL DEFAULT '0',
   PRIMARY KEY (`id`),
   KEY `total_clients` (`total_clients`),
   KEY `status` (`status`)
@@ -1309,7 +1440,9 @@ CREATE TABLE IF NOT EXISTS `servers_stats` (
   `iostat_info` mediumtext COLLATE utf8_unicode_ci,
   `time` int(16) DEFAULT '0',
   `total_users` int(11) DEFAULT '0',
-  PRIMARY KEY (`id`) USING BTREE
+  PRIMARY KEY (`id`) USING BTREE,
+  KEY `time` (`time`) USING BTREE,
+  KEY `server_time` (`server_id`, `time`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -1345,6 +1478,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `show_all_category_mag` tinyint(4) DEFAULT '1',
   `flood_limit` int(11) DEFAULT '40',
   `flood_ips_exclude` mediumtext COLLATE utf8_unicode_ci,
+  `magscan_settings` mediumtext COLLATE utf8_unicode_ci,
   `flood_seconds` int(11) DEFAULT '2',
   `vod_bitrate_plus` int(11) DEFAULT '60',
   `read_buffer_size` int(11) DEFAULT '8192',
@@ -1360,6 +1494,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `stalker_theme` varchar(255) COLLATE utf8_unicode_ci DEFAULT 'digital',
   `rtmp_random` tinyint(4) DEFAULT '1',
   `api_ips` mediumtext COLLATE utf8_unicode_ci,
+  `api_legacy_keys` tinyint(1) DEFAULT '1',
   `shared_mount_prefixes` mediumtext COLLATE utf8_unicode_ci,
   `use_buffer` tinyint(4) DEFAULT '0',
   `restreamer_prebuffer` tinyint(4) DEFAULT '0',
@@ -1397,6 +1532,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `dropbox_remote` tinyint(1) DEFAULT '0',
   `ip_logout` tinyint(1) DEFAULT '1',
   `last_backup` int(10) DEFAULT '0',
+  `login_design` varchar(16) NOT NULL DEFAULT 'classic',
   `login_flood` tinyint(1) DEFAULT '15',
   `recaptcha_enable` tinyint(1) DEFAULT '0',
   `reseller_restrictions` tinyint(1) DEFAULT '0',
@@ -1422,6 +1558,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `streams_grouped` tinyint(1) DEFAULT '1',
   `disable_player_api` tinyint(1) DEFAULT '0',
   `disable_playlist` tinyint(1) DEFAULT '0',
+  `disable_playlist_ministra` tinyint(1) NOT NULL DEFAULT '0',
   `disable_xmltv` tinyint(1) DEFAULT '0',
   `disable_enigma2` tinyint(1) DEFAULT '1',
   `disable_ministra` tinyint(1) DEFAULT '0',
@@ -1459,6 +1596,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `legacy_xmltv` tinyint(4) DEFAULT '0',
   `mag_disable_ssl` tinyint(4) DEFAULT '0',
   `hide_failures` tinyint(4) DEFAULT '0',
+  `hide_active_codes` tinyint(1) NOT NULL DEFAULT '0',
   `legacy_panel_api` tinyint(4) DEFAULT '0',
   `connection_loop_per` tinyint(4) DEFAULT '0',
   `connection_loop_count` tinyint(4) DEFAULT '0',
@@ -1503,6 +1641,18 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `keep_login` int(11) DEFAULT '0',
   `keep_errors` int(11) DEFAULT '0',
   `keep_restarts` int(11) DEFAULT '0',
+  `keep_syslog` int(11) DEFAULT '0',
+  `maintenance_mode` tinyint(1) DEFAULT '0',
+  `maintenance_until` int(11) DEFAULT '0',
+  `maintenance_message` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `metrics_token` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `reminders_days` varchar(64) COLLATE utf8_unicode_ci DEFAULT '7,3,1',
+  `reminders_email` tinyint(1) DEFAULT '0',
+  `reminders_mag` tinyint(1) DEFAULT '0',
+  `reminders_webhook` tinyint(1) DEFAULT '0',
+  `reminders_message` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `reminders_telegram` int(11) DEFAULT '0',
+  `backup_verify` text COLLATE utf8_unicode_ci,
   `ignore_keyframes` int(11) DEFAULT '0',
   `seg_delete_threshold` int(11) DEFAULT '4',
   `fails_per_time` int(11) DEFAULT '86400',
@@ -1564,6 +1714,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `parse_type` varchar(12) COLLATE utf8_unicode_ci DEFAULT 'ptn',
   `fallback_parser` tinyint(1) DEFAULT '0',
   `alternative_titles` tinyint(1) DEFAULT '0',
+  `tmdb_episode_by_title` tinyint(1) DEFAULT '0',
   `search_items` int(3) DEFAULT '20',
   `enable_search` tinyint(4) DEFAULT '1',
   `modal_edit` tinyint(1) DEFAULT '1',
@@ -1618,17 +1769,27 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `cluster_orphan_conn_ttl_sec` int(11) DEFAULT '120',
   `lb_offline_admission` varchar(8) DEFAULT 'local',
   `cluster_kill_on_line_disable` tinyint(1) DEFAULT '1',
+  `cluster_conn_binding` varchar(8) DEFAULT 'observe',
   `cluster_ingest_concurrency` int(11) DEFAULT '6',
-  `lb_new_node_mode` varchar(8) DEFAULT 'legacy',
+  `lb_new_node_mode` varchar(16) DEFAULT 'legacy',
   `lb_scan_roots` varchar(1024) DEFAULT '["/home/xc_vm/content","/mnt","/media"]',
   `servers_stats_retention_days` int(11) DEFAULT '30',
   `cluster_audit_retention_days` int(11) DEFAULT '30',
   `cluster_policy_ver` int(11) DEFAULT '1',
   `cluster_legacy_ports` varchar(255) DEFAULT '',
   `cluster_legacy_urls` mediumtext COLLATE utf8_unicode_ci,
+  `lb_binary_canary_server` int(11) DEFAULT '0',
+  `lb_binary_canary_hours` int(11) DEFAULT '24',
+  `lb_release_pin` varchar(32) DEFAULT '',
+  `gateway_mode` varchar(32) DEFAULT 'segments+playlist',
   `cluster_db_allowlist` tinyint(1) DEFAULT '0',
   `cluster_db_allowlist_extra` varchar(1024) DEFAULT '',
+  `cluster_auto_mode_down_min` smallint(5) unsigned DEFAULT '0',
   `secure_stream_tokens` tinyint(1) DEFAULT '1',
+  `dashboard_alerts` tinyint(1) NOT NULL DEFAULT 1,
+  `dashboard_alerts_count` smallint unsigned NOT NULL DEFAULT 4,
+  `dashboard_alert_history` tinyint(1) NOT NULL DEFAULT 1,
+  `dashboard_alert_history_count` smallint unsigned NOT NULL DEFAULT 20,
   `disable_table_responsive` tinyint(1) DEFAULT '0'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
@@ -1637,7 +1798,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
 --
 
 INSERT INTO `settings` (`id`, `server_name`, `default_timezone`, `allowed_stb_types`, `client_prebuffer`, `split_clients`, `stream_max_analyze`, `show_not_on_air_video`, `not_on_air_video_path`, `show_banned_video`, `banned_video_path`, `show_expired_video`, `expired_video_path`, `show_expiring_video`, `expiring_video_path`, `mag_container`, `api_container`, `probesize`, `allowed_ips_admin`, `block_svp`, `allow_countries`, `user_auto_kick_hours`, `disallow_empty_user_agents`, `show_all_category_mag`, `flood_limit`, `flood_ips_exclude`, `flood_seconds`, `vod_bitrate_plus`, `read_buffer_size`, `seg_time`, `seg_list_size`, `tv_channel_default_aspect`, `playback_limit`, `show_tv_channel_logo`, `show_channel_logo_in_preview`, `enable_connection_problem_indication`, `vod_limit_perc`, `allowed_stb_types_for_local_recording`, `stalker_theme`, `rtmp_random`, `api_ips`, `use_buffer`, `restreamer_prebuffer`, `audio_restart_loss`, `stalker_lock_images`, `channel_number_type`, `stb_change_pass`, `enable_debug_stalker`, `online_capacity_interval`, `always_enabled_subtitles`, `test_download_url`, `api_pass`, `message_of_day`, `enable_isp_lock`, `show_isps`, `save_closed_connection`, `client_logs_save`, `case_sensitive_line`, `county_override_1st`, `disallow_2nd_ip_con`, `split_by`, `use_mdomain_in_lists`, `priority_backup`, `tmdb_api_key`, `mag_security`, `hls_accelerator`, `backups_pid`, `backups_to_keep`, `cc_time`, `dashboard_stats`, `default_entries`, `disable_trial`, `download_images`, `dropbox_keep`, `dropbox_remote`, `ip_logout`, `last_backup`, `login_flood`, `recaptcha_enable`, `reseller_restrictions`, `stats_pid`, `tmdb_pid`, `watch_pid`, `automatic_backups`, `dropbox_token`, `recaptcha_v2_secret_key`, `recaptcha_v2_site_key`, `tmdb_language`, `release_parser`, `language`, `encrypt_hls`, `disable_ts`, `disable_ts_allow_restream`, `disable_hls`, `disable_hls_allow_restream`, `disable_rtmp`, `disable_rtmp_allow_restream`, `date_format`, `datetime_format`, `streams_grouped`, `disable_player_api`, `disable_playlist`, `disable_xmltv`, `disable_enigma2`, `disable_ministra`, `api_redirect`, `movie_year_append`, `log_clear`, `cleanup`, `fingerprint_max`, `bruteforce_mac_attempts`, `bruteforce_username_attempts`, `bruteforce_frequency`, `auto_update_lbs`, `update_version`, `dashboard_display_alt`, `dashboard_map`, `cpu_limit`, `mem_limit`, `detect_restream_servers`, `detect_restream_block_user`, `detect_restream_block_ip`, `detect_restream_ports`, `cloudflare`, `js_navigate`, `encrypt_playlist`, `encrypt_playlist_restreamer`, `stream_logs_save`, `restrict_same_ip`, `show_tickets`, `percentage_match`, `thread_count`, `scan_seconds`, `verify_host`, `max_genres`, `legacy_get`, `legacy_xmltv`, `mag_disable_ssl`, `hide_failures`, `legacy_panel_api`, `connection_loop_per`, `connection_loop_count`, `api_probe`, `max_simultaneous_downloads`, `restart_php_fpm`, `cache_playlists`, `send_xc_vm_header`, `request_prebuffer`, `debug_show_errors`, `block_streaming_servers`, `block_proxies`, `ip_subnet_match`, `last_cache`, `last_cache_taken`, `ministra_allow_blank`, `enable_cache`, `legacy_mag_auth`, `ignore_invalid_users`, `on_demand_instant_off`, `on_demand_failure_exit`, `on_demand_wait_time`, `playlist_from_mysql`, `show_images`, `kill_rogue_ffmpeg`, `monitor_connection_status`, `stream_fail_sleep`, `custom_ip_header`, `send_protection_headers`, `send_altsvc_header`, `send_server_header`, `send_unique_header`, `send_unique_header_domain`, `max_items`, `restrict_playlists`, `mag_legacy_redirect`, `save_login_logs`, `save_restart_logs`, `keep_activity`, `keep_client`, `keep_login`, `keep_errors`, `keep_restarts`, `ignore_keyframes`, `seg_delete_threshold`, `fails_per_time`, `thread_count_movie`, `thread_count_show`, `redirect_timeout`, `create_expiration`, `redis_handler`, `redis_password`, `force_epg_timezone`, `check_vod`, `max_encode_movies`, `max_encode_cc`, `queue_loop`, `cache_thread_count`, `cache_changes`, `player_blur`, `player_opacity`, `player_allow_playlist`, `player_allow_bouquet`, `player_hide_incompatible`, `player_allow_hevc`, `read_native_hls`, `keep_protocol`, `ffmpeg_cpu`, `ffmpeg_gpu`, `header_stats`, `mag_keep_extension`, `show_connected_video`, `connected_video_path`, `disallow_2nd_ip_max`, `probesize_ondemand`, `ffmpeg_warnings`, `vod_sort_newest`, `mag_message`, `mag_default_type`, `fps_delay`, `fps_check_type`, `show_category_duplicates`, `probe_extra_wait`, `restream_deny_unauthorised`, `extract_subtitles`, `reseller_ssl_domain`, `disable_xmltv_restreamer`, `disable_playlist_restreamer`, `mag_load_all_channels`, `segment_wait_time`, `total_users`, `dts_legacy_ffmpeg`, `allow_cdn_access`, `disable_mag_token`, `ondemand_balance_equal`, `update_data`, `dashboard_status`, `on_demand_checker`, `on_demand_scan_time`, `on_demand_max_probe`, `on_demand_scan_keep`, `parse_type`, `fallback_parser`, `alternative_titles`, `search_items`, `enable_search`, `modal_edit`, `group_buttons`, `license`, `stop_failures`, `restreamer_bypass_proxy`, `mysql_sleep_kill`, `reissues`, `status_uuid`, `live_streaming_pass`, `update_channel`, `threshold_cpu`, `threshold_mem`, `threshold_disk`, `threshold_network`, `threshold_clients`, `auth_flood_seconds`, `auth_flood_limit`, `auth_flood_sleep`, `php_loopback`, `shared_mount_prefixes`, `fanout_hls_window`, `fanout_grace_sec`, `fanout_write_timeout_sec`, `fanout_chunk_bytes`, `fanout_max_gop_bytes`, `fanout_source_insecure`, `fanout_default_prebuffer_sec`, `fanout_idle_buffer_grace_sec`, `fanout_idle_buffer_ratio`, `fanout_source_backend`, `fanout_supervise`) VALUES
-(1, 'XC_VM', 'Europe/London', '[]', 10, 'equal', 5000000, 1, '', 1, '', 1, '', 1, '', 'ts', 'ts', 5000000, '', 1, '[\"ALL\"]', 3, 1, 1, 40, '', 2, 400, 8192, 10, 6, 'fit', 3, 1, 1, 1, 10, '[]', 'default', 1, '', 0, 0, 0, '', 'bouquet', 1, 0, 10, 0, 'https://speed.hetzner.de/100MB.bin', '', 'Welcome to XC_VM', 1, 1, 1, 1, 1, 0, 0, 'conn', 1, 1, '', 1, 1, 0, 0, 0, 1, 50, 0, 1, 10, 0, 1, 0, 20, 0, 1, 0, 0, 0, 'daily', '', '', '', '', 'python', 'en', 0, 0, 0, 0, 0, 0, 0, 'Y-m-d', 'Y-m-d H:i:s', 1, 0, 0, 0, 0, 0, 0, 0, 31, 1, 25, 10, 10, 300, 1, '1.1.0', 1, 0, 0, 0, 1, 0, 0, '[25461,25550,31210]', 0, 1, 1, 0, 1, 1, 0, 80, 50, 86400, 0, 3, 1, 1, 0, 0, 1, 0, 0, 1, 2, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 20, 0, 1, 1, 1, 10, '', 0, 0, '', '', '', 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 4, 86400, 5, 1, 5, 5, 0, '', 0, 0, 10, 1, 5, 10, 1, 0, 10, 1, 1, 0, 0, 1, 0, '4.0', '4.0', 1, 1, 1, NULL, 1, 256000, 1, 0, 'You can switch between the modern and legacy themes by using the <span class=\"label\">Green</span> and <span class=\"label\">Yellow</span> buttons on your remote control. Doing so will restart your device.', 1, 600, 1, 0, 10, 1, 0, 1, 0, 0, 0, 20, 0, 0, 0, 0, 0, NULL, 1, 0, 3600, 5, 604800, 'ptn', 0, 0, 20, 1, 1, 1, NULL, 3, 0, 21600, NULL, NULL, NULL, 'stable', 67, 67, 67, 67, 67, 10, 30, 1, 1, '/opt/arr/media/', 6, 10, 15, 12032, 10528000, 1, 0, 30, 0.50, 'auto', 1);
+(1, 'XC_VM', 'Europe/London', '[]', 10, 'equal', 5000000, 1, '', 1, '', 1, '', 1, '', 'ts', 'ts', 5000000, '', 1, '[\"ALL\"]', 3, 1, 1, 40, '', 2, 400, 8192, 10, 6, 'fit', 3, 1, 1, 1, 10, '[]', 'default', 1, '', 0, 0, 0, '', 'bouquet', 1, 0, 10, 0, 'https://speed.hetzner.de/100MB.bin', '', 'Welcome to XC_VM', 1, 1, 1, 1, 1, 0, 0, 'conn', 1, 1, '', 1, 1, 0, 0, 0, 1, 50, 0, 1, 10, 0, 1, 0, 20, 0, 1, 0, 0, 0, 'daily', '', '', '', '', 'python', 'en', 0, 0, 0, 0, 0, 0, 0, 'Y-m-d', 'Y-m-d H:i:s', 1, 0, 0, 0, 0, 0, 0, 0, 31, 1, 25, 10, 10, 300, 1, '1.1.0', 1, 0, 0, 0, 1, 0, 0, '[25461,25550,31210]', 0, 1, 1, 0, 1, 1, 0, 80, 50, 86400, 0, 3, 1, 1, 0, 0, 1, 0, 0, 1, 2, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 20, 0, 1, 1, 1, 10, '', 0, 0, '', '', '', 0, 1, 0, 1, 1, 15552000, 15552000, 31536000, 31536000, 31536000, 0, 4, 86400, 5, 1, 5, 5, 0, '', 0, 0, 10, 1, 5, 10, 1, 0, 10, 1, 1, 0, 0, 1, 0, '4.0', '4.0', 1, 1, 1, NULL, 1, 256000, 1, 0, 'You can switch between the modern and legacy themes by using the <span class=\"label\">Green</span> and <span class=\"label\">Yellow</span> buttons on your remote control. Doing so will restart your device.', 1, 600, 1, 0, 10, 1, 0, 1, 0, 0, 0, 20, 0, 0, 0, 0, 0, NULL, 1, 0, 3600, 5, 604800, 'ptn', 0, 0, 20, 1, 1, 1, NULL, 3, 0, 21600, NULL, NULL, NULL, 'stable', 67, 67, 67, 67, 67, 10, 30, 1, 1, '/opt/arr/media/', 6, 10, 15, 12032, 10528000, 1, 0, 30, 0.50, 'auto', 1);
 
 -- --------------------------------------------------------
 
@@ -1670,6 +1831,7 @@ CREATE TABLE IF NOT EXISTS `streams` (
   `category_id` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
   `stream_display_name` mediumtext COLLATE utf8_unicode_ci,
   `stream_source` mediumtext COLLATE utf8_unicode_ci,
+  `import_source_hash` char(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
   `stream_icon` mediumtext COLLATE utf8_unicode_ci,
   `notes` mediumtext COLLATE utf8_unicode_ci,
   `enable_transcode` tinyint(4) DEFAULT '0',
@@ -1685,6 +1847,7 @@ CREATE TABLE IF NOT EXISTS `streams` (
   `epg_id` int(11) DEFAULT NULL,
   `channel_id` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `epg_lang` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `epg_bindings` mediumtext DEFAULT NULL,
   `order` int(11) DEFAULT '0',
   `auto_restart` mediumtext COLLATE utf8_unicode_ci,
   `transcode_profile_id` int(11) DEFAULT '0',
@@ -1719,6 +1882,7 @@ CREATE TABLE IF NOT EXISTS `streams` (
   `fps_restart` tinyint(1) DEFAULT '0',
   `fps_threshold` int(11) DEFAULT '90',
   `direct_proxy` tinyint(1) DEFAULT '0',
+  `force_ffmpeg` tinyint(1) DEFAULT '0',
   PRIMARY KEY (`id`),
   KEY `type` (`type`),
   KEY `enable_transcode` (`enable_transcode`),
@@ -1729,7 +1893,8 @@ CREATE TABLE IF NOT EXISTS `streams` (
   KEY `order` (`order`),
   KEY `direct_source` (`direct_source`),
   KEY `rtmp_output` (`rtmp_output`),
-  KEY `uuid` (`uuid`)
+  KEY `uuid` (`uuid`),
+  UNIQUE KEY `vod_import_source` (`type`, `import_source_hash`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -1776,7 +1941,8 @@ INSERT INTO `streams_arguments` (`id`, `argument_cat`, `argument_name`, `argumen
 (18, 'transcode', 'DeInterlacing Filter', 'It check pixels of previous, current and next frames to re-create the missed field by some local adaptive method (edge-directed interpolation) and uses spatial check to prevent most artifacts. ', NULL, '', '-filter_complex \"yadif\"', 'radio', '0'),
 (19, 'fetch', 'Headers', 'Set Custom Headers', 'http', 'headers', '-headers \'%s\'', 'text', NULL),
 (20, 'fetch', 'Force Input Audio Codec', 'Force FFmpeg to interpret the input audio stream as a specific codec (e.g., aac, ac3). Useful for streams with corrupted PMT metadata.', NULL, 'force_input_acodec', '-acodec %s', 'text', NULL),
-(21, 'fetch', 'Skip FFProbe', 'Skip codec detection via ffprobe. Assumes h264 video and AAC audio. Use for streams with corrupted PMT where ffprobe misdetects codecs.', NULL, 'skip_ffprobe', '', 'radio', '0');
+(21, 'fetch', 'Skip FFProbe', 'Skip codec detection via ffprobe. Assumes h264 video and AAC audio. Use for streams with corrupted PMT where ffprobe misdetects codecs.', NULL, 'skip_ffprobe', '', 'radio', '0'),
+(22, 'resolve', 'Maximum Resolution', 'For a source resolved through yt-dlp (YouTube, Twitch and the like): the tallest video to ask the platform for, in pixels (e.g. 720). Empty: the best it offers.', 'http', 'max_height', '', 'text', NULL);
 
 -- --------------------------------------------------------
 
@@ -1830,7 +1996,8 @@ CREATE TABLE IF NOT EXISTS `streams_errors` (
   `error` varchar(500) DEFAULT NULL,
   PRIMARY KEY (`id`) USING BTREE,
   KEY `stream_id` (`stream_id`) USING BTREE,
-  KEY `server_id` (`server_id`) USING BTREE
+  KEY `server_id` (`server_id`) USING BTREE,
+  KEY `date` (`date`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
 -- --------------------------------------------------------
@@ -1847,7 +2014,8 @@ CREATE TABLE IF NOT EXISTS `streams_logs` (
   `source` varchar(1024) DEFAULT NULL,
   `date` int(11) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `stream_id` (`stream_id`)
+  KEY `stream_id` (`stream_id`),
+  KEY `date` (`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
 -- --------------------------------------------------------
@@ -2060,12 +2228,13 @@ CREATE TABLE IF NOT EXISTS `users` (
   `date_registered` int(11) DEFAULT NULL,
   `last_login` int(11) DEFAULT NULL,
   `member_group_id` int(11) DEFAULT NULL,
-  `credits` float DEFAULT '0',
+  `credits` decimal(16,4) DEFAULT '0.0000',
   `notes` mediumtext COLLATE utf8_unicode_ci,
   `status` tinyint(2) DEFAULT '1',
   `reseller_dns` mediumtext COLLATE utf8_unicode_ci,
   `owner_id` int(11) DEFAULT '0',
   `override_packages` text COLLATE utf8_unicode_ci,
+  `allowed_bouquets` text COLLATE utf8_unicode_ci DEFAULT NULL,
   `hue` varchar(50) COLLATE utf8_unicode_ci DEFAULT NULL,
   `theme` int(1) DEFAULT '0',
   `ui_prefs` text COLLATE utf8_unicode_ci DEFAULT NULL,
@@ -2074,8 +2243,69 @@ CREATE TABLE IF NOT EXISTS `users` (
   `lang` varchar(50) COLLATE utf8_unicode_ci DEFAULT 'en',
   PRIMARY KEY (`id`),
   KEY `member_group_id` (`member_group_id`),
-  KEY `username` (`username`),
+  UNIQUE KEY `username` (`username`),
   KEY `password` (`password`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `admin_audit`
+--
+
+CREATE TABLE IF NOT EXISTS `admin_audit` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `date` int(11) NOT NULL,
+  `user_id` int(11) DEFAULT NULL,
+  `username` varchar(50) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `ip` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `source` varchar(8) COLLATE utf8_unicode_ci NOT NULL,
+  `action` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `result` tinyint(1) DEFAULT NULL,
+  `detail` text COLLATE utf8_unicode_ci,
+  PRIMARY KEY (`id`),
+  KEY `date` (`date`),
+  KEY `user_id` (`user_id`),
+  KEY `action` (`action`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `api_tokens`
+--
+
+CREATE TABLE IF NOT EXISTS `api_tokens` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `name` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `hash` char(64) COLLATE utf8_unicode_ci NOT NULL,
+  `prefix` varchar(16) COLLATE utf8_unicode_ci NOT NULL,
+  `scope` varchar(16) COLLATE utf8_unicode_ci NOT NULL DEFAULT 'full',
+  `allow_sql` tinyint(1) NOT NULL DEFAULT '0',
+  `ips` text COLLATE utf8_unicode_ci,
+  `expires` int(11) DEFAULT NULL,
+  `last_used` int(11) DEFAULT NULL,
+  `last_ip` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `created` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `hash` (`hash`),
+  KEY `user_id` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `users_2fa`
+--
+
+CREATE TABLE IF NOT EXISTS `users_2fa` (
+  `user_id` int(11) NOT NULL,
+  `secret` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `recovery` text COLLATE utf8_unicode_ci,
+  `last_step` int(11) NOT NULL DEFAULT '0',
+  `created` int(11) DEFAULT NULL,
+  PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -2088,7 +2318,7 @@ CREATE TABLE IF NOT EXISTS `users_credits_logs` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `target_id` int(11) DEFAULT NULL,
   `admin_id` int(11) DEFAULT NULL,
-  `amount` float DEFAULT NULL,
+  `amount` decimal(16,4) DEFAULT NULL,
   `date` int(11) DEFAULT NULL,
   `reason` mediumtext,
   PRIMARY KEY (`id`),
@@ -2113,7 +2343,7 @@ CREATE TABLE IF NOT EXISTS `users_groups` (
   `allowed_pages` mediumtext COLLATE utf8_unicode_ci,
   `can_delete` tinyint(4) DEFAULT '1',
   `create_sub_resellers` tinyint(4) DEFAULT '0',
-  `create_sub_resellers_price` float DEFAULT '0',
+  `create_sub_resellers_price` decimal(16,4) DEFAULT '0.0000',
   `reseller_client_connection_logs` tinyint(4) DEFAULT '1',
   `can_view_vod` tinyint(4) DEFAULT '1',
   `allow_download` tinyint(4) DEFAULT '1',
@@ -2124,6 +2354,7 @@ CREATE TABLE IF NOT EXISTS `users_groups` (
   `minimum_username_length` int(16) DEFAULT '8',
   `minimum_password_length` int(16) DEFAULT '8',
   `allow_change_bouquets` tinyint(1) DEFAULT '0',
+  `require_2fa` tinyint(1) DEFAULT '0',
   `notice_html` mediumtext COLLATE utf8_unicode_ci,
   `subresellers` mediumtext COLLATE utf8_unicode_ci,
   PRIMARY KEY (`group_id`),
@@ -2153,11 +2384,12 @@ CREATE TABLE IF NOT EXISTS `users_logs` (
   `action` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `log_id` int(11) DEFAULT NULL,
   `package_id` int(11) DEFAULT NULL,
-  `cost` int(16) DEFAULT NULL,
-  `credits_after` int(16) DEFAULT NULL,
+  `cost` double DEFAULT NULL,
+  `credits_after` double DEFAULT NULL,
   `date` int(30) DEFAULT NULL,
   `deleted_info` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `owner_date` (`owner`, `date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -2172,8 +2404,8 @@ CREATE TABLE IF NOT EXISTS `users_packages` (
   `is_addon` tinyint(4) DEFAULT '0',
   `is_trial` tinyint(4) DEFAULT '0',
   `is_official` tinyint(4) DEFAULT '0',
-  `trial_credits` float DEFAULT '0',
-  `official_credits` float DEFAULT '0',
+  `trial_credits` decimal(16,4) DEFAULT '0.0000',
+  `official_credits` decimal(16,4) DEFAULT '0.0000',
   `trial_duration` int(11) DEFAULT '0',
   `trial_duration_in` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `official_duration` int(11) DEFAULT '0',
@@ -2198,6 +2430,25 @@ CREATE TABLE IF NOT EXISTS `users_packages` (
   KEY `can_gen_mag` (`is_mag`) USING BTREE,
   KEY `can_gen_e2` (`is_e2`) USING BTREE,
   KEY `is_line` (`is_line`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `watch_refresh`
+--
+-- The TMDb refresh queue: core's VOD code queues movies, series and episodes in
+-- it, cron:tmdb works it off. The name predates core owning it (it was the watch
+-- module's).
+--
+
+CREATE TABLE IF NOT EXISTS `watch_refresh` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `type` int(1) DEFAULT '0',
+  `stream_id` int(16) DEFAULT '0',
+  `status` int(8) DEFAULT '0',
+  `dateadded` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -2386,3 +2637,20 @@ COMMIT;
 /*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
 /*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+
+CREATE TABLE IF NOT EXISTS `connection_retirements` (
+ `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+ `server_id` int NOT NULL,
+ `uuid` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ `generation` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ `date_start` int NOT NULL,
+ `retired_at` int NOT NULL,
+ `retire_token` char(32) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+ `command_id` char(32) DEFAULT NULL,
+ `notify_done` tinyint NOT NULL DEFAULT 0,
+ `retry_at` int NOT NULL DEFAULT 0,
+ PRIMARY KEY (`id`),
+ UNIQUE KEY `lifecycle` (`server_id`,`uuid`,`generation`),
+ KEY `pending` (`notify_done`,`retry_at`,`id`),
+ KEY `retired_done` (`notify_done`,`retired_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;

@@ -5,6 +5,7 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Process\ProcessManager;
 
 /**
  * TmpCronJob — tmp cron job
@@ -39,6 +40,7 @@ class TmpCronJob implements CommandInterface {
 		'xcvm_core_check' => 172800,
 		'ytdlp_check' => 172800,
 		'ffmpeg_check' => 172800,
+		'binaries_check' => 172800,
 		// "At most once" for each change of the servers (replicaChecks).
 		'replica_servers_checked' => 172800,
 		// The updater's archive: post-update reads it again after the chown of
@@ -49,6 +51,16 @@ class TmpCronJob implements CommandInterface {
 	/** Seconds a file in a swept directory may stay untouched before the sweep removes it. */
 	public static function maxAge(string $rFile): int {
 		return self::KEEP[$rFile] ?? 600;
+	}
+
+	/**
+	 * Is this file the lock of a cron that still runs? It stays whatever its
+	 * age: with it swept, a second copy of the cron started beside the first.
+	 * A lock whose cron is gone, a lock of the previous release (it names a
+	 * pid alone) and a daemon's daemon_<name>.lock are swept by age as before.
+	 */
+	public static function keepsLock(string $rPath): bool {
+		return strpos(basename($rPath), 'lock_') === 0 && ProcessManager::cronLockHolder($rPath, true) > 0;
 	}
 
 	public function execute(array $rArgs): int {
@@ -77,7 +89,7 @@ class TmpCronJob implements CommandInterface {
 				if ($rFile === '.' || $rFile === '..') {
 					continue;
 				}
-				if (is_file($fullPath) && time() - filemtime($fullPath) >= self::maxAge($rFile) && stripos($rFile, 'ministra_') === false) {
+				if (is_file($fullPath) && time() - filemtime($fullPath) >= self::maxAge($rFile) && stripos($rFile, 'ministra_') === false && !self::keepsLock($fullPath)) {
 					unlink($fullPath);
 				}
 			}

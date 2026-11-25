@@ -22,12 +22,23 @@ class StreamUtils {
 	 * @param string $rCookie Raw cookie string.
 	 * @return string Cookie string with `path=/` and `domain=` appended if missing.
 	 */
+
+	/**
+	 * A stream's first source: `stream_source` is a JSON list, and one that is
+	 * empty or does not parse has none ('').
+	 */
+	public static function firstSource(mixed $rStreamSource): string {
+		$rSources = is_string($rStreamSource) ? json_decode($rStreamSource, true) : null;
+		$rFirst = is_array($rSources) ? reset($rSources) : false;
+		return is_string($rFirst) ? $rFirst : '';
+	}
+
 	public static function fixCookie(string $rCookie) {
 		$rPath = false;
 		$rDomain = false;
 		$rSplit = explode(';', $rCookie);
 		foreach ($rSplit as $rPiece) {
-			list($rKey, $rValue) = explode('=', $rPiece, 2);
+			$rKey = explode('=', $rPiece, 2)[0];
 			if (strtolower($rKey) == 'path') {
 				$rPath = true;
 			} else {
@@ -36,7 +47,9 @@ class StreamUtils {
 				}
 			}
 		}
-		if (!substr($rCookie, -1) == ';') {
+		// A cookie typed without its last `;` (blanks after it aside) gets it,
+		// so what is added below does not run into its value.
+		if (substr(rtrim($rCookie), -1) != ';') {
 			$rCookie .= ';';
 		}
 		if (!$rPath) {
@@ -82,13 +95,101 @@ class StreamUtils {
 					$rArgument['value'] = self::proxyURL((string) $rArgument['value']);
 				}
 				if ($rArgument['argument_type'] == 'text') {
-					$rReturn[] = sprintf($rArgument['argument_cmd'], $rArgument['value']);
+					$rReturn[] = sprintf($rArgument['argument_cmd'], self::quoteForTemplate((string) $rArgument['argument_cmd'], (string) $rArgument['value']));
 				} else {
 					$rReturn[] = $rArgument['argument_cmd'];
 				}
 			}
 		}
 		return $rReturn;
+	}
+
+	/**
+	 * Quote a text argument's value for the place its %s takes in the command
+	 * template, so the shell that runs the line hands the program the value
+	 * exactly as stored, as one argument: inside '...', inside "...", or
+	 * wrapped in "..." where the template leaves it unquoted. A template
+	 * without %s (%d) formats the number itself.
+	 *
+	 * @param string $rTemplate argument_cmd, e.g. `-user_agent "%s"`.
+	 * @param string $rValue    The stored value.
+	 * @return string
+	 */
+	private static function quoteForTemplate(string $rTemplate, string $rValue): string {
+		$rPosition = strpos($rTemplate, '%s');
+		if ($rPosition === false) {
+			return $rValue;
+		}
+		$rQuote = '';
+		for ($i = 0; $i < $rPosition; $i++) {
+			if ($rQuote === '') {
+				$rQuote = in_array($rTemplate[$i], ['"', "'"]) ? $rTemplate[$i] : '';
+			} elseif ($rTemplate[$i] === $rQuote) {
+				$rQuote = '';
+			}
+		}
+		if ($rQuote === "'") {
+			return str_replace("'", "'\\''", $rValue);
+		}
+		// Double quotes also where the template has none: parseTranscode() looks
+		// for -filter_complex "..." in the text, and a value escaped for them
+		// cannot hold one.
+		$rValue = addcslashes($rValue, '"$`\\');
+		return $rQuote === '"' ? $rValue : '"' . $rValue . '"';
+	}
+
+	/**
+	 * Re-quote an operator-written argument string (custom ffmpeg command) for
+	 * the shell that runs the line: split it the way a shell would — quotes and
+	 * backslashes group, nothing expands — then quote every argument on its own.
+	 * `;`, `|`, `$(...)` and the like reach ffmpeg as text instead of running
+	 * (GHSA-q9p6-374v-3jrj). A whole `{TOKEN}` stays bare for the command
+	 * template to fill.
+	 *
+	 * @param string $rArgs e.g. `-i {STREAM_SOURCE} -vf "scale=1280:720"`.
+	 * @return string
+	 */
+	public static function shellArguments(string $rArgs): string {
+		$rTokens = [];
+		$rToken = null;
+		$rQuote = '';
+		$rLength = strlen($rArgs);
+		for ($i = 0; $i < $rLength; $i++) {
+			$c = $rArgs[$i];
+			if ($rQuote === "'") {
+				if ($c === "'") {
+					$rQuote = '';
+				} else {
+					$rToken .= $c;
+				}
+			} elseif ($rQuote === '"') {
+				if ($c === '"') {
+					$rQuote = '';
+				} elseif ($c === '\\' && $i + 1 < $rLength && strpos('"\\$`', $rArgs[$i + 1]) !== false) {
+					$rToken .= $rArgs[++$i];
+				} else {
+					$rToken .= $c;
+				}
+			} elseif ($c === "'" || $c === '"') {
+				$rQuote = $c;
+				$rToken = (string) $rToken;
+			} elseif ($c === '\\' && $i + 1 < $rLength) {
+				$rToken .= $rArgs[++$i];
+			} elseif (ctype_space($c)) {
+				if ($rToken !== null) {
+					$rTokens[] = $rToken;
+					$rToken = null;
+				}
+			} else {
+				$rToken .= $c;
+			}
+		}
+		if ($rToken !== null) {
+			$rTokens[] = $rToken;
+		}
+		// A token inside a longer argument is not one: its value's quotes would
+		// close the argument's. `{` leaves the quotes there, so none is filled.
+		return implode(' ', array_map(fn($rArg) => preg_match('/^\{[A-Z0-9_]+\}$/D', $rArg) ? $rArg : str_replace('{', "'\\{'", escapeshellarg($rArg)), $rTokens));
 	}
 
 	/**
@@ -107,7 +208,8 @@ class StreamUtils {
 				if (isset($rArgument['cmd'])) {
 					$rArgs[$rKey] = $rArgument = $rArgument['cmd'];
 				}
-				if (preg_match('/-filter_complex "(.*?)"/', $rArgument, $rMatches)) {
+				// A clause runs to its closing quote: a quote escaped for the shell (\") is part of it.
+				if (preg_match('/-filter_complex "((?:[^"\\\\\n]|\\\\[^\n])*+)"/', $rArgument, $rMatches)) {
 					$rArgs[$rKey] = trim(str_replace($rMatches[0], '', $rArgs[$rKey]));
 					$rFitlerComplex[] = $rMatches[1];
 				}
@@ -153,11 +255,90 @@ class StreamUtils {
 	 * IP that asked for it, so yt-dlp goes through the stream's own proxy, the
 	 * one ffmpeg fetches through.
 	 *
-	 * @param string $rURL   Source URL.
-	 * @param string $rProxy The stream's "HTTP Proxy" value ('' for none).
+	 * @param string $rURL       Source URL.
+	 * @param string $rProxy     The stream's "HTTP Proxy" value ('' for none).
+	 * @param int    $rMaxHeight The stream's "Maximum Resolution" (0 for none): the tallest video yt-dlp may pick.
 	 * @return string Normalized/resolved URL.
 	 */
-	public static function parseStreamURL(string $rURL, string $rProxy = '') {
+	/** QC ClearKey — options ffmpeg (avant -i) mémorisées par URL nettoyée dans parseStreamURL(). */
+	private static array $drmOptions = [];
+
+	/**
+	 * QC ClearKey : retire `decryption_key=KID:KEY` (ou drmkey= / clearkey= / license_key=, KID optionnel)
+	 * de l'URL d'une source et mémorise les options ffmpeg : -cenc_decryption_key (DASH .mpd) ou -decryption_key (MP4/HLS fMP4).
+	 */
+	public static function stripDrmKey(string $rURL): string {
+		$rURL = str_replace('&amp;', '&', $rURL);
+		// KID:KEY (ou KEY seule), plusieurs paires séparées par des virgules : kid1:key1,kid2:key2
+		if (!preg_match('/[?&|#](?:decryption_key|drmkey|clearkey|license_key)=((?:(?:[0-9a-fA-F]{32}:)?[0-9a-fA-F]{32})(?:,(?:[0-9a-fA-F]{32}:)?[0-9a-fA-F]{32})*)(?=$|[&#|])/', $rURL, $m, PREG_OFFSET_CAPTURE)) {
+			return $rURL;
+		}
+		$rPairs = [];
+		$rSingle = '';
+		foreach (explode(',', strtolower($m[1][0])) as $rPair) {
+			$rParts = explode(':', $rPair);
+			if (count($rParts) == 2) {
+				$rPairs[] = $rParts[0] . '=' . $rParts[1];
+			} else {
+				$rSingle = $rParts[0];
+			}
+		}
+		$rClean = substr($rURL, 0, $m[0][1]) . substr($rURL, $m[0][1] + strlen($m[0][0]));
+		$rClean = preg_replace(['/\?&/', '/&&+/', '/[?&#|]$/'], ['?', '&', ''], $rClean);
+		$rIsDash = (bool) preg_match('/\.mpd(\?|$)/i', $rClean);
+		$rOpts = [];
+		if ($rPairs !== []) {
+			$rOpts[] = ($rIsDash ? '-cenc_decryption_keys ' : '-decryption_keys ') . escapeshellarg(implode(':', $rPairs));
+		}
+		if ($rSingle !== '' || $rPairs === []) {
+			$rKey = $rSingle !== '' ? $rSingle : explode('=', $rPairs[0])[1];
+			$rOpts[] = ($rIsDash ? '-cenc_decryption_key ' : '-decryption_key ') . $rKey;
+		} elseif (count($rPairs) == 1) {
+			// une seule paire : la clé sert aussi de clé par défaut (pistes sans KID explicite)
+			$rOpts[] = ($rIsDash ? '-cenc_decryption_key ' : '-decryption_key ') . explode('=', $rPairs[0])[1];
+		}
+		self::$drmOptions[$rClean] = implode(' ', $rOpts);
+		return $rClean;
+	}
+
+	/** Options ffmpeg ClearKey à placer avant -i pour une URL nettoyée par stripDrmKey(), '' si aucune. */
+	public static function drmOptions(string $rURL): string {
+		return self::$drmOptions[$rURL] ?? '';
+	}
+
+	/**
+	 * QC ClearKey : source DASH live (.mpd) servie par mpdproxy (127.0.0.1:8098) en manifeste STATIQUE 30 s derrière
+	 * le direct : ffmpeg ne recharge plus le manifeste (fin des relectures en boucle / désynchro du démuxeur DASH) et lit
+	 * en -re à distance constante du direct. Le proxy HTTP de la chaîne, s'il y en a un, est appliqué par mpdproxy
+	 * (manifeste + relais des segments) → ne pas passer -http_proxy à ffmpeg. null si non applicable / mpdproxy absent.
+	 */
+	/** Lecture d'une source mpdproxy statique (manifeste 60 s derrière le direct) : -re = tampon de 60 s qui absorbe les
+	 *  pauses de publication du packager source (observé : 8 à 40 s à certains splices pub, 100 s une fois) ; après une pause plus longue,
+	 *  rattrapage à 1.5x jusqu'à retrouver les 60 s ; le relais mpdproxy attend qu'un segment existe (jamais de 404 en
+	 *  rafale) ; rw_timeout 60 s par segment > réponse max du relais (~35 s). */
+	public const DASH_STATIC_READ_OPTIONS = '-re -readrate_catchup 1.5 -rw_timeout 60000000';
+
+	public static function dashStaticSource(string $rURL, string $rProxy = ''): ?string {
+		if (!preg_match('/\.mpd(\?|$)/i', $rURL) || str_starts_with($rURL, 'http://127.0.0.1:8098/')) {
+			return null;
+		}
+		$rSock = @fsockopen('127.0.0.1', 8098, $rErrNo, $rErrStr, 0.5);
+		if (!$rSock) {
+			return null;
+		}
+		fclose($rSock);
+		$rStatic = 'http://127.0.0.1:8098/mpd?s=1&d=60&u=' . rawurlencode($rURL) . ($rProxy !== '' ? '&p=' . rawurlencode(self::proxyURL($rProxy)) : '');
+		self::$drmOptions[$rStatic] = self::$drmOptions[$rURL] ?? '';
+		return $rStatic;
+	}
+
+	/** Retire l'argument « proxy » d'une liste d'arguments de flux (mpdproxy applique déjà le proxy). */
+	public static function withoutProxyArgument(array $rArguments): array {
+		return array_values(array_filter($rArguments, fn($rArgument) => ($rArgument['argument_key'] ?? '') !== 'proxy'));
+	}
+
+	public static function parseStreamURL(string $rURL, string $rProxy = '', int $rMaxHeight = 0) {
+		$rURL = self::stripDrmKey($rURL);
 		$rProtocol = strtolower(substr($rURL, 0, 4));
 		if ($rProtocol == 'rtmp') {
 			if (stristr($rURL, '$OPT')) {
@@ -167,18 +348,42 @@ class StreamUtils {
 			$rURL .= ' live=1 timeout=10';
 		} else {
 			if (self::needsResolver($rURL)) {
-				// ponytail: without a JS runtime YouTube's default clients give a live
-				// stream only as separate video/audio, which -f best cannot pick;
-				// android_vr still serves one muxed HLS playlist. Drop it once nodes have deno.
-				$rArgv = [YOUTUBE_BIN, '--extractor-args', 'youtube:player_client=default,android_vr', '-q', '--get-url', '--skip-download', '-f', 'best'];
-				if ($rProxy !== '') {
-					array_push($rArgv, '--proxy', self::proxyURL($rProxy));
-				}
-				[, $rURLs] = ProcessRunner::capture([...$rArgv, '--', $rURL]);
-				list($rURL) = explode("\n", trim($rURLs));
+				$rURL = self::resolveWithYtDlp($rURL, $rProxy, $rMaxHeight);
 			}
 		}
 		return $rURL;
+	}
+
+	/**
+	 * First media URL yt-dlp resolves a platform page to, or '' if it resolves none.
+	 *
+	 * A live stream needs one muxed HLS playlist (-f best). YouTube's mweb client serves
+	 * one whose segments keep working, but needs a JS runtime (deno); without it mweb
+	 * yields nothing and android_vr is the fallback, whose segments YouTube 403s after
+	 * ~30s. The clients are tried one by one: in one list -f best may still pick android_vr.
+	 *
+	 * With a maximum height the best muxed variant no taller than it is asked for (a
+	 * platform's own 720p, say, with no transcoding), and the best of all when it has none.
+	 *
+	 * @param string $rURL       Platform page URL.
+	 * @param string $rProxy     The stream's "HTTP Proxy" value ('' for none).
+	 * @param int    $rMaxHeight The tallest video to pick (0 for no limit).
+	 * @return string
+	 */
+	private static function resolveWithYtDlp(string $rURL, string $rProxy, int $rMaxHeight = 0) {
+		$rFormat = $rMaxHeight > 0 ? 'best[height<=' . $rMaxHeight . ']/best' : 'best';
+		foreach (['mweb', 'default,android_vr'] as $rClients) {
+			$rArgv = [YOUTUBE_BIN, '--extractor-args', 'youtube:player_client=' . $rClients, '-q', '--get-url', '--skip-download', '-f', $rFormat];
+			if ($rProxy !== '') {
+				array_push($rArgv, '--proxy', self::proxyURL($rProxy));
+			}
+			[, $rURLs] = ProcessRunner::capture([...$rArgv, '--', $rURL]);
+			$rResolved = explode("\n", trim($rURLs))[0];
+			if ($rResolved !== '') {
+				return $rResolved;
+			}
+		}
+		return '';
 	}
 
 	/** Video platforms whose page URLs parseStreamURL() resolves through yt-dlp. */
@@ -233,7 +438,9 @@ class StreamUtils {
 			$rSource = file_get_contents($rPlaylist);
 			if (preg_match_all('/(.*?).ts/', $rSource, $rMatches)) {
 				if (0 < $rPrebuffer) {
-					$rTotalSegments = intval($rPrebuffer / (($rSegmentDuration ?: 1)));
+					// At least one (SegmentReader's rule): none asked for was
+					// array_slice(..., -0), the whole playlist.
+					$rTotalSegments = intval($rPrebuffer / (($rSegmentDuration ?: 1))) ?: 1;
 					return array_slice($rMatches[0], -1 * $rTotalSegments);
 				}
 				if ($rPrebuffer == -1) {

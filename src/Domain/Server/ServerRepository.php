@@ -5,7 +5,6 @@ namespace XcVm\Domain\Server;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ClusterHealth;
-use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaBoot;
@@ -14,6 +13,7 @@ use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Server\ServerSavedEvent;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
+use XcVm\Core\Util\PublicAddress;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -57,11 +57,17 @@ class ServerRepository {
 		if (!$rSettings) {
 			$rSettings = SettingsRepository::loaded();
 		}
+		// The server building this list marks its own row always-online. That is
+		// SERVER_ID — but not every context defines it: MAIN's cluster API
+		// (ReplicaBuilder builds a node's policy section there) boots without it.
+		// 0 means "resolve self by the is_main row instead" (done per row below),
+		// so MAIN is still treated as online when it builds another node's policy.
+		$rSelf = defined('SERVER_ID') ? (int) SERVER_ID : 0;
 		$rReplica = ReplicaApply::owns(ReplicaSections::SERVERS);
 		if (!$rForce || $rReplica) {
 			$rCache = $rReplica ? FileCache::getCache('servers') : FileCache::getCache('servers', 10);
 			if (empty($rCache) && $rReplica) {
-				ReplicaApply::servers(true, (int) SERVER_ID);
+				ReplicaApply::servers(true, $rSelf);
 				$rCache = ReplicaApply::owns(ReplicaSections::SERVERS) ? FileCache::getCache('servers') : false;
 			}
 			if (!empty($rCache)) {
@@ -89,11 +95,14 @@ class ServerRepository {
 				$rLastCheckTime = 90;
 			}
 
-			$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && time() - $rRow['last_check_ago'] <= $rLastCheckTime || SERVER_ID == $rRow['id'];
+			// Self is SERVER_ID where defined, else the is_main row (the cluster API
+			// runs on MAIN with no SERVER_ID): either way its own row stays online.
+			$rIsSelf = $rSelf !== 0 ? ($rSelf === (int) $rRow['id']) : (int) ($rRow['is_main'] ?? 0) === 1;
+			$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && time() - $rRow['last_check_ago'] <= $rLastCheckTime || $rIsSelf;
 			// A node whose agent reports its telemetry is judged by MAIN's
 			// liveness loop instead (offline after 30 s of silence, not 90 s).
 			$rRow['cluster_health'] = ClusterHealth::state(intval($rRow['id']));
-			if ($rRow['cluster_health'] !== null && SERVER_ID != $rRow['id']) {
+			if ($rRow['cluster_health'] !== null && !$rIsSelf) {
 				$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && !in_array($rRow['cluster_health'], ClusterHealth::NO_ROUTING, true);
 			}
 			if (!isset($rRow['order'])) {
@@ -129,6 +138,9 @@ class ServerRepository {
 		} else {
 			$rURL = str_replace(['http://', '/', 'https://'], '', escapeshellcmd(explode(',', $rRow['domain_name'])[0]));
 		}
+		// A bare IPv6 server_ip must be bracketed in a URL authority, e.g.
+		// http://[2001:db8::1]:80/ (a hostname or IPv4 is left unchanged).
+		$rURL = PublicAddress::forUrl($rURL);
 
 		if ($rRow['enable_https'] == 1) {
 			$rProtocol = 'https';
@@ -145,11 +157,12 @@ class ServerRepository {
 		$rRow['rtmp_server'] = 'rtmp://' . $rURL . ':' . intval($rRow['rtmp_port']) . '/live/';
 		$rRow['domains'] = ['protocol' => $rProtocol, 'port' => $rPort, 'urls' => array_filter(array_map('escapeshellcmd', explode(',', $rRow['domain_name'] ?? '')))];
 		$rRow['rtmp_mport_url'] = 'http://127.0.0.1:31210/';
-		$rRow['api_url_ip'] = 'http://' . escapeshellcmd((string) $rRow['server_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/api?password=' . urlencode((string) ($rSettings['live_streaming_pass'] ?? ''));
+		$rIpHost = PublicAddress::forUrl(escapeshellcmd((string) $rRow['server_ip']));
+		$rRow['api_url_ip'] = 'http://' . $rIpHost . ':' . intval($rRow['http_broadcast_port']) . '/api?password=' . urlencode((string) ($rSettings['live_streaming_pass'] ?? ''));
 		$rRow['api_url'] = $rRow['api_url_ip'];
-		$rRow['site_url_ip'] = $rProtocol . '://' . escapeshellcmd((string) $rRow['server_ip']) . ':' . $rPort . '/';
-		$rRow['private_url_ip'] = (!empty($rRow['private_ip']) ? 'http://' . escapeshellcmd($rRow['private_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/' : null);
-		$rRow['public_url_ip'] = 'http://' . escapeshellcmd((string) $rRow['server_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/';
+		$rRow['site_url_ip'] = $rProtocol . '://' . $rIpHost . ':' . $rPort . '/';
+		$rRow['private_url_ip'] = (!empty($rRow['private_ip']) ? 'http://' . PublicAddress::forUrl(escapeshellcmd((string) $rRow['private_ip'])) . ':' . intval($rRow['http_broadcast_port']) . '/' : null);
+		$rRow['public_url_ip'] = 'http://' . $rIpHost . ':' . intval($rRow['http_broadcast_port']) . '/';
 		$rRow['geoip_countries'] = (empty($rRow['geoip_countries']) ? [] : json_decode($rRow['geoip_countries'], true));
 		$rRow['isp_names'] = (empty($rRow['isp_names']) ? [] : json_decode($rRow['isp_names'], true));
 
@@ -326,56 +339,16 @@ class ServerRepository {
 	}
 
 	/**
-	 * Check/probe a source file on a server.
-	 *
-	 * @param array  $rServers  Servers configuration.
-	 * @param mixed  $rFFProbe  ffprobe path/config.
-	 * @param int    $rServerID Server id.
-	 * @param string $rFilename Source file/path.
-	 * @return mixed Probe result.
-	 */
-	public static function checkSource(array $rServers, mixed $rFFProbe, int $rServerID, string $rFilename) {
-		$rAPI = self::fileUrl($rServers, $rServerID, $rFilename);
-		$rCommand = 'timeout 10 ' . $rFFProbe . ' -user_agent "Mozilla/5.0" -show_streams -v quiet "' . $rAPI . '" -of json';
-		return json_decode(shell_exec($rCommand), true);
-	}
-
-	/**
-	 * The URL MAIN reads another server's file with: through its own agent
-	 * while MAIN's data-plane client is on (DataPlane::fileUrl, ADR 0004,
-	 * Phase 9's eighth increment), else `getFile` of that server's `/api`
-	 * with its IP, as before.
-	 *
-	 * @param array<int, array<string, mixed>> $rServers
-	 */
-	private static function fileUrl(array $rServers, int $rServerID, string $rPath): string {
-		$rLegacy = ($rServers[$rServerID]['api_url_ip'] ?? '') . '&action=getFile&filename=' . urlencode($rPath);
-		if (!DataPlane::on()) {
-			return $rLegacy;
-		}
-		$rUrl = DataPlane::fileUrl($rServers, $rServerID, $rPath);
-		// DataPlane's own legacy URL is the api_url (the server's domain); keep the IP one.
-		return str_starts_with($rUrl, 'http://' . DataPlane::HOST . ':' . DataPlane::PORT . '/') ? $rUrl : $rLegacy;
-	}
-
-	/**
-	 * Get the SSL/certbot log for a server.
+	 * The server's last certbot run (CertbotCommand's log), from the server
+	 * itself: its `/api` `getFile` this was read with is gone (PR #392).
 	 *
 	 * @param int $rServerID Server id.
-	 * @return mixed SSL log contents.
+	 * @return array<string, mixed>|null The decoded log, or null without one.
 	 */
 	public static function getSSLLog(int $rServerID) {
-		global $rServers;
-		$rServer = $rServers[intval($rServerID)] ?? null;
-		if (!$rServer || empty($rServer['api_url_ip'])) {
-			return null;
-		}
-		$rAPI = self::fileUrl($rServers, intval($rServerID), BIN_PATH . 'certbot/logs/xc_vm.log');
-		$rResponse = @file_get_contents($rAPI);
-		if ($rResponse === false) {
-			return null;
-		}
-		return json_decode($rResponse, true);
+		$rLog = NodeRpc::request($rServerID, ['action' => 'ssl_log']);
+		$rLog = is_string($rLog) ? json_decode($rLog, true) : null;
+		return is_array($rLog) ? $rLog : null;
 	}
 
 	/**
@@ -590,7 +563,7 @@ class ServerRepository {
 				$rProtocol = $rServers[$rServerID]['server_protocol'] ?? 'http';
 			}
 		}
-		if ($rServers[$rServerID]) {
+		if (!empty($rServers[$rServerID])) {
 			if ($rServers[$rServerID]['enable_proxy']) {
 				$rProxyIDs = array_keys(ConnectionTracker::getProxies($rServerID));
 				if (count($rProxyIDs) == 0) {
@@ -603,13 +576,14 @@ class ServerRepository {
 					return '';
 				}
 			}
-			$rHost = (defined('host') ? HOST : null);
-			if ($rHost && in_array(strtolower($rHost), array_map('strtolower', $rServers[$rServerID]['domains']['urls']))) {
+			// The constant is HOST: `host` is defined nowhere, and the requested host was never kept.
+			$rHost = (defined('HOST') ? HOST : null);
+			if ($rHost && in_array(strtolower($rHost), array_map('strtolower', $rServers[$rServerID]['domains']['urls'] ?? []))) {
 				$rDomain = $rHost;
 			} else {
 				$rDomain = (empty($rServers[$rServerID]['domain_name']) ? $rServers[$rServerID]['server_ip'] : explode(',', $rServers[$rServerID]['domain_name'])[0]);
 			}
-			$rServerURL = $rProtocol . '://' . $rDomain . ':' . $rServers[$rServerID][$rProtocol . '_broadcast_port'] . '/';
+			$rServerURL = $rProtocol . '://' . PublicAddress::forUrl($rDomain) . ':' . $rServers[$rServerID][$rProtocol . '_broadcast_port'] . '/';
 			if ($rServers[$rServerID]['server_type'] == 1 && $rOriginatorID && $rServers[$rOriginatorID]['is_main'] == 0) {
 				$rServerURL .= ProxyRoute::segment((int) $rServerID, (int) $rOriginatorID, $rServers) . '/';
 			}

@@ -6,6 +6,7 @@ use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\Bouquet\BouquetService;
+use XcVm\Domain\User\UserCredits;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -33,7 +34,10 @@ class PackageService {
 			if (!Authorization::check('adv', 'edit_package')) {
 				exit();
 			}
-			$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
+			// The edit starts from the package as stored: the row cleaner's
+			// escaping would be written back into every field not sent.
+			$db->query('SELECT * FROM `users_packages` WHERE `id` = ?;', intval($rData['edit']));
+			$rArray = AdminHelpers::overwriteData(($rStored = $db->get_raw_row()) ? UserCredits::amounts($rStored) : null, $rData);
 		} else {
 			if (!Authorization::check('adv', 'add_packages')) {
 				exit();
@@ -78,16 +82,31 @@ class PackageService {
 	}
 
 	/**
+	 * Whether activation codes not redeemed yet are sold for the package. A
+	 * code holds no term of its own: it is its package's when it is redeemed,
+	 * and without the package a code sold for a year gave a month (a trial, a
+	 * day). So such a package is not deleted.
+	 *
+	 * @param int $rID Package id.
+	 */
+	public static function hasUnusedCodes(int $rID): bool {
+		$db = self::db();
+		$db->query('SELECT 1 FROM `activation_codes` WHERE `package_id` = ? AND `activated_at` IS NULL LIMIT 1;', $rID);
+
+		return 0 < $db->num_rows();
+	}
+
+	/**
 	 * Delete a package by id.
 	 *
 	 * @param int $rID Package id.
-	 * @return bool True on deletion, false if not found.
+	 * @return bool True on deletion, false if not found or codes not redeemed yet are sold for it (hasUnusedCodes()).
 	 */
 	public static function deleteById(int $rID) {
 		$db = self::db();
 		$rPackage = self::getById($rID);
 
-		if (!$rPackage) {
+		if (!$rPackage || self::hasUnusedCodes($rID)) {
 			return false;
 		}
 
@@ -111,15 +130,28 @@ class PackageService {
 
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				if (!isset($rGroup) || in_array(intval($rGroup), json_decode($rRow['groups'], true))) {
+				$rGroups = self::groupIds($rRow['groups'] ?? null);
+				if (!isset($rGroup) || in_array(intval($rGroup), $rGroups, true)) {
 					if (!$rType || $rRow['is_' . $rType]) {
-						$rReturn[intval($rRow['id'])] = $rRow;
+						$rReturn[intval($rRow['id'])] = UserCredits::amounts($rRow);
 					}
 				}
 			}
 		}
 
 		return $rReturn;
+	}
+
+	/** @return list<int> Positive group IDs from a JSON array; malformed assignments grant nothing. */
+	public static function groupIds(?string $groups): array {
+		$decoded = json_decode($groups ?? '');
+		if (!is_array($decoded)) {
+			return [];
+		}
+		return array_values(array_unique(array_map('intval', array_filter(
+			$decoded,
+			static fn($id): bool => (is_int($id) || (is_string($id) && ctype_digit($id))) && (int) $id > 0
+		))));
 	}
 
 	/**
@@ -136,7 +168,7 @@ class PackageService {
 			return null;
 		}
 
-		return $db->get_row();
+		return UserCredits::amounts($db->get_row());
 	}
 
 	/**

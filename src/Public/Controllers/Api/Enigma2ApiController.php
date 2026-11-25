@@ -3,6 +3,7 @@
 namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Config\Maintenance;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\Encryption;
@@ -56,6 +57,11 @@ class Enigma2ApiController {
 			generateError('E2_DISABLED');
 		}
 
+		if (Maintenance::active($rSettings)) {
+			$this->deny = false;
+			Maintenance::refuse($rSettings);
+		}
+
 		$this->username = $rRequest['username'];
 		$this->password = $rRequest['password'];
 		$rType = !empty($rRequest['type']) ? $rRequest['type'] : null;
@@ -63,7 +69,13 @@ class Enigma2ApiController {
 		$sCatID = !empty($rRequest['scat_id']) ? intval($rRequest['scat_id']) : null;
 		$rSeriesID = !empty($rRequest['series_id']) ? intval($rRequest['series_id']) : null;
 		$rSeason = !empty($rRequest['season']) ? intval($rRequest['season']) : null;
-		$rProtocol = stripos($_SERVER['SERVER_PROTOCOL'], 'https') === 0 ? 'https://' : 'http://';
+		// SERVER_PROTOCOL is the HTTP version ("HTTP/1.1"), never "https": every
+		// link went out as http://. The scheme, as PlayerApiController reads it.
+		$rSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+			|| (!empty($_SERVER['REQUEST_SCHEME']) && strtolower($_SERVER['REQUEST_SCHEME']) === 'https')
+			|| (isset($_SERVER['SERVER_PORT']) && in_array((int) $_SERVER['SERVER_PORT'], [443, 3434], true))
+			|| (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+		$rProtocol = $rSecure ? 'https://' : 'http://';
 		$this->url = !empty($_SERVER['HTTP_HOST']) ? $rProtocol . $_SERVER['HTTP_HOST'] . '/' : ServerRepository::getAll()[SERVER_ID]['site_url'];
 		ini_set('memory_limit', -1);
 
@@ -74,16 +86,32 @@ class Enigma2ApiController {
 		$this->userInfo = UserRepository::getUserInfo(null, $this->username, $this->password, true, false);
 
 		if (!$this->userInfo) {
-			BruteforceGuard::checkBruteforce(null, null, $this->username);
+			BruteforceGuard::checkBruteforce(null, null, $this->username, false, $this->password);
 			generateError('INVALID_CREDENTIALS');
 		}
 
 		$this->deny = false;
+
+		// Only an active line is served, as on the playlist and EPG APIs.
+		if (!is_null($this->userInfo['exp_date']) && $this->userInfo['exp_date'] <= time()) {
+			generateError('EXPIRED');
+		}
+
+		if (!$this->userInfo['admin_enabled']) {
+			generateError('BANNED');
+		}
+
+		if (!$this->userInfo['enabled']) {
+			generateError('DISABLED');
+		}
+
 		$db = DatabaseFactory::open();
 		BruteforceGuard::checkAuthFlood($this->userInfo);
-		$this->liveCategories = CategoryService::getFromDatabase('live');
-		$this->vodCategories = CategoryService::getFromDatabase('movie');
-		$this->seriesCategories = CategoryService::getFromDatabase('series');
+		// Only the categories the line's bouquets reach, as in the player API.
+		$rOwn = fn(array $rCategory): bool => in_array($rCategory['id'], $this->userInfo['category_ids']);
+		$this->liveCategories = array_filter(CategoryService::getFromDatabase('live'), $rOwn);
+		$this->vodCategories = array_filter(CategoryService::getFromDatabase('movie'), $rOwn);
+		$this->seriesCategories = array_filter(CategoryService::getFromDatabase('series'), $rOwn);
 
 		if ($rSettings['enable_cache']) {
 			$rChannels = $this->userInfo['channel_ids'];
@@ -100,7 +128,7 @@ class Enigma2ApiController {
 			}
 		}
 
-		$this->userInfo['channel_ids'] = StreamSorter::sortChannels($this->userInfo['channel_ids']);
+		$this->userInfo['channel_ids'] = StreamSorter::sortChannels($this->userInfo['channel_ids'], $this->userInfo);
 
 		foreach ($rChannels as $rChannel) {
 			if ($rSettings['enable_cache']) {
@@ -115,6 +143,15 @@ class Enigma2ApiController {
 		}
 
 		$this->dispatch($rType, $rCatID, $sCatID, $rSeriesID, $rSeason);
+	}
+
+	/**
+	 * The line's credentials as a link's query carries them. A username or
+	 * password with `&`, `#`, `+` or a space was written as it is, and the
+	 * link then signed in as someone else, or as no one.
+	 */
+	private function credentials(): string {
+		return 'username=' . rawurlencode((string) $this->username) . '&password=' . rawurlencode((string) $this->password);
 	}
 
 	private function dispatch(?string $rType, ?int $rCatID, ?int $sCatID, ?int $rSeriesID, ?int $rSeason) {
@@ -154,14 +191,14 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', 'Live [ ' . $rSettings['server_name'] . ' ]');
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', 'Live [ ' . $rSettings['server_name'] . ' ]');
 		$rChannels = $rXML->addChild('channel');
 		$rChannels->addChild('title', base64_encode('All'));
 		$rChannels->addChild('description', base64_encode('Live Streams Category [ ALL ]'));
-		$rChannels->addChild('category_id', 0);
+		$rChannels->addChild('category_id', '0');
 		$rCData = $rChannels->addChild('playlist_url');
-		$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_live_streams&cat_id=0' . $rCategory['id']);
+		$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_live_streams&cat_id=0' . $rCategory['id']);
 
 		foreach ($this->liveCategories as $rCategory) {
 			$rChannels = $rXML->addChild('channel');
@@ -169,7 +206,7 @@ class Enigma2ApiController {
 			$rChannels->addChild('description', base64_encode('Live Streams Category'));
 			$rChannels->addChild('category_id', $rCategory['id']);
 			$rCData = $rChannels->addChild('playlist_url');
-			$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_live_streams&cat_id=' . $rCategory['id']);
+			$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_live_streams&cat_id=' . $rCategory['id']);
 		}
 
 		$this->outputXml($rXML);
@@ -180,14 +217,14 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', 'Movie [ ' . $rSettings['server_name'] . ' ]');
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', 'Movie [ ' . $rSettings['server_name'] . ' ]');
 		$rChannels = $rXML->addChild('channel');
 		$rChannels->addChild('title', base64_encode('All'));
 		$rChannels->addChild('description', base64_encode('Movie Streams Category [ ALL ]'));
-		$rChannels->addChild('category_id', 0);
+		$rChannels->addChild('category_id', '0');
 		$rCData = $rChannels->addChild('playlist_url');
-		$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_vod_streams&cat_id=0' . $rCategory['id']);
+		$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_vod_streams&cat_id=0' . $rCategory['id']);
 
 		foreach ($this->vodCategories as $rCategory) {
 			$rChannels = $rXML->addChild('channel');
@@ -195,7 +232,7 @@ class Enigma2ApiController {
 			$rChannels->addChild('description', base64_encode('Movie Streams Category'));
 			$rChannels->addChild('category_id', $rCategory['id']);
 			$rCData = $rChannels->addChild('playlist_url');
-			$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_vod_streams&cat_id=' . $rCategory['id']);
+			$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_vod_streams&cat_id=' . $rCategory['id']);
 		}
 
 		$this->outputXml($rXML);
@@ -206,14 +243,14 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', 'SubCategory [ ' . $rSettings['server_name'] . ' ]');
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', 'SubCategory [ ' . $rSettings['server_name'] . ' ]');
 		$rChannels = $rXML->addChild('channel');
 		$rChannels->addChild('title', base64_encode('All'));
 		$rChannels->addChild('description', base64_encode('TV Series Category [ ALL ]'));
-		$rChannels->addChild('category_id', 0);
+		$rChannels->addChild('category_id', '0');
 		$rCData = $rChannels->addChild('playlist_url');
-		$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_series&cat_id=0' . $rCategory['id']);
+		$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_series&cat_id=0' . $rCategory['id']);
 
 		foreach ($this->seriesCategories as $rCategory) {
 			$rChannels = $rXML->addChild('channel');
@@ -221,7 +258,7 @@ class Enigma2ApiController {
 			$rChannels->addChild('description', base64_encode('TV Series Category'));
 			$rChannels->addChild('category_id', $rCategory['id']);
 			$rCData = $rChannels->addChild('playlist_url');
-			$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_series&cat_id=' . $rCategory['id']);
+			$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_series&cat_id=' . $rCategory['id']);
 		}
 
 		$this->outputXml($rXML);
@@ -245,7 +282,7 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', 'TV Series [ ' . $rCategoryName . ' ]');
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', 'TV Series [ ' . $rCategoryName . ' ]');
 
 		if (count($this->userInfo['series_ids']) > 0) {
@@ -268,7 +305,7 @@ class Enigma2ApiController {
 					$rChannels->addChild('description', '');
 					$rChannels->addChild('category_id', $rSeriesID);
 					$rCData = $rChannels->addChild('playlist_url');
-					$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_seasons&series_id=' . $rSeriesID);
+					$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_seasons&series_id=' . $rSeriesID);
 
 					if (!$rCategoryID) {
 						break;
@@ -283,7 +320,8 @@ class Enigma2ApiController {
 	private function getSeasons(?int $rSeriesID) {
 		global $db;
 
-		if (!isset($rSeriesID)) {
+		// Only a series the line's bouquets include (and so never a missing id).
+		if (!in_array($rSeriesID, $this->userInfo['series_ids'] ?? [], true)) {
 			return;
 		}
 
@@ -293,7 +331,7 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', 'TV Series [ ' . $rCategoryName . ' ]');
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', 'TV Series [ ' . $rCategoryName . ' ]');
 		$db->query('SELECT * FROM `streams_episodes` t1 INNER JOIN `streams` t2 ON t2.id=t1.stream_id WHERE t1.series_id = ? ORDER BY t1.season_num ASC, t1.episode_num ASC', $rSeriesID);
 		$rRows = $db->get_rows(true, 'season_num', false);
@@ -304,7 +342,7 @@ class Enigma2ApiController {
 			$rChannels->addChild('description', '');
 			$rChannels->addChild('category_id', $rSeasonNum);
 			$rCData = $rChannels->addChild('playlist_url');
-			$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_series_streams&series_id=' . $rSeriesID . '&season=' . $rSeasonNum);
+			$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_series_streams&series_id=' . $rSeriesID . '&season=' . $rSeasonNum);
 		}
 
 		$this->outputXml($rXML);
@@ -313,7 +351,8 @@ class Enigma2ApiController {
 	private function getSeriesStreams(?int $rSeriesID, ?int $rSeason, ?int $rCatID) {
 		global $db;
 
-		if (!isset($rSeriesID) || !isset($rSeason)) {
+		// Only a series the line's bouquets include (and so never a missing id).
+		if (!isset($rSeason) || !in_array($rSeriesID, $this->userInfo['series_ids'] ?? [], true)) {
 			return;
 		}
 
@@ -323,7 +362,7 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', 'TV Series [ ' . $rSeriesInfo['title'] . ' Season ' . $rSeason . ' ]');
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', 'TV Series [ ' . $rSeriesInfo['title'] . ' Season ' . $rSeason . ' ]');
 		$db->query('SELECT t2.direct_source,t2.stream_source,t2.target_container,t2.id,t1.series_id,t1.season_num FROM `streams_episodes` t1 INNER JOIN `streams` t2 ON t2.id=t1.stream_id WHERE t1.series_id = ? AND t1.season_num = ? ORDER BY  t1.episode_num ASC', $rSeriesID, $rSeason);
 		$rSeriesEpisodes = $db->get_rows();
@@ -336,7 +375,7 @@ class Enigma2ApiController {
 			$rDescChannel = $rChannels->addChild('desc_image');
 			$rDescChannel->addCData(ImageUtils::validateURL($rSeriesInfo['cover']));
 			$rChannels->addChild('description', base64_encode($rDesc));
-			$rChannels->addChild('category_id', $rCatID);
+			$rChannels->addChild('category_id', $rCatID === null ? null : (string) $rCatID);
 			$rCDataURL = $rChannels->addChild('stream_url');
 			$rEncData = 'movie/' . $this->username . '/' . $this->password . '/' . $rEpisode['id'] . '/' . $rEpisode['target_container'];
 			$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
@@ -358,7 +397,7 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', 'Live [ ' . $rSettings['server_name'] . ' ]');
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', 'Live [ ' . $rSettings['server_name'] . ' ]');
 
 		foreach ($this->liveStreams as $rStream) {
@@ -430,7 +469,7 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', 'Movie [ ' . $rSettings['server_name'] . ' ]');
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', 'Movie [ ' . $rSettings['server_name'] . ' ]');
 
 		foreach ($this->vodStreams as $rStream) {
@@ -476,33 +515,33 @@ class Enigma2ApiController {
 		$rXML = new SimpleXMLExtended('<items/>');
 		$rXML->addChild('playlist_name', $rSettings['server_name']);
 		$rCategory = $rXML->addChild('category');
-		$rCategory->addChild('category_id', 1);
+		$rCategory->addChild('category_id', '1');
 		$rCategory->addChild('category_title', $rSettings['server_name']);
 
 		if ($this->liveStreams !== []) {
 			$rChannels = $rXML->addChild('channel');
 			$rChannels->addChild('title', base64_encode('Live Streams'));
 			$rChannels->addChild('description', base64_encode('Live Streams Category'));
-			$rChannels->addChild('category_id', 0);
+			$rChannels->addChild('category_id', '0');
 			$rCData = $rChannels->addChild('playlist_url');
-			$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_live_categories');
+			$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_live_categories');
 		}
 
 		if ($this->vodStreams !== []) {
 			$rChannels = $rXML->addChild('channel');
 			$rChannels->addChild('title', base64_encode('VOD'));
 			$rChannels->addChild('description', base64_encode('Video On Demand Category'));
-			$rChannels->addChild('category_id', 1);
+			$rChannels->addChild('category_id', '1');
 			$rCData = $rChannels->addChild('playlist_url');
-			$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_vod_categories');
+			$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_vod_categories');
 		}
 
 		$rChannels = $rXML->addChild('channel');
 		$rChannels->addChild('title', base64_encode('TV Series'));
 		$rChannels->addChild('description', base64_encode('TV Series Category'));
-		$rChannels->addChild('category_id', 2);
+		$rChannels->addChild('category_id', '2');
 		$rCData = $rChannels->addChild('playlist_url');
-		$rCData->addCData($this->url . 'enigma2?username=' . $this->username . '&password=' . $this->password . '&type=get_series_categories');
+		$rCData->addCData($this->url . 'enigma2?' . $this->credentials() . '&type=get_series_categories');
 
 		$this->outputXml($rXML);
 	}

@@ -25,6 +25,8 @@ $rAllowedPages = ($rIsEdit && !empty($rGroup['allowed_pages'])) ? (json_decode((
 // Groups that can never be modified keep their admin/reseller flags locked.
 $rCanDelete    = !$rIsEdit || !empty($rGroup['can_delete']);
 $rAdminCard    = !$rIsEdit || !empty($rGroup['can_delete']);
+// An administrator group is given out as a sub-reseller group by a full administrator.
+$rReserved     = GroupService::reservedGroups();
 ?>
 
 <div class="d-flex align-items-center mb-4">
@@ -65,7 +67,8 @@ $rAdminCard    = !$rIsEdit || !empty($rGroup['can_delete']);
                     <div class="row">
                         <div class="col-md-6">
                             <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="is_admin" name="is_admin" value="1" <?= ($rIsEdit && $rGroup['is_admin']) ? 'checked' : ''; ?> <?= $rCanDelete ? '' : 'disabled'; ?>>
+                                <?php // An administrator group is made by a full administrator. ?>
+                                <input class="form-check-input" type="checkbox" id="is_admin" name="is_admin" value="1" <?= ($rIsEdit && $rGroup['is_admin']) ? 'checked' : ''; ?> <?= ($rCanDelete && !$rReserved) ? '' : 'disabled'; ?>>
                                 <label class="form-check-label" for="is_admin"><?= $language::get('is_admin'); ?></label>
                             </div>
                         </div>
@@ -73,6 +76,15 @@ $rAdminCard    = !$rIsEdit || !empty($rGroup['can_delete']);
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="is_reseller" name="is_reseller" value="1" <?= ($rIsEdit && $rGroup['is_reseller']) ? 'checked' : ''; ?> <?= $rCanDelete ? '' : 'disabled'; ?>>
                                 <label class="form-check-label" for="is_reseller"><?= $language::get('is_reseller'); ?></label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row mt-4">
+                        <div class="col-md-6">
+                            <div class="form-check form-switch">
+                                <?php // Core\Auth\TwoFactor: a member without it sets it up at the next sign-in. ?>
+                                <input class="form-check-input" type="checkbox" id="require_2fa" name="require_2fa" value="1" <?= ($rIsEdit && !empty($rGroup['require_2fa'])) ? 'checked' : ''; ?>>
+                                <label class="form-check-label" for="require_2fa"><?= $language::get('require_2fa'); ?></label>
                             </div>
                         </div>
                     </div>
@@ -194,7 +206,7 @@ $rAdminCard    = !$rIsEdit || !empty($rGroup['can_delete']);
                             </thead>
                             <tbody>
                                 <?php foreach (GroupService::getAll() as $rSubGroup): ?>
-                                    <?php if ($rSubGroup['is_reseller'] && !($rIsEdit && $rGroup['group_id'] == $rSubGroup['group_id'])): ?>
+                                    <?php if ($rSubGroup['is_reseller'] && !in_array((int) $rSubGroup['group_id'], $rReserved) && !($rIsEdit && $rGroup['group_id'] == $rSubGroup['group_id'])): ?>
                                         <tr>
                                             <td>
                                                 <div class="form-check">

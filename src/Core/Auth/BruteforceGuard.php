@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Server\ServerRepository;
@@ -17,6 +18,13 @@ use XcVm\Infrastructure\Signal\SignalQueue;
  *
  * Centralized rate-limiting and brute-force protection.
  * (identical logic, unified here).
+ *
+ * Every count and block marker is a file named after the address, so the
+ * checks count IP addresses only: any other value is left uncounted.
+ *
+ * A count file is replaced by rename, so a request reads the state another
+ * wrote before or after, never half of it; one that still does not read as
+ * that state starts its count again.
  *
  * @package XC_VM_Core_Auth
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -149,7 +157,7 @@ class BruteforceGuard {
 		}
 
 		$allowedIPs = self::getAllowedIPs();
-		if (empty($ip) || in_array($ip, $allowedIPs)) {
+		if (!filter_var($ip, FILTER_VALIDATE_IP) || in_array($ip, $allowedIPs)) {
 			return;
 		}
 
@@ -159,8 +167,8 @@ class BruteforceGuard {
 		}
 
 		$ipFile = FLOOD_TMP_PATH . $ip;
-		if (file_exists($ipFile)) {
-			$floodRow = json_decode(file_get_contents($ipFile), true);
+		$floodRow = (file_exists($ipFile) ? json_decode(file_get_contents($ipFile), true) : null);
+		if (is_array($floodRow)) {
 			$floodSeconds = $settings['flood_seconds'];
 			$floodLimit = $settings['flood_limit'];
 
@@ -168,7 +176,7 @@ class BruteforceGuard {
 				$floodRow['requests']++;
 				if ($floodLimit > $floodRow['requests']) {
 					$floodRow['last_request'] = time();
-					file_put_contents($ipFile, json_encode($floodRow), LOCK_EX);
+					AtomicFile::write($ipFile, (string) json_encode($floodRow));
 				} else {
 					$blockedIPs = self::getBlockedIPs();
 					if (!in_array($ip, $blockedIPs)) {
@@ -182,32 +190,119 @@ class BruteforceGuard {
 			} else {
 				$floodRow['requests'] = 0;
 				$floodRow['last_request'] = time();
-				file_put_contents($ipFile, json_encode($floodRow), LOCK_EX);
+				AtomicFile::write($ipFile, (string) json_encode($floodRow));
 			}
 		} else {
-			file_put_contents($ipFile, json_encode(['requests' => 0, 'last_request' => time()]), LOCK_EX);
+			AtomicFile::write($ipFile, (string) json_encode(['requests' => 0, 'last_request' => time()]));
 		}
 	}
 
+	/** The lists of MAGSCAN Settings, each empty until an administrator fills it. */
+	private const MAGSCAN_LISTS = ['whitelist_macs' => [], 'blacklist_macs' => [], 'whitelist_ips' => []];
+
 	/**
-	 * Check for brute-force attacks (too many unique MACs/usernames).
+	 * The lists as the page posts them, kept: MAC addresses in one form
+	 * (AA:BB:CC:DD:EE:FF), addresses that are addresses, each once.
+	 *
+	 * @param array<string, mixed> $input
+	 * @return array{whitelist_macs: list<string>, blacklist_macs: list<string>, whitelist_ips: list<string>}
+	 */
+	public static function magscanClean(array $input): array {
+		$out = self::MAGSCAN_LISTS;
+		foreach (array_keys($out) as $list) {
+			foreach (is_array($input[$list] ?? null) ? $input[$list] : [] as $value) {
+				if (!is_string($value)) {
+					continue;
+				}
+				$value = trim($value);
+				if ($list === 'whitelist_ips') {
+					$value = filter_var($value, FILTER_VALIDATE_IP) !== false ? $value : '';
+				} else {
+					$value = preg_match('/^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/', $value) ? strtoupper(str_replace('-', ':', $value)) : '';
+				}
+				if ($value !== '' && !in_array($value, $out[$list], true)) {
+					$out[$list][] = $value;
+				}
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * The lists of MAGSCAN Settings, from the `magscan_settings` setting (JSON).
+	 *
+	 * @param array<string, mixed> $settings
+	 * @return array{whitelist_macs: list<string>, blacklist_macs: list<string>, whitelist_ips: list<string>}
+	 */
+	public static function magscanLists(array $settings): array {
+		$lists = json_decode((string) ($settings['magscan_settings'] ?? ''), true);
+		return self::magscanClean(is_array($lists) ? $lists : []);
+	}
+
+	/**
+	 * What MAGSCAN Settings says of a MAC guess from $ip: `bypass` (a
+	 * whitelisted MAC or address: not counted), `block` (a blacklisted MAC:
+	 * its address is blocked at once) or `count` (the guard's own counting).
+	 * $mac is what a caller names the device by: the MAC itself, or the
+	 * sha256 digest the portal hands over, of the MAC in the case it was sent.
+	 *
+	 * @param array<string, mixed> $settings
+	 */
+	public static function magscanVerdict(array $settings, string $ip, string $mac): string {
+		$lists = self::magscanLists($settings);
+		$listed = static function (array $macs) use ($mac): bool {
+			foreach ($macs as $listedMac) {
+				if (in_array($mac, [$listedMac, strtolower($listedMac), hash('sha256', $listedMac), hash('sha256', strtolower($listedMac))], true)) {
+					return true;
+				}
+			}
+			return false;
+		};
+		if (in_array($ip, $lists['whitelist_ips'], true) || $listed($lists['whitelist_macs'])) {
+			return 'bypass';
+		}
+		return $listed($lists['blacklist_macs']) ? 'block' : 'count';
+	}
+
+	/**
+	 * Check for brute-force attacks (too many unique MACs/usernames, or too
+	 * many unique passwords for one username).
 	 *
 	 * @param string|null $ip            IP address (auto-detected if null)
 	 * @param string|null $mac           MAC address
 	 * @param string|null $username      Username
 	 * @param bool        $useCachedMode Use signal-based blocking for streaming context
+	 * @param string|null $password      Password a refused sign-in carried for the username (none: only the username is counted)
+	 * @param string|null $macAttempt    What a MAC guess is counted as, when not as the MAC itself (a serial guessed for the device). MAGSCAN Settings still judge the MAC.
 	 */
-	public static function checkBruteforce(?string $ip = null, ?string $mac = null, ?string $username = null, bool $useCachedMode = false): void {
+	public static function checkBruteforce(?string $ip = null, ?string $mac = null, ?string $username = null, bool $useCachedMode = false, ?string $password = null, ?string $macAttempt = null): void {
 		if (!$mac && !$username) {
 			return;
 		}
 
 		$settings = self::getSettings();
 
-		if ($mac && $settings['bruteforce_mac_attempts'] == 0) {
+		// MAGSCAN Settings: a whitelisted MAC or address is never counted, and a
+		// blacklisted MAC blocks the address at its first request, whether MAC
+		// guesses are counted or not.
+		if ($mac) {
+			$from = $ip ?: self::getUserIP();
+			$verdict = self::magscanVerdict($settings, (string) $from, $mac);
+			if ($verdict === 'bypass') {
+				return;
+			}
+			if ($verdict === 'block') {
+				if (filter_var($from, FILTER_VALIDATE_IP) && !in_array($from, self::getAllowedIPs())) {
+					self::blockIP((string) $from, 'BRUTEFORCE MAC BLACKLIST', $useCachedMode);
+				}
+				return;
+			}
+		}
+
+		if ($mac && (empty($settings['bruteforce_mac_attempts']) || $settings['bruteforce_mac_attempts'] == 0)) {
 			return;
 		}
-		if ($username && $settings['bruteforce_username_attempts'] == 0) {
+		if ($username && (empty($settings['bruteforce_username_attempts']) || $settings['bruteforce_username_attempts'] == 0)) {
 			return;
 		}
 
@@ -216,7 +311,7 @@ class BruteforceGuard {
 		}
 
 		$allowedIPs = self::getAllowedIPs();
-		if (empty($ip) || in_array($ip, $allowedIPs)) {
+		if (!filter_var($ip, FILTER_VALIDATE_IP) || in_array($ip, $allowedIPs)) {
 			return;
 		}
 
@@ -226,19 +321,67 @@ class BruteforceGuard {
 		}
 
 		$floodType = (!is_null($mac) ? 'mac' : 'user');
-		$term = (!is_null($mac) ? $mac : $username);
+		$term = (!is_null($mac) ? ($macAttempt ?? $mac) : $username);
+		// The count is kept as JSON, which holds valid UTF-8 only: any other term is counted by its digest.
+		if (json_encode($term) === false) {
+			$term = hash('sha256', $term);
+		}
+		// A password is counted per username by a digest keyed with the panel's own secrets: the password itself is never kept.
+		// The line lookup may take a username in another letter case, or with spaces after it: those share one count of passwords.
+		$folded = rtrim(function_exists('mb_strtolower') ? mb_strtolower($term, 'UTF-8') : strtolower($term), ' ');
+		$digest = null;
+		if ($floodType == 'user' && !is_null($password) && $password !== '') {
+			$key = ($settings['live_streaming_pass'] ?? '') . '|' . (defined('OPENSSL_EXTRA') ? OPENSSL_EXTRA : '');
+			$digest = substr(hash_hmac('sha256', 'xc_vm refused password v1|' . $folded . '|' . $password, $key), 0, 16);
+		}
 		$ipFile = FLOOD_TMP_PATH . $ip . '_' . $floodType;
+		// Requests refused at once for one address take turns at its count, so each of them is counted. The lock is on
+		// the count file, which a turn replaces: a request that waited takes the lock again, on the file that is there
+		// now. It ends with this call. Where the file cannot be locked, or twenty turns went to others, the count is
+		// kept without it.
+		for ($turn = 0; $turn < 20; $turn++) {
+			$lock = @fopen($ipFile, 'c');
+			if ($lock === false || !flock($lock, LOCK_EX)) {
+				break;
+			}
+			clearstatcache(true, $ipFile);
+			if (fstat($lock)['ino'] === @fileinode($ipFile)) {
+				break;
+			}
+			fclose($lock);
+		}
+		$floodRow = (file_exists($ipFile) ? json_decode(file_get_contents($ipFile), true) : null);
 
-		if (file_exists($ipFile)) {
-			$floodRow = json_decode(file_get_contents($ipFile), true);
+		if (is_array($floodRow)) {
 			$floodSeconds = intval($settings['bruteforce_frequency']);
 			$floodLimit = intval($settings[['mac' => 'bruteforce_mac_attempts', 'user' => 'bruteforce_username_attempts'][$floodType]]);
 			$floodRow['attempts'] = self::truncateAttempts($floodRow['attempts'], $floodSeconds);
+			// How many different ones this request adds to: terms, or passwords for its username. None when it adds nothing.
+			$count = null;
 
 			if (!in_array($term, array_keys($floodRow['attempts']))) {
 				$floodRow['attempts'][$term] = time();
-				if ($floodLimit > count($floodRow['attempts'])) {
-					file_put_contents($ipFile, json_encode($floodRow), LOCK_EX);
+				$count = count($floodRow['attempts']);
+			}
+
+			if (!is_null($digest)) {
+				$passwords = [];
+				foreach ((is_array($floodRow['passwords'] ?? null) ? $floodRow['passwords'] : []) as $name => $digests) {
+					$digests = (is_array($digests) ? self::truncateAttempts($digests, $floodSeconds) : []);
+					if ($digests) {
+						$passwords[$name] = $digests;
+					}
+				}
+				if (!isset($passwords[$folded][$digest])) {
+					$passwords[$folded][$digest] = time();
+					$count = max(intval($count), count($passwords[$folded]));
+				}
+				$floodRow['passwords'] = $passwords;
+			}
+
+			if (!is_null($count)) {
+				if ($floodLimit > $count) {
+					AtomicFile::write($ipFile, (string) json_encode($floodRow));
 				} else {
 					$blockedIPs = self::getBlockedIPs();
 					if (!in_array($ip, $blockedIPs)) {
@@ -252,7 +395,10 @@ class BruteforceGuard {
 			}
 		} else {
 			$floodRow = ['attempts' => [$term => time()]];
-			file_put_contents($ipFile, json_encode($floodRow), LOCK_EX);
+			if (!is_null($digest)) {
+				$floodRow['passwords'] = [$folded => [$digest => time()]];
+			}
+			AtomicFile::write($ipFile, (string) json_encode($floodRow));
 		}
 	}
 
@@ -277,7 +423,7 @@ class BruteforceGuard {
 		}
 
 		$allowedIPs = self::getAllowedIPs();
-		if (empty($ip) || in_array($ip, $allowedIPs)) {
+		if (!filter_var($ip, FILTER_VALIDATE_IP) || in_array($ip, $allowedIPs)) {
 			return;
 		}
 
@@ -287,9 +433,8 @@ class BruteforceGuard {
 		}
 
 		$userFile = FLOOD_TMP_PATH . intval($user['id']) . '_' . $ip;
-		if (file_exists($userFile)) {
-			$floodRow = json_decode(file_get_contents($userFile), true);
-
+		$floodRow = (file_exists($userFile) ? json_decode(file_get_contents($userFile), true) : null);
+		if (is_array($floodRow)) {
 			if (isset($floodRow['block_until']) && time() < $floodRow['block_until']) {
 				sleep(intval($settings['auth_flood_sleep']));
 			}
@@ -303,9 +448,9 @@ class BruteforceGuard {
 			}
 
 			$floodRow['attempts'][] = time();
-			file_put_contents($userFile, json_encode($floodRow), LOCK_EX);
+			AtomicFile::write($userFile, (string) json_encode($floodRow));
 		} else {
-			file_put_contents($userFile, json_encode(['attempts' => [time()]]), LOCK_EX);
+			AtomicFile::write($userFile, (string) json_encode(['attempts' => [time()]]));
 		}
 	}
 

@@ -47,7 +47,7 @@ class UpdateCronJob implements CommandInterface {
 		global $db, $gitRelease;
 
 		if (!$gitRelease) {
-			if (defined('GIT_OWNER') && defined('GIT_REPO_MAIN')) {
+			if (defined('GIT_OWNER_MAIN') && defined('GIT_REPO_MAIN')) {
 				$gitRelease = UpdateChannels::mainReleases();
 			}
 		}

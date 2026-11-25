@@ -3,7 +3,9 @@
 namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Config\Maintenance;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Error\ErrorResponder;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\GeoIP;
 use XcVm\Core\Util\NetworkUtils;
@@ -43,13 +45,18 @@ class EpgApiController extends BaseApiController {
 		$rUserInfo = $this->authenticate($rIP);
 
 		if (!$rUserInfo) {
-			BruteforceGuard::checkBruteforce(null, null, $rUsername);
+			$rPassword = RequestManager::get('password');
+			BruteforceGuard::checkBruteforce(null, null, $rUsername, false, is_string($rPassword) ? $rPassword : null);
 			generateError('INVALID_CREDENTIALS');
 		}
 
 		$this->deny = false;
 		$this->userInfo = $rUserInfo;
 		ini_set('memory_limit', -1);
+
+		if (Maintenance::active(SettingsManager::getAll())) {
+			Maintenance::refuse(SettingsManager::getAll());
+		}
 
 		if (!$rUserInfo['is_restreamer'] && SettingsManager::get('disable_xmltv')) {
 			generateError('EPG_DISABLED');
@@ -63,14 +70,17 @@ class EpgApiController extends BaseApiController {
 
 		$rBouquets = [];
 
+		// The bouquets there are, read once: they were read again for each of the line's.
+		$rKnown = BouquetService::getAll();
 		foreach ($rUserInfo['bouquet'] as $rBouquetID) {
-			if (in_array($rBouquetID, array_keys(BouquetService::getAll()))) {
+			if (in_array($rBouquetID, array_keys($rKnown))) {
 				$rBouquets[] = $rBouquetID;
 			}
 		}
 
 		sort($rBouquets);
-		$rBouquetGroup = md5(implode('_', $rBouquets));
+		// The name EpgCronJob::buildXmltv() writes the set's file under.
+		$rBouquetGroup = hash('sha256', implode('_', $rBouquets));
 
 		if (file_exists(EPG_PATH . 'epg_' . $rBouquetGroup . '.xml')) {
 			$rFile = EPG_PATH . 'epg_' . $rBouquetGroup . '.xml';
@@ -102,6 +112,11 @@ class EpgApiController extends BaseApiController {
 
 			$this->readChunked($rFile);
 		} else {
+			// The address opened in a browser: a page that says why. A player
+			// keeps the bare status (and debug mode its own page).
+			if (ErrorResponder::wantsHtml() && !SettingsManager::get('debug_show_errors')) {
+				ErrorResponder::emit(ErrorResponder::respondPage(429, '', ''));
+			}
 			generateError('DOWNLOAD_LIMIT_REACHED', false);
 			http_response_code(429);
 			exit();

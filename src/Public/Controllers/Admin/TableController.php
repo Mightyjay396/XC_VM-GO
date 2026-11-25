@@ -2,25 +2,29 @@
 
 namespace XcVm\Public\Controllers\Admin;
 
+use XcVm\Core\Auth\ApiTokens;
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\ClientFilter;
 use XcVm\Core\Http\RequestManager;
-use XcVm\Core\Module\ModuleManager;
 use XcVm\Core\Module\TableRegistry;
 use XcVm\Core\Reference\StatusBadge;
+use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Device\EnigmaService;
 use XcVm\Domain\Device\MagService;
 use XcVm\Domain\Epg\EpgService;
+use XcVm\Domain\Line\ActiveCodeService;
 use XcVm\Domain\Line\PackageService;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\CategoryService;
 use XcVm\Domain\Stream\ConnectionTracker;
+use XcVm\Domain\User\ResellerAPI;
+use XcVm\Domain\User\UserCredits;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Domain\User\UserService;
 use XcVm\Infrastructure\Bootstrap\WebApiBootstrap;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Fanout\FanoutMode;
@@ -57,13 +61,14 @@ class TableController extends BaseAdminController {
 		$rIsAPI = false;
 		if (RequestManager::has("api_key")) {
 			$rReturn = ["status" => "STATUS_SUCCESS", "data" => []];
-			$db->query("SELECT `id` FROM `users` LEFT JOIN `users_groups` ON `users_groups`.`group_id` = `users`.`member_group_id` WHERE `api_key` = ? AND LENGTH(`api_key`) > 0 AND `is_admin` = 1 AND `status` = 1;", RequestManager::get("api_key"));
-			if ($db->num_rows() == 0) {
+			// A token (whose scope must cover reading this table) or a legacy key.
+			$rKeyUser = ApiTokens::userFor((string) RequestManager::get("api_key"), (string) NetworkUtils::getUserIP(), 'admin');
+			if ($rKeyUser === null || !ApiTokens::allows('get_' . RequestManager::get("id"))) {
 				echo json_encode(["status" => "STATUS_FAILURE", "error" => "Invalid API key."]);
 				exit;
 			}
 			$rIsAPI = true;
-			$this->hydrateApiUser((int) $db->get_row()["id"]);
+			$this->hydrateApiUser($rKeyUser);
 		} elseif ($_SERVER["REMOTE_ADDR"] == "127.0.0.1" && RequestManager::has("api_user_id")) {
 			$rIsAPI = true;
 			$this->hydrateApiUser((int) RequestManager::get("api_user_id"));
@@ -96,9 +101,6 @@ class TableController extends BaseAdminController {
 		switch ($rType) {
 			case "lines":
 				$this->handleLines($rReturn, $rStart, $rLimit, $rIsAPI);
-				return;
-			case "modules":
-				$this->handleModules($rReturn, $rStart, $rLimit);
 				return;
 			case "active_codes":
 				$this->handleActiveCodes($rReturn, $rStart, $rLimit);
@@ -178,6 +180,9 @@ class TableController extends BaseAdminController {
 			case "login_logs":
 				$this->handleLoginLogs($rReturn, $rStart, $rLimit, $rIsAPI);
 				return;
+			case "admin_actions":
+				$this->handleAdminActions($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
 			case "queue":
 				$this->handleQueue($rReturn, $rStart, $rLimit, $rIsAPI);
 				return;
@@ -255,7 +260,8 @@ class TableController extends BaseAdminController {
 		\XC_Bootstrap::boot(\XC_Bootstrap::CONTEXT_ADMIN);
 		$rUserInfo = UserRepository::getRegisteredUserById($rUserID);
 		$rPermissions = AuthRepository::getPermissions($rUserInfo["member_group_id"]);
-		$rPermissions["advanced"] = json_decode($rPermissions["allowed_pages"], true);
+		// A group that stores no list lists no permissions (Authorization::check).
+		$rPermissions["advanced"] = json_decode((string) $rPermissions["allowed_pages"], true) ?: [];
 		if ((string) $rUserInfo["timezone"] !== '') {
 			date_default_timezone_set($rUserInfo["timezone"]);
 		}
@@ -263,7 +269,7 @@ class TableController extends BaseAdminController {
 
 	private function handleActiveCodes($rReturn, $rStart, $rLimit) {
 		global $db;
-		if (!Authorization::check("adv", "users") && !Authorization::check("adv", "manage_lines")) {
+		if (!Authorization::check("adv", "users") && !Authorization::check("adv", "mass_edit_lines")) {
 			exit;
 		}
 
@@ -405,57 +411,9 @@ class TableController extends BaseAdminController {
 		exit;
 	}
 
-	/**
-	 * id=modules — the installed/available module list.
-	 *
-	 * Unlike every other handler here the rows do not come from SQL:
-	 * ModuleManager reads manifests off disk and merges config/modules.php, so
-	 * the set is small and search/sort/paging are applied in PHP rather than
-	 * pushed into a query.
-	 */
-	private function handleModules($rReturn, $rStart, $rLimit) {
-		$rManager = new ModuleManager(container: ServiceContainer::getInstance());
-
-		$rRows = [];
-		foreach ($rManager->listModules() as $rModule) {
-			$rInstalled = (string) $rModule['installed_version'];
-			$rAvailable = ((string) $rModule['available_version']) ?: (string) $rModule['version'];
-
-			$rRows[] = [
-				'name'          => (string) $rModule['name'],
-				'description'   => (string) $rModule['description'],
-				'version'       => (string) $rModule['version'],
-				'requires_core' => (string) $rModule['requires_core'],
-				'enabled'       => (bool) $rModule['enabled'],
-				'state'         => $rModule['state']->value,
-				'installed'     => $rInstalled !== '',
-				'source'        => (string) $rModule['source'],
-				// Only advertise an update when the source really is ahead.
-				'update_to'     => ($rInstalled !== '' && version_compare($rAvailable, $rInstalled, '>')) ? $rAvailable : '',
-				'rollback_to'   => (string) $rModule['previous_version'],
-				'warnings'      => array_values($rModule['dependency_warnings']),
-			];
-		}
-
-		$rSearch = trim((string) (RequestManager::get('search')['value'] ?? ''));
-		if ($rSearch !== '') {
-			$rNeedle = mb_strtolower($rSearch);
-			$rRows = array_values(array_filter($rRows, static function (array $rRow) use ($rNeedle): bool {
-				return str_contains(mb_strtolower($rRow['name'] . ' ' . $rRow['description']), $rNeedle);
-			}));
-		}
-
-		$rReturn['recordsTotal'] = count($rRows);
-		$rReturn['recordsFiltered'] = count($rRows);
-		$rReturn['data'] = $rLimit > 0 ? array_slice($rRows, $rStart, $rLimit) : $rRows;
-
-		echo json_encode($rReturn);
-		exit;
-	}
-
 	private function handleLines($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db, $rSettings;
-		if (!Authorization::check("adv", "users") && !Authorization::check("adv", "mass_edit_users")) {
+		if (!Authorization::check("adv", "users") && !Authorization::check("adv", "mass_edit_lines")) {
 			exit;
 		}
 		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
@@ -468,7 +426,7 @@ class TableController extends BaseAdminController {
 		}
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "(`is_mag` + `is_e2`) = 0";
-		$rWhere[] = "(`lines`.`is_activecode` = 0 OR `lines`.`is_activecode` IS NULL)";
+		$rWhere[] = ActiveCodeService::LISTED_LINES;
 		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 6) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
@@ -629,7 +587,7 @@ class TableController extends BaseAdminController {
 							"stream_display_name" => $rRow["stream_display_name"] ?? null,
 							"last_active" => !empty($rRow["last_active"]) ? (int) $rRow["last_active"] : null,
 							"last_str" => $rLastStr,
-							"notes" => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], 'strlen')),
+							"notes" => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], static fn(string $rNote): bool => $rNote !== '')),
 							"admin_enabled" => (bool) $rRow["admin_enabled"],
 							"enabled" => (bool) $rRow["enabled"],
 							"contact" => $rRow["contact"],
@@ -644,7 +602,7 @@ class TableController extends BaseAdminController {
 
 	private function handleMags($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db, $rSettings;
-		if (!Authorization::check("adv", "manage_mag")) {
+		if (!Authorization::check("adv", "manage_mag") && !Authorization::check("adv", "mass_edit_mags")) {
 			exit;
 		}
 		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
@@ -764,7 +722,9 @@ class TableController extends BaseAdminController {
 						}
 					}
 				}
+				$rOnlineInfo = \XcVm\Domain\Stream\OnlineConnectionInfo::forUsers($db, $rLineIDs, (bool) SettingsManager::getAll()['redis_handler']);
 				foreach ($rRows as $rRow) {
+					$rRow = array_merge($rRow, $rOnlineInfo[(int) $rRow['id']] ?? []);
 					if (isset($rLineInfo[$rRow["id"]])) {
 						$rRow = array_merge($rRow, $rLineInfo[$rRow["id"]]);
 					}
@@ -792,7 +752,10 @@ class TableController extends BaseAdminController {
 							"stream_id"           => $rRow["stream_id"] ? (int) $rRow["stream_id"] : null,
 							"stream_display_name" => $rRow["stream_display_name"] ?? null,
 							"last_active"         => $rRow["last_active"] ? (int) $rRow["last_active"] : null,
-							"notes"               => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], 'strlen')),
+							"online_ip" => $rRow['online_ip'] ?? '',
+							"online_isp" => $rRow['online_isp'] ?? '',
+							"online_since" => $rRow['online_since'] ?? 0,
+							"notes"               => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], static fn(string $rNote): bool => $rNote !== '')),
 						];
 					}
 				}
@@ -804,7 +767,7 @@ class TableController extends BaseAdminController {
 
 	private function handleEnigmas($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db, $rSettings;
-		if (!Authorization::check("adv", "manage_e2")) {
+		if (!Authorization::check("adv", "manage_e2") && !Authorization::check("adv", "mass_edit_enigmas")) {
 			exit;
 		}
 		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
@@ -951,7 +914,7 @@ class TableController extends BaseAdminController {
 							"stream_id"           => $rRow["stream_id"] ? (int) $rRow["stream_id"] : null,
 							"stream_display_name" => $rRow["stream_display_name"] ?? null,
 							"last_active"         => $rRow["last_active"] ? (int) $rRow["last_active"] : null,
-							"notes"               => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], 'strlen')),
+							"notes"               => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], static fn(string $rNote): bool => $rNote !== '')),
 						];
 					}
 				}
@@ -1264,7 +1227,7 @@ class TableController extends BaseAdminController {
 								} else {
 									$rActualStatus = 0;
 								}
-								if (count(json_decode($rRow["cchannel_rsources"], true)) != count(json_decode($rRow["stream_source"], true)) && !$rRow["parent_id"]) {
+								if (count(json_decode((string) $rRow["cchannel_rsources"], true) ?: []) != count(json_decode((string) $rRow["stream_source"], true) ?: []) && !$rRow["parent_id"]) {
 									$rActualStatus = 6;
 								}
 							}
@@ -1565,7 +1528,8 @@ class TableController extends BaseAdminController {
 							$rActualStatus = -1;
 						}
 						$rServerId  = (int) ($rRow["server_id"] ?: 0);
-						$rGrouped   = (SettingsManager::getAll()["streams_grouped"] == 1);
+						// This table's own grouping: a per-server view (`single`) switched it off above.
+						$rGrouped   = ($rSettings["streams_grouped"] == 1);
 						$rServerCnt = (int) ($rServerCount[$rRow["id"]] ?? 1);
 						$rSourceLabel = null;
 						if (!$rGrouped) {
@@ -1805,7 +1769,8 @@ class TableController extends BaseAdminController {
 							$rActualStatus = -1;
 						}
 						$rServerId  = (int) ($rRow["server_id"] ?: 0);
-						$rGrouped   = (SettingsManager::getAll()["streams_grouped"] == 1);
+						// This table's own grouping: a per-server view (`single`) switched it off above.
+						$rGrouped   = ($rSettings["streams_grouped"] == 1);
 						$rServerCnt = (int) ($rServerCount[$rRow["id"]] ?? 1);
 						$rStreamInfo = json_decode($rRow["stream_info"] ?? "", true);
 						if (!is_array($rStreamInfo)) {
@@ -1986,7 +1951,10 @@ class TableController extends BaseAdminController {
 			foreach (range(1, 7) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
-			$rWhere[] = "(`lines_activity`.`hmac_identifier` LIKE ? OR `lines_activity`.`user_agent` LIKE ? OR `lines_activity`.`user_ip` LIKE ? OR `lines_activity`.`container` LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_start`) LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_end`) LIKE ? OR `lines_activity`.`geoip_country_code` LIKE ?)";
+			// A user agent is stored entity-encoded and the player column shows
+			// it decoded: the name as shown is matched as well.
+			$rWhereV[] = "%" . htmlentities($rSearch) . "%";
+			$rWhere[] = "(`lines_activity`.`hmac_identifier` LIKE ? OR `lines_activity`.`user_agent` LIKE ? OR `lines_activity`.`user_ip` LIKE ? OR `lines_activity`.`container` LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_start`) LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_end`) LIKE ? OR `lines_activity`.`geoip_country_code` LIKE ? OR `lines_activity`.`user_agent` LIKE ?)";
 		}
 		$rRange = (string) (RequestManager::get("range") ?? '');
 		if ($rRange !== '') {
@@ -1998,18 +1966,18 @@ class TableController extends BaseAdminController {
 				$rWhereV[] = $rEndTime;
 			}
 		}
-		if ((string) (RequestManager::get("stream") ?? '') !== '') {
+		if ((string) (RequestManager::get("stream_id", RequestManager::get("stream")) ?? '') !== '') {
 			$rWhere[]  = "`lines_activity`.`stream_id` = ?";
-			$rWhereV[] = RequestManager::get("stream");
+			$rWhereV[] = RequestManager::get("stream_id", RequestManager::get("stream"));
 		}
-		if ((string) (RequestManager::get("user") ?? '') !== '') {
+		if ((string) (RequestManager::get("user_id", RequestManager::get("user")) ?? '') !== '') {
 			$rWhere[]  = "`lines_activity`.`user_id` = ?";
-			$rWhereV[] = RequestManager::get("user");
+			$rWhereV[] = RequestManager::get("user_id", RequestManager::get("user"));
 		}
-		if (0 < (int) (RequestManager::get("server") ?? 0)) {
+		if (0 < (int) (RequestManager::get("server_id", RequestManager::get("server")) ?? 0)) {
 			$rWhere[]  = "(`lines_activity`.`server_id` = ? OR `lines_activity`.`proxy_id` = ?)";
-			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
-			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+			$rWhereV[] = (int) (RequestManager::get("server_id", RequestManager::get("server")) ?? 0);
+			$rWhereV[] = (int) (RequestManager::get("server_id", RequestManager::get("server")) ?? 0);
 		}
 		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
@@ -2101,7 +2069,9 @@ class TableController extends BaseAdminController {
 					"server_name"   => $rRow["server_name"],
 					"server_url"    => ($rCanServers && $rRow["server_name"] !== null) ? "server_view?id=" . (int) $rRow["server_id"] : null,
 					"proxy_via"     => $rProxyVia,
-					"player"        => trim(explode("(", (string) $rRow["user_agent"])[0]),
+					// A user agent is stored entity-encoded: the page gets the name the
+					// device gave and writes it as text. The API's rows keep it as stored.
+					"player"        => trim(explode("(", $rIsAPI ? (string) $rRow["user_agent"] : html_entity_decode((string) $rRow["user_agent"]))[0]),
 					"isp"           => $rRow["isp"],
 					"user_ip"       => $rRow["user_ip"],
 					"country"       => ((string) $rRow["geoip_country_code"] !== '') ? strtolower($rRow["geoip_country_code"]) : null,
@@ -2134,6 +2104,8 @@ class TableController extends BaseAdminController {
 			}
 			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') !== "desc";
 			$rFilterBefore = true;
+			$rServerID = $rStreamID = $rUserID = null;
+			$rKeyCount = 0;
 			if (RequestManager::has("refresh")) {
 				$rStart = 0;
 				$rLimit = 1000;
@@ -2201,12 +2173,10 @@ class TableController extends BaseAdminController {
 					$rKeyCount--;
 				} else {
 					if (!$rFilterBefore) {
-						if ($rServerID && $rServerID != $rRow["server_id"]) {
+						// Counted out and left out: it was counted out only, and still listed.
+						if ($rServerID && $rServerID != $rRow["server_id"] || $rStreamID && $rStreamID != $rRow["stream_id"] || $rUserID && $rUserID != $rRow["user_id"]) {
 							$rKeyCount--;
-						} elseif ($rStreamID && $rStreamID != $rRow["stream_id"]) {
-							$rKeyCount--;
-						} elseif ($rUserID && $rUserID != $rRow["user_id"]) {
-							$rKeyCount--;
+							continue;
 						}
 					}
 					$rRow["activity_id"] = $rRow["uuid"];
@@ -2282,7 +2252,10 @@ class TableController extends BaseAdminController {
 				foreach (range(1, 10) as $rInt) {
 					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 				}
-				$rWhere[] = "(`lines_live`.`hmac_identifier` LIKE ? OR `lines_live`.`user_agent` LIKE ? OR `lines_live`.`user_ip` LIKE ? OR `lines_live`.`container` LIKE ? OR FROM_UNIXTIME(`lines_live`.`date_start`) LIKE ? OR `lines_live`.`geoip_country_code` LIKE ? OR `lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `enigma2_devices`.`mac` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+				// A user agent is stored entity-encoded and the player column shows
+				// it decoded: the name as shown is matched as well.
+				$rWhereV[] = "%" . htmlentities((string) RequestManager::get("search")["value"]) . "%";
+				$rWhere[] = "(`lines_live`.`hmac_identifier` LIKE ? OR `lines_live`.`user_agent` LIKE ? OR `lines_live`.`user_ip` LIKE ? OR `lines_live`.`container` LIKE ? OR FROM_UNIXTIME(`lines_live`.`date_start`) LIKE ? OR `lines_live`.`geoip_country_code` LIKE ? OR `lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `enigma2_devices`.`mac` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `lines_live`.`user_agent` LIKE ?)";
 			}
 			if (0 < (int) (RequestManager::get("server_id") ?? 0)) {
 				$rWhere[] = "(`lines_live`.`server_id` = ? OR `lines_live`.`proxy_id` = ?)";
@@ -2388,7 +2361,9 @@ class TableController extends BaseAdminController {
 						"server_name"     => $rRow["server_name"],
 						"server_url"      => Authorization::check("adv", "servers") ? "server_view?id=" . (int) $rRow["server_id"] : null,
 						"proxy_via"       => $rProxyVia,
-						"player"          => trim(explode("(", (string) $rRow["user_agent"])[0]),
+						// A user agent is stored entity-encoded: the page gets the
+						// name the device gave and writes it as text.
+						"player"          => trim(explode("(", html_entity_decode((string) $rRow["user_agent"]))[0]),
 						"isp"             => $rRow["isp"],
 						"user_ip"         => $rRow["user_ip"],
 						"country"         => ((string) $rRow["geoip_country_code"] !== '') ? strtolower($rRow["geoip_country_code"]) : null,
@@ -2983,7 +2958,7 @@ class TableController extends BaseAdminController {
 					"target_id"       => (int) $rRow["target_id"],
 					"target_username" => $rRow["target_username"],
 					"target_url"      => ($rCanEdit && $rRow["target_username"] !== null) ? "user?id=" . (int) $rRow["target_id"] : null,
-					"amount"          => (int) $rRow["amount"],
+					"amount"          => ResellerAPI::amount($rRow["amount"]),
 					"reason"          => $rRow["reason"],
 					"date"            => (int) $rRow["date"],
 				];
@@ -3113,46 +3088,10 @@ class TableController extends BaseAdminController {
 		if (0 < $rReturn["recordsTotal"]) {
 			$rPackages = PackageService::getAll();
 			$rCanEdit  = Authorization::check("adv", "edit_reguser");
-			$rDeviceMap = ["line" => "User Line", "mag" => "MAG Device", "enigma" => "Enigma2 Device", "user" => "Reseller"];
 			$rQuery = "SELECT `users`.`username`, `users_logs`.`id`, `users_logs`.`owner`, `users_logs`.`type`, `users_logs`.`action`, `users_logs`.`log_id`, `users_logs`.`package_id`, `users_logs`.`cost`, `users_logs`.`credits_after`, `users_logs`.`date`, `users_logs`.`deleted_info` FROM `users_logs` LEFT JOIN `users` ON `users`.`id` = `users_logs`.`owner` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
 			$db->query($rQuery, ...$rWhereV);
 			foreach ($db->get_rows() as $rRow) {
-				$rDevice = $rDeviceMap[$rRow["type"]] ?? (string) $rRow["type"];
-				$rPkg = $rRow["package_id"] ? (" with Package: " . ($rPackages[$rRow["package_id"]]["package_name"] ?? "")) : "";
-				switch ($rRow["action"]) {
-					case "new":
-						$rText = "Created New " . $rDevice . $rPkg;
-						break;
-					case "extend":
-						$rText = "Extended " . $rDevice . $rPkg;
-						break;
-					case "convert":
-						$rText = "Converted Device to User Line";
-						break;
-					case "edit":
-						$rText = "Edited " . $rDevice;
-						break;
-					case "enable":
-						$rText = "Enabled " . $rDevice;
-						break;
-					case "disable":
-						$rText = "Disabled " . $rDevice;
-						break;
-					case "delete":
-						$rText = "Deleted " . $rDevice;
-						break;
-					case "send_event":
-						$rText = "Sent Event to " . $rDevice;
-						break;
-					case "adjust_credits":
-						$rText = "Adjusted Credits by " . $rRow["cost"];
-						break;
-					case "connection":
-						$rText = "Additional Connection Added";
-						break;
-					default:
-						$rText = (string) $rRow["action"];
-				}
+				$rText = UserService::logText($rRow, $rPackages);
 				$rLineLabel = null;
 				$rLineUrl   = null;
 				switch ($rRow["type"]) {
@@ -3196,8 +3135,8 @@ class TableController extends BaseAdminController {
 					"line_label"    => $rLineLabel,
 					"line_url"      => $rLineUrl,
 					"text"          => $rText,
-					"cost"          => (int) $rRow["cost"],
-					"credits_after" => (int) $rRow["credits_after"],
+					"cost"          => ResellerAPI::amount($rRow["cost"]),
+					"credits_after" => ResellerAPI::amount($rRow["credits_after"]),
 					"date"          => (int) $rRow["date"],
 				];
 				$rReturn["data"][] = $rIsAPI
@@ -3365,7 +3304,7 @@ class TableController extends BaseAdminController {
 
 	private function handleRegUsers($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db;
-		if (!Authorization::check("adv", "mng_regusers")) {
+		if (!Authorization::check("adv", "mng_regusers") && !Authorization::check("adv", "mass_edit_users")) {
 			exit;
 		}
 		// Leading false = the Bootstrap 5 Responsive control column (client index 0).
@@ -3412,11 +3351,11 @@ class TableController extends BaseAdminController {
 		}
 		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
 		if (0 < $rReturn["recordsTotal"]) {
-			$rQuery = "SELECT `users`.`member_group_id`, `users`.`id`, `users`.`status`, `users`.`notes`, `users`.`owner_id`, `users`.`credits`, `users`.`username`, `users`.`email`, `users`.`ip`, FROM_UNIXTIME(`users`.`date_registered`) AS `date_registered`, FROM_UNIXTIME(`users`.`last_login`) AS `last_login`, `users`.`status` FROM `users` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$rQuery = "SELECT `users`.`member_group_id`, `users`.`id`, `users`.`status`, `users`.`notes`, `users`.`owner_id`, `users`.`credits`, `users`.`username`, `users`.`email`, `users`.`ip`, `users`.`date_registered`, `users`.`last_login`, `users`.`status` FROM `users` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
 			$db->query($rQuery, ...$rWhereV);
 			if (0 < $db->num_rows()) {
 				$rUserInfo = $rOwnerInfo = $rUserIDs = $rOwnerIDs = [];
-				$rRows = $db->get_rows();
+				$rRows = array_map([UserCredits::class, 'amounts'], $db->get_rows());
 				foreach ($rRows as $rRow) {
 					$rUserIDs[] = $rRow["id"];
 					if ($rRow["owner_id"]) {
@@ -3450,6 +3389,10 @@ class TableController extends BaseAdminController {
 					}
 				}
 				foreach ($rRows as $rRow) {
+					// Format in PHP, not FROM_UNIXTIME(): the DB session runs in UTC, PHP in the panel/user timezone.
+					foreach (["date_registered", "last_login"] as $rKey) {
+						$rRow[$rKey] = $rRow[$rKey] ? date("Y-m-d H:i:s", (int) $rRow[$rKey]) : null;
+					}
 					if (isset($rOwnerInfo[$rRow["owner_id"]])) {
 						$rRow["owner_username"] = $rOwnerInfo[$rRow["owner_id"]];
 					} else {
@@ -3470,7 +3413,7 @@ class TableController extends BaseAdminController {
 							"member_group_id" => (int) $rRow["member_group_id"],
 							"group_name"      => $rRow["group_name"],
 							"is_reseller"     => (1 == (int) $rRow["is_reseller"]),
-							"credits"         => (int) $rRow["credits"],
+							"credits"         => ResellerAPI::amount($rRow["credits"]),
 							"user_count"      => (int) $rRow["user_count"],
 							"user_lines"      => (int) $rRow["user_lines"],
 							"mag_lines"       => (int) $rRow["mag_lines"],
@@ -3628,7 +3571,11 @@ class TableController extends BaseAdminController {
 		if (!Authorization::check("adv", "episodes") && !Authorization::check("adv", "mass_sedits")) {
 			exit;
 		}
-		$rOrder = ["`streams`.`id`", false, "`streams`.`stream_display_name`", "`server_name`", "`clients`", "`streams_servers`.`stream_started`", false, false, "`streams_servers`.`bitrate`"];
+		// The episodes table has the same 12-column layout as movies (the Bootstrap
+		// Responsive control + bulk-select lead the row), so its order map must too,
+		// or DataTables column 2 (id) sorts streams.stream_display_name and the
+		// default order [[2,'desc']] lands on the wrong column.
+		$rOrder = [false, false, "`streams`.`id`", false, "`streams`.`stream_display_name`", "`server_name`", "`clients`", "`streams_servers`.`stream_started`", false, false, false, "`streams_servers`.`bitrate`"];
 		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
@@ -4042,6 +3989,49 @@ class TableController extends BaseAdminController {
 					"code"     => $rRow["code"],
 					"login_ip" => $rIp,
 					"blocked"  => isset($rBlocked[$rIp]),
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	/** The admin action trail (Core\Audit\AdminAudit), newest first; the search box matches the account, action, address and detail. */
+	private function handleAdminActions($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "admin_audit")) {
+			exit;
+		}
+		$rOrderBy = $this->dtOrderBy([false, "`date`", "`username`", "`ip`", "`source`", "`action`", "`result`", false]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 4) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`username` LIKE ? OR `action` LIKE ? OR `ip` LIKE ? OR `detail` LIKE ?)";
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `admin_audit` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+		if (0 < $rReturn["recordsTotal"]) {
+			$db->query("SELECT `id`, `date`, `user_id`, `username`, `ip`, `source`, `action`, `result`, `detail` FROM `admin_audit` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";", ...$rWhereV);
+			foreach ($db->get_raw_rows() as $rRow) {
+				$rItem = [
+					"id"       => (int) $rRow["id"],
+					"date"     => (int) $rRow["date"],
+					"user_id"  => (int) $rRow["user_id"],
+					"username" => $rRow["username"],
+					"ip"       => $rRow["ip"],
+					"source"   => $rRow["source"],
+					"action"   => $rRow["action"],
+					"result"   => $rRow["result"] === null ? null : (int) $rRow["result"],
+					"detail"   => json_decode((string) $rRow["detail"], true) ?: new \stdClass(),
 				];
 				$rReturn["data"][] = $rIsAPI
 					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
@@ -4731,8 +4721,9 @@ class TableController extends BaseAdminController {
 			$rOrderRow = 0;
 		}
 		$rWhere = $rWhereV = [];
-		$rWhere[] = "`stream_source` LIKE ?";
-		$rWhereV[] = "%s:" . (int) (RequestManager::get("server_id") ?? 0) . ":%";
+		// Only VODs encoded (stream_status = 0) on the chosen server: the channel build skips the rest.
+		$rWhere[] = "EXISTS (SELECT 1 FROM `streams_servers` `ss` WHERE `ss`.`stream_id` = `streams`.`id` AND `ss`.`server_id` = ? AND `ss`.`stream_status` = 0)";
+		$rWhereV[] = (int) (RequestManager::get("server_id") ?? 0);
 		if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
 			$rSplit = explode(":", RequestManager::get("category_id"));
 			if ((int) $rSplit[0] == 0) {
@@ -4809,6 +4800,10 @@ class TableController extends BaseAdminController {
 
 	private function handleProviderStreams($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db;
+		// The stream and movie forms show this table; the providers page lists the same rows.
+		if (!Authorization::check("adv", "streams") && !Authorization::check("adv", "add_stream") && !Authorization::check("adv", "edit_stream") && !Authorization::check("adv", "add_movie") && !Authorization::check("adv", "edit_movie")) {
+			exit;
+		}
 		$rOrder = ["`providers`.`name`", "`providers_streams`.`stream_icon`", "`providers_streams`.`stream_display_name`", false];
 		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);

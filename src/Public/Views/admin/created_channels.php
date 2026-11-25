@@ -19,7 +19,7 @@ use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\CategoryService;
 
-if (!Authorization::check('adv', 'created_channels') && !Authorization::check('adv', 'edit_cchannel')):
+if (!Authorization::check('adv', 'manage_cchannels') && !Authorization::check('adv', 'edit_cchannel')):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
@@ -202,7 +202,7 @@ LayoutRenderer::renderFooter('admin');
         var esc = function(s) {
             var d = document.createElement('div');
             d.textContent = (s == null ? '' : String(s));
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         };
         var canEdit = <?= $rCanEdit ? 'true' : 'false'; ?>,
             canLive = <?= $rCanLive ? 'true' : 'false'; ?>,
@@ -661,7 +661,7 @@ LayoutRenderer::renderFooter('admin');
         function esc(s) {
             var d = document.createElement('div');
             d.textContent = (s == null ? '' : s);
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
         var FAILURE_BADGE = {
             STREAM_STOP: ['secondary', 'STOPPED'],

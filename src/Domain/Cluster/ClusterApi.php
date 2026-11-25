@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\Box;
 use XcVm\Core\Cluster\Crypto\Canonical;
@@ -16,6 +17,8 @@ use XcVm\Core\Database\DatabaseUnavailableException;
 use XcVm\Core\Logging\FileLogger;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Domain\Stream\RecordingFinalizer;
+use XcVm\Domain\User\RtmpViewerAuth;
+use XcVm\Infrastructure\Cache\CacheReader;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -65,7 +68,14 @@ final class ClusterApi {
 	 * heartbeat on the cluster bus sends MySQL no query of its own (only the
 	 * connection's setup).
 	 */
-	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'queue_enqueue', 'queue_claim', 'queue_update', 'conn_snapshot', 'conn_admit', 'streams', 'artefact', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
+	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'queue_enqueue', 'queue_claim', 'queue_update', 'conn_snapshot', 'conn_admit', 'rtmp_auth', 'streams', 'artefact', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
+
+	/**
+	 * Failed credential checks (`rtmp_auth`) a node may ask for in a minute:
+	 * past it, MAIN checks none for the node until the minute ends, so a node
+	 * cannot test line credentials at MAIN's pace under addresses it names.
+	 */
+	public const RTMP_FAIL_BUDGET = 300;
 
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
@@ -86,6 +96,7 @@ final class ClusterApi {
 		'queue_update' => ['POST', false, ['active']],
 		'conn_snapshot' => ['POST', false, ['active']],
 		'conn_admit' => ['POST', false, ['active']],
+		'rtmp_auth' => ['POST', false, ['active']],
 		'config' => ['POST', false, ['active']],
 		'streams' => ['POST', false, ['active']],
 		'artefact' => ['POST', false, ['active']],
@@ -340,7 +351,7 @@ final class ClusterApi {
 	 * events from their reserve; a batch's lane is known only once its BOX is
 	 * open, and opening it touches no database.
 	 *
-	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'queue_enqueue'|'queue_claim'|'queue_update'|'conn_snapshot'|'conn_admit'|'config'|'streams'|'artefact' $rOp
+	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'queue_enqueue'|'queue_claim'|'queue_update'|'conn_snapshot'|'conn_admit'|'rtmp_auth'|'config'|'streams'|'artefact' $rOp
 	 * @return array{status: int, headers: array<string, string>, body: string}
 	 */
 	private static function dispatch(ClusterCrypto $rCrypto, string $rOp, array $rReq, array $rSettings, array $rMain, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, string $rBody): array {
@@ -364,6 +375,7 @@ final class ClusterApi {
 				'queue_enqueue', 'queue_claim', 'queue_update' => self::queue($rOp, $rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
+				'rtmp_auth' => self::rtmpAuth($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 				'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 				'streams' => self::streams($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'artefact' => self::artefact($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
@@ -530,7 +542,7 @@ final class ClusterApi {
 		if (!empty($rNode['instance_id']) && ($rInstance === null || !hash_equals((string) $rNode['instance_id'], $rInstance))) {
 			// Authenticated evidence of a clone, as in hello: the admin decides.
 			NodeRegistry::update((int) $rNode['server_id'], ['state' => 'quarantined', 'quarantine_reason' => 'instance_id changed (re-key)']);
-			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'rekey attest', 'was' => $rNode['instance_id'], 'now' => $rInstance], 'node');
+			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'rekey attest', 'was' => $rNode['instance_id'], 'now' => $rInstance] + CommandBus::endGranting((int) $rNode['server_id']), 'node');
 			// No longer active in the node list: its peers stop trusting it at once.
 			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 			return self::notActive($rCrypto, $rH, 'quarantined');
@@ -651,13 +663,14 @@ final class ClusterApi {
 			$rState = 'quarantined';
 			$rFields['state'] = $rState;
 			$rFields['quarantine_reason'] = 'instance_id changed';
-			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'instance_id', 'was' => $rNode['instance_id'], 'now' => $rInstance], 'node');
 		} elseif (empty($rNode['instance_id'])) {
 			$rFields['instance_id'] = $rInstance;
 		}
 		NodeRegistry::update((int) $rNode['server_id'], $rFields);
 		if ($rState !== (string) $rNode['state']) {
-			// Quarantined: no longer active in the node list, so its peers stop trusting it at once.
+			// Quarantined, which ends what grants (CommandBus::endGranting()) once the state is written.
+			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'instance_id', 'was' => $rNode['instance_id'], 'now' => $rInstance] + CommandBus::endGranting((int) $rNode['server_id']), 'node');
+			// No longer active in the node list, so its peers stop trusting it at once.
 			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, [
@@ -735,7 +748,7 @@ final class ClusterApi {
 		$rWant = false;
 		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONNECTIONS) !== 0 && isset($rP['conn_digest'])) {
 			try {
-				$rWant = ConnectionDigest::check((int) $rNode['server_id'], $rP['conn_digest']);
+				$rWant = ConnectionDigest::check((int) $rNode['server_id'], $rP['conn_digest'], is_array($rP['lanes']['p0'] ?? null) ? $rP['lanes']['p0'] : null);
 			} catch (\Throwable) {
 				$rWant = false; // the store is down: the next heartbeat checks again
 			}
@@ -757,7 +770,8 @@ final class ClusterApi {
 	 * (`cmd`) each. Held up to `wait_ms` while there are none, so a command
 	 * reaches the node within a poll step of being queued. A quarantined node
 	 * gets the restrictive ones only (its node.quarantine, kills, stops, a
-	 * fence): what grants waits until an admin trusts it again.
+	 * fence). What granted was ended by the quarantine
+	 * (CommandBus::endGranting()) and is not handed out after Trust again.
 	 */
 	private static function commands(array $rNode, SessionKeys $rKeys, string $rCtx, array $rP): array {
 		$rAfter = max(0, (int) ($rP['after_seq'] ?? 0));
@@ -875,7 +889,7 @@ final class ClusterApi {
 			// Authenticated evidence of a clone, as in hello: another install
 			// numbering P0 from where this node was. The admin decides.
 			NodeRegistry::update((int) $rNode['server_id'], ['state' => 'quarantined', 'quarantine_reason' => 'P0 sequence went backwards']);
-			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'p0 backwards', 'first_useq' => $rFirst, 'count' => count($rEvents), 'cursor' => $rOut['useq']], 'node');
+			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'p0 backwards', 'first_useq' => $rFirst, 'count' => count($rEvents), 'cursor' => $rOut['useq']] + CommandBus::endGranting((int) $rNode['server_id']), 'node');
 			// No longer active in the node list: its peers stop trusting it at once.
 			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 			return self::notActive($rCrypto, $rH, 'quarantined');
@@ -1006,6 +1020,88 @@ final class ClusterApi {
 	}
 
 	/**
+	 * `rtmp_auth`: an RTMP viewer on the node (nginx-rtmp's on_play), whose
+	 * line a load balancer cannot look up. RtmpViewerAuth makes rtmp.php's
+	 * checks for the authenticated node's server and logs a refusal here, as
+	 * rtmp.php logs it on MAIN; the node then records the viewer itself. The
+	 * viewer's address is the node's to say, as in its other reports, so the
+	 * node's failed checks have a budget (RTMP_FAIL_BUDGET), and a refusal
+	 * tells it only whether the credentials named a line (its flood guard
+	 * counts those that did not): why is in MAIN's client log.
+	 */
+	private static function rtmpAuth(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {
+		$rStreamID = $rP['stream_id'] ?? null;
+		$rIP = $rP['ip'] ?? null;
+		$rRestream = $rP['restream'] ?? false;
+		$rUUID = $rP['uuid'] ?? null;
+		$rCreds = array_key_exists('token', $rP) ? ['token' => $rP['token']] : ['username' => $rP['username'] ?? null, 'password' => $rP['password'] ?? null];
+		foreach ($rCreds as $rValue) {
+			if (!is_string($rValue) || strlen($rValue) > 512) {
+				return self::badRequest($rCrypto, $rH);
+			}
+		}
+		if (!is_int($rStreamID) || $rStreamID <= 0 || !is_string($rIP) || filter_var($rIP, FILTER_VALIDATE_IP) === false || !is_bool($rRestream)
+			|| ($rUUID !== null && (!is_string($rUUID) || !preg_match(AgentConnections::CONN_UUID, $rUUID)))
+		) {
+			return self::badRequest($rCrypto, $rH);
+		}
+		$rServerID = (int) $rNode['server_id'];
+		if (self::rtmpFails($rServerID, false) >= self::RTMP_FAIL_BUDGET) {
+			return self::ok($rKeys, $rCtx, ['ok' => false, 'reason' => 'REFUSED']);
+		}
+		try {
+			$rOut = RtmpViewerAuth::check($rSettings, !empty($rSettings['enable_cache']) && CacheReader::isReady($rSettings), null, null, $rStreamID, $rIP, $rCreds, $rRestream, $rServerID);
+			if ($rOut['ok'] === true && $rUUID !== null) {
+				// MAIN's mint for this viewer, as auth.php's for an HTTP viewer's token: the
+				// node records the viewer with its proof and admission (ConnectionTracker::
+				// openRecord), so the record is MAIN's own under cluster_conn_binding = enforce.
+				$rOut['token'] = RtmpViewerAuth::mint($rSettings, $rOut, $rStreamID, $rIP, $rUUID);
+			}
+		} catch (\Throwable) {
+			return self::dbDown($rCrypto, $rH);
+		}
+		unset($rOut['channel']);
+		if ($rOut['ok'] !== true) {
+			if ($rOut['reason'] === RtmpViewerAuth::AUTH_FAILED && self::rtmpFails($rServerID, true) === self::RTMP_FAIL_BUDGET) {
+				ClusterAudit::log('rtmp.auth_budget', $rServerID, ['fails' => self::RTMP_FAIL_BUDGET], 'node');
+			}
+			$rOut = ['ok' => false, 'reason' => $rOut['reason'] === RtmpViewerAuth::AUTH_FAILED ? RtmpViewerAuth::AUTH_FAILED : 'REFUSED'];
+		}
+		return self::ok($rKeys, $rCtx, $rOut);
+	}
+
+	/**
+	 * The node's failed `rtmp_auth` checks in this minute of MAIN's clock, one
+	 * more first when $rAdd (TMP_PATH/cluster_rtmp/<server id>, under a lock).
+	 * A counter that cannot be opened counts nothing.
+	 */
+	private static function rtmpFails(int $rServerID, bool $rAdd): int {
+		$rDir = (defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_rtmp/';
+		if (!is_dir($rDir)) {
+			@mkdir($rDir, 0700, true);
+		}
+		$rFP = @fopen($rDir . $rServerID, 'c+');
+		if ($rFP === false) {
+			return 0;
+		}
+		try {
+			flock($rFP, LOCK_EX);
+			$rMinute = intdiv(ClusterClock::nowMs(), 60000);
+			[$rAt, $rFails] = array_map('intval', array_pad(explode(' ', trim((string) stream_get_contents($rFP))), 2, '0'));
+			$rFails = $rAt === $rMinute ? $rFails : 0;
+			if ($rAdd) {
+				$rFails++;
+				ftruncate($rFP, 0);
+				rewind($rFP);
+				fwrite($rFP, $rMinute . ' ' . $rFails);
+			}
+			return $rFails;
+		} finally {
+			fclose($rFP);
+		}
+	}
+
+	/**
 	 * `config`: the node's replica (ReplicaBuilder), in shadow until its CONFIG
 	 * flow is on. The blocklist: a `blk` delta from `blocklist_since`, or the
 	 * whole section when there is no delta to give. `have` maps each section to
@@ -1023,7 +1119,8 @@ final class ClusterApi {
 	 * out, and the node asks again at its next poll, when what this reply
 	 * carried is `unchanged`. To an agent that says `parts`, `too_large`
 	 * also says how many parts MAIN staged the section in, which it fetches
-	 * with `config {part}` (configPart()). A section MAIN cannot read (a failed read, no
+	 * with `config {part}` (configPart()); so does a whole blocklist section
+	 * to an agent that says `blocklist_parts`. A section MAIN cannot read (a failed read, no
 	 * settings row, an unset secret) answers `503 DB`: the node keeps what it
 	 * holds.
 	 */
@@ -1044,7 +1141,8 @@ final class ClusterApi {
 			}
 		}
 		try {
-			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '')];
+			$rBlockParts = ($rP[ReplicaBuilder::BLOCKLIST_PARTS] ?? false) === true;
+			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '', $rBlockParts)];
 			// What the sections sent whole may take of the reply, after the blocklist.
 			$rRoom = ReplicaBuilder::MAX_REPLY - strlen((string) json_encode($rOut, JSON_UNESCAPED_SLASHES));
 			// An agent that names the catalogue takes `too_large` for any section it names.
@@ -1102,7 +1200,7 @@ final class ClusterApi {
 		$rSection = is_array($rAsk) ? ($rAsk['section'] ?? null) : null;
 		$rEtag = is_array($rAsk) ? ($rAsk['etag'] ?? null) : null;
 		$rN = is_array($rAsk) ? ($rAsk['n'] ?? null) : null;
-		$rValid = is_string($rSection) && in_array($rSection, ReplicaBuilder::REPLY_ORDER, true) && ReplicaBuilder::serves($rNode, $rSection);
+		$rValid = is_string($rSection) && ($rSection === ReplicaBuilder::SECTION_BLOCKLIST || (in_array($rSection, ReplicaBuilder::REPLY_ORDER, true) && ReplicaBuilder::serves($rNode, $rSection)));
 		if (!$rValid || !is_string($rEtag) || !preg_match('/^[0-9a-f]{64}\z/', $rEtag) || !is_int($rN) || $rN < 0) {
 			return self::badRequest($rCrypto, $rH);
 		}

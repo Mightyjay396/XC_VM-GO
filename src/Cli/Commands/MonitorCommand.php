@@ -9,6 +9,7 @@ use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\StreamUtils;
+use XcVm\Domain\Epg\CreatedChannelEpg;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
@@ -82,6 +83,23 @@ class MonitorCommand implements CommandInterface {
 
 		global $db;
 
+		// Serialize concurrent (re)starts for this stream. Two monitors racing
+		// through the take-over below — checkRunning(), the kill, the
+		// `rm -f <id>_*`, the _.monitor rewrite — would both kill the producer and
+		// delete its files, interrupting the stream and leaving watchdogs racing.
+		// A non-blocking per-stream lock lets only the first startup through; a
+		// concurrent retry stands down instead of fighting it. The lock name uses
+		// a dot (not `<id>_`) so the restart wipe does not remove it mid-hold, and
+		// it is released before the watch loop so a later restart can take over.
+		$rStartLock = fopen(STREAMS_PATH . $rStreamID . '.monitor.lock', 'c');
+		if ($rStartLock !== false && !flock($rStartLock, LOCK_EX | LOCK_NB)) {
+			fclose($rStartLock);
+			echo "Another monitor is already starting this stream; standing down.\n";
+			return 0;
+		}
+		// A lock file we could not open at all (rare) is not fatal: fall through
+		// and monitor the stream anyway rather than refuse to run over it.
+
 		$this->checkRunning($rStreamID);
 		set_time_limit(0);
 		cli_set_process_title('XC_VM[' . $rStreamID . ']');
@@ -107,6 +125,8 @@ class MonitorCommand implements CommandInterface {
 		$rStreamProbe = false;
 		$rSources = [];
 		$rSegmentTime = intval(SettingsManager::get('seg_time'));
+		// QC-CLEARKEY-LEGACY: DASH via mpdproxy (slow CDN, SSAI ad break) is stalled only after 150 s, as under the fanout supervisor.
+		$rDashStall = stripos((string) ($rStreamInfo['stream_source'] ?? ''), '.mpd') !== false ? 150 : 0;
 		$rPrioritySwitch = false;
 		$rMaxFails = 0;
 
@@ -158,6 +178,13 @@ class MonitorCommand implements CommandInterface {
 					shell_exec('kill -9 ' . $rRoguePID . ';');
 				}
 			}
+		}
+
+		// Take-over is done; release the start lock so a later restart can acquire
+		// it and take over in turn. (An early return above frees it automatically.)
+		if (is_resource($rStartLock)) {
+			flock($rStartLock, LOCK_UN);
+			fclose($rStartLock);
 		}
 
 		// ── Supervisor + monitor loop (restructured from goto state machine) ──
@@ -241,7 +268,7 @@ class MonitorCommand implements CommandInterface {
 							break;
 						}
 					}
-					if (($rSegmentTime * 6) <= time() - $rCheckedTime) {
+					if (max($rSegmentTime * 6, $rDashStall) <= time() - $rCheckedTime) {
 						$rNewMd5 = md5_file($rPlaylist);
 						if ($rMD5 != $rNewMd5) {
 							$rMD5 = $rNewMd5;
@@ -357,6 +384,9 @@ class MonitorCommand implements CommandInterface {
 							}
 						}
 						$rData = StreamProcess::startStream($rStreamID, false, $rForceSource, false, $rOffset);
+						if ($rOffset == 0) {
+							CreatedChannelEpg::regenerate((int) $rStreamID);
+						}
 					} else {
 						$rData = StreamProcess::startStream($rStreamID, $rTotalCalls < MONITOR_CALLS, $rForceSource);
 					}
@@ -369,12 +399,12 @@ class MonitorCommand implements CommandInterface {
 						// An on-demand source that cannot even be probed is a failed
 						// start like any other: honour on_demand_failure_exit here too,
 						// instead of re-probing a dead source until the cron stops it.
-						if (SettingsManager::get('on_demand_failure_exit') && $rStreamInfo['on_demand']) {
+						if (SettingsManager::get('on_demand_failure_exit') && $rStreamInfo['on_demand'] && $rMaxFails >= 3) { // QC-OD-FAST
 							echo "On-demand source failed to probe, exiting.\n";
 							return 0;
 						}
 						echo 'Stream start failed (attempt ' . $rMaxFails . '). Sleeping ' . SettingsManager::get('stream_fail_sleep') . " seconds...\n";
-						sleep(SettingsManager::get('stream_fail_sleep'));
+						sleep($rStreamInfo['on_demand'] ? 1 : SettingsManager::get('stream_fail_sleep')); // QC-OD-FAST
 						continue;
 					}
 					break;
@@ -411,7 +441,7 @@ class MonitorCommand implements CommandInterface {
 				$rFirstSegment = $rFolder . $rStreamID . '_0.ts';
 				$rSegmentSeen = false;
 				$rChecks = 0;
-				$rMaxChecks = max(20, min($rSegmentTime * 3, 30), intval($rData['start_timeout'] ?? 0));
+				$rMaxChecks = max(60, min($rSegmentTime * 3, 30), intval($rData['start_timeout'] ?? 0)); // QC-START-WAIT
 				while (true) {
 					echo 'Checking for playlist ' . ($rChecks + 1) . '/' . $rMaxChecks . "...\n";
 					if (!ProcessManager::isStreamRunning($rPID, $rStreamID)) {
@@ -428,6 +458,9 @@ class MonitorCommand implements CommandInterface {
 						$rSegmentSeen = true;
 						$rChecks = 0;
 						StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['stream_status' => 0, 'stream_started' => time() - $rOffset], $db);
+						if ($rStreamInfo['type'] == 3) {
+							CreatedChannelEpg::regenerate((int) $rStreamID);
+						}
 					}
 					if (($rChecks == $rMaxChecks)) {
 						echo "Reached max failures\n";
@@ -465,6 +498,9 @@ class MonitorCommand implements CommandInterface {
 
 					if (!$rSegmentSeen && $rStreamInfo['stream_info'] && $rStreamInfo['on_demand']) {
 						StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['stream_info' => $rStreamInfo['stream_info'], 'compatible' => $rCompatible, 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'bitrate' => intval($rBitrate), 'stream_status' => 0, 'stream_started' => time() - $rOffset], $db);
+						if ($rStreamInfo['type'] == 3) {
+							CreatedChannelEpg::regenerate((int) $rStreamID);
+						}
 					} else {
 						StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['stream_info' => $rStreamInfo['stream_info'], 'compatible' => $rCompatible, 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'bitrate' => intval($rBitrate), 'stream_status' => 0], $db);
 					}

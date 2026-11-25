@@ -150,9 +150,13 @@ class DatabaseHandler extends Database {
 			return false;
 		}
 
-		$result = $this->dbh->commit();
+		// Out of the transaction whatever follows. A DDL statement commits on its
+		// own, and PDO then refuses to commit ("There is no active transaction"):
+		// the refusal was thrown before this flag was cleared, so the handler
+		// believed itself in a transaction for the connection's life (no later
+		// transaction would start, and reconnects were off).
 		$this->inTransaction = false;
-		return $result;
+		return $this->dbh->inTransaction() ? $this->dbh->commit() : true;
 	}
 
 	/**
@@ -165,9 +169,10 @@ class DatabaseHandler extends Database {
 			return false;
 		}
 
-		$result = $this->dbh->rollBack();
+		// As commit(): nothing is left to roll back after a DDL statement, and
+		// PDO's refusal here hid the error that had asked for the rollback.
 		$this->inTransaction = false;
-		return $result;
+		return $this->dbh->inTransaction() && $this->dbh->rollBack();
 	}
 
 	/**
@@ -351,10 +356,12 @@ class DatabaseHandler extends Database {
 
 			$this->close_mysql();
 
-			// Reconnect to the MAIN configured schema, gracefully (no exit()) so
-			// the retry/backoff loop can continue. migrate=true here would
-			// silently reconnect to `xc_vm_migrate` instead of the panel DB.
-			if ($this->db_connect(false, true)) {
+			// Reconnect to the schema this handle was opened on, gracefully (no
+			// exit()) so the retry/backoff loop can continue. The panel's for
+			// every handle but the migration's: that one came back on the
+			// panel's schema, whose tables were then read, and dropped, as the
+			// backup's.
+			if ($this->db_connect($this->migrate, true)) {
 				$this->log('info', 'Reconnected successfully');
 				return true;
 			}

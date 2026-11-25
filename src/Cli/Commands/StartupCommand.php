@@ -59,7 +59,9 @@ class StartupCommand implements CommandInterface {
 		exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php status 1');
 
 		// ── Восстановление daemons.sh при повреждении ────────
-		if (filesize(MAIN_HOME . 'bin/daemons.sh') == 0) {
+		// Not on a serve-only node: it runs no php-fpm, so daemons.sh + the pool
+		// configs are intentionally absent and must not be regenerated.
+		if (filesize(MAIN_HOME . 'bin/daemons.sh') == 0 && !is_file(MAIN_HOME . 'config/cluster/serve_only')) {
 			echo "Daemons corrupted! Regenerating...\n";
 			$rNewScript = '#! /bin/bash' . "\n";
 			$rNewBalance = 'upstream php {' . "\n" . '    least_conn;' . "\n";
@@ -202,6 +204,13 @@ class StartupCommand implements CommandInterface {
 	 * so a worker whose config was lost comes back on the next boot.
 	 */
 	private function ensurePhpFpmPoolConfigs(string $rBase): void {
+		// A serve-only node runs no php-fpm (the Go front is the whole HTTP surface;
+		// `service` starts no pools), so it provisions none — recreating them here
+		// would undo configureRuntime's gate on the next startup. (CONFIG_PATH is
+		// $rBase . 'config/'; use $rBase so this holds when called with a test base.)
+		if (is_file($rBase . 'config/cluster/serve_only')) {
+			return;
+		}
 		$rTemplatePath = $rBase . 'bin/php/etc/template';
 		if (!file_exists($rTemplatePath)) {
 			return;
@@ -221,12 +230,35 @@ class StartupCommand implements CommandInterface {
 	}
 
 	/**
+	 * The lock every writer of root's crontab holds from reading the modules
+	 * to replacing the list, so that a list read before another process's
+	 * write cannot land after it. Taken on this file, read-only: no lock file
+	 * for root to create where xc_vm can plant a link.
+	 *
+	 * @param bool $rWait Wait for the writer at work (`startup`, `status`); the every-minute check does not, it comes back.
+	 * @return resource|null The lock, held until it is closed or goes out of scope; null when another writer holds it.
+	 */
+	private static function crontabLock(bool $rWait) {
+		$rLock = fopen(__FILE__, 'r');
+		return $rLock !== false && flock($rLock, $rWait ? LOCK_EX : LOCK_EX | LOCK_NB) ? $rLock : null;
+	}
+
+	/**
 	 * Root's crontab: cron:root_signals, cluster:root (MAIN's signed root
 	 * commands), cron:root_mysql and the module licences, plus whatever the
 	 * modules ask for. Static and public because `status` installs the same
 	 * list — two writers meant the second one deleted what the first added.
+	 * root_signals checks it every minute, so a module's lines follow its
+	 * install without a restart.
+	 *
+	 * @param bool $rQuiet The every-minute check: nothing said when the list is there, nothing written when the crontab cannot be read.
+	 * @return bool Whether root's crontab holds the list now (it did, or it was written).
 	 */
-	public static function installRootCrontab(): void {
+	public static function installRootCrontab(bool $rQuiet = false): bool {
+		$rLock = self::crontabLock(!$rQuiet);
+		if ($rLock === null) {
+			return false;
+		}
 		$rCrons = [];
 		$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_signals # XC_VM';
 		// MAIN's signed root commands (cluster API, Phase 4); a no-op until the node's root pin exists.
@@ -247,43 +279,61 @@ class StartupCommand implements CommandInterface {
 			$rCrons[] = $rEntry;
 		}
 
-		$rWrite = false;
-		$rOutput = [];
-		exec('sudo crontab -l', $rOutput);
+		$rInstalled = [];
+		exec('sudo crontab -l', $rInstalled, $rListed);
+		// The check runs from root's crontab, so there is one: a list that
+		// cannot be read is not an empty one, and writing over it would drop
+		// the lines the administrator put there.
+		if ($rQuiet && $rListed !== 0) {
+			return false;
+		}
 
 		// Удаляем старые записи XC_VM: путь v1.x.x (crons/root_) и любые
 		// строки с нашим маркером — включая старый '# \XC_VM' от прошлой
 		// миграции — чтобы при апгрейде не появлялись дубликаты.
-		$rFiltered = [];
-		foreach ($rOutput as $rLine) {
+		$rOutput = [];
+		foreach ($rInstalled as $rLine) {
 			if (strpos($rLine, MAIN_HOME . 'crons/root_') !== false
 				|| strpos($rLine, '# XC_VM') !== false
 				|| strpos($rLine, '# \XC_VM') !== false
 			) {
-				$rWrite = true;
 				continue;
 			}
-			$rFiltered[] = $rLine;
+			$rOutput[] = $rLine;
 		}
-		$rOutput = $rFiltered;
 
 		foreach ($rCrons as $rCron) {
 			if (!in_array($rCron, $rOutput)) {
 				$rOutput[] = $rCron;
-				$rWrite = true;
 			}
 		}
-		if ($rWrite) {
-			$rCronFile = tempnam(TMP_PATH, 'crontab');
-			file_put_contents($rCronFile, implode("\n", $rOutput) . "\n");
-			exec('sudo chattr -i /var/spool/cron/crontabs/root');
-			exec('sudo crontab -r');
-			exec('sudo crontab ' . $rCronFile);
-			exec('sudo chattr +i /var/spool/cron/crontabs/root');
-			echo "Crontab installed\n";
-		} else {
-			echo "Crontab already installed\n";
+		// Written only when the list changed: every `startup` and `status` comes here.
+		if ($rOutput === $rInstalled) {
+			if (!$rQuiet) {
+				echo "Crontab already installed\n";
+			}
+			return true;
 		}
+		// The whole list in a file before root's crontab is touched. Not in
+		// tmp/: that tmpfs can be full, and in the system's temporary
+		// directory only root replaces a file of root's.
+		$rText = implode("\n", $rOutput) . "\n";
+		$rCronFile = tempnam(sys_get_temp_dir(), 'crontab');
+		if ($rCronFile === false || @file_put_contents($rCronFile, $rText) !== strlen($rText)) {
+			@unlink((string) $rCronFile);
+			echo "Crontab not installed: its new list could not be written\n";
+			return false;
+		}
+		exec('sudo chattr -i /var/spool/cron/crontabs/root');
+		// `crontab -` takes its list on standard input, here that file: it
+		// replaces the crontab in one step, and keeps the old one when it
+		// refuses the new: no `crontab -r` before it.
+		$rProc = proc_open('sudo crontab -', [0 => ['file', $rCronFile, 'r'], 1 => ['file', '/dev/null', 'w']], $rPipes);
+		$rCode = is_resource($rProc) ? proc_close($rProc) : 1;
+		exec('sudo chattr +i /var/spool/cron/crontabs/root');
+		@unlink($rCronFile);
+		echo $rCode === 0 ? "Crontab installed\n" : "Crontab not installed: crontab refused its new list\n";
+		return $rCode === 0;
 	}
 
 	private function generateCacheIfNeeded(): void {

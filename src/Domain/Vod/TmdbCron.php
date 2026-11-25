@@ -4,8 +4,8 @@ namespace XcVm\Domain\Vod;
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
-use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
+use XcVm\Core\Util\StreamUtils;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -167,14 +167,12 @@ class TmdbCron {
 
 		/* --- Если \TMDB ID неизвестен — ищем --- */
 		if ($rTMDBID == 0) {
-			$rFilename = pathinfo(json_decode($rStream['stream_source'], true)[0])['filename'];
-			foreach ([$rFilename, $rStream['stream_display_name']] as $rStreamTitle) {
-				$rRelease = AdminHelpers::parserelease($rStreamTitle);
-				$rTitle = $rRelease['title'];
-
-				if (isset($rRelease['excess'])) {
-					$rTitle = trim($rTitle, (is_array($rRelease['excess']) ? $rRelease['excess'][0] : $rRelease['excess']));
-				}
+			// A stream with no source has no file name to search by, and an empty
+			// title is no search: its display name alone is tried.
+			$rFilename = pathinfo(StreamUtils::firstSource($rStream['stream_source']))['filename'];
+			foreach (array_filter([$rFilename, (string) $rStream['stream_display_name']], static fn(string $rTitle): bool => $rTitle !== '') as $rStreamTitle) {
+				$rRelease = VodItemImporter::parserelease($rStreamTitle, (string) SettingsManager::get('parse_type'));
+				$rTitle = VodItemImporter::releaseTitle($rRelease);
 
 				$rAltTitle = null;
 				if (isset($rRelease['group'])) {
@@ -337,19 +335,8 @@ class TmdbCron {
 		/* --- Если \TMDB ID неизвестен — ищем --- */
 		if ($rTMDBID == 0) {
 			$rFilename = $rStream['title'];
-			$rRelease = AdminHelpers::parserelease($rFilename);
-			$rTitle = $rRelease['title'];
-
-			if (isset($rRelease['excess'])) {
-				// Strip the excess token as a WHOLE WORD — never trim($title, $excess):
-				// its 2nd arg is a char-mask, so trim('Marshals…', 'MULTI') eats the
-				// leading 'M' and yields 'arshals…', breaking the TMDb search.
-				$rExcess = is_array($rRelease['excess']) ? ($rRelease['excess'][0] ?? '') : $rRelease['excess'];
-				if ($rExcess !== '') {
-					$rTitle = preg_replace('/\b' . preg_quote((string) $rExcess, '/') . '\b/u', ' ', $rTitle);
-					$rTitle = trim(preg_replace('/\s+/u', ' ', $rTitle));
-				}
-			}
+			$rRelease = VodItemImporter::parserelease($rFilename, (string) SettingsManager::get('parse_type'));
+			$rTitle = VodItemImporter::releaseTitle($rRelease);
 
 			$rAltTitle = null;
 			if (isset($rRelease['group'])) {
@@ -497,14 +484,14 @@ class TmdbCron {
 			return;
 		}
 
-		$rFilename = pathinfo(json_decode($rStream['stream_source'], true)[0])['filename'];
-		$rRelease = AdminHelpers::parserelease($rFilename);
-		$rReleaseSeason = $rRelease['season'];
+		$rFilename = pathinfo(StreamUtils::firstSource($rStream['stream_source']))['filename'];
+		$rRelease = VodItemImporter::parserelease($rFilename, (string) SettingsManager::get('parse_type'));
+		$rReleaseSeason = $rRelease['season'] ?? null;
 
-		if (is_array($rRelease['episode'])) {
+		if (is_array($rRelease['episode'] ?? null)) {
 			$rReleaseEpisode = $rRelease['episode'][0];
 		} else {
-			$rReleaseEpisode = $rRelease['episode'];
+			$rReleaseEpisode = $rRelease['episode'] ?? null;
 		}
 
 		if (!$rReleaseSeason || !$rReleaseEpisode) {
@@ -512,7 +499,7 @@ class TmdbCron {
 			$rReleaseEpisode = $rSeriesEpisode['episode_num'];
 		}
 
-		if (is_array($rRelease['episode']) && count($rRelease['episode']) == 2) {
+		if (is_array($rRelease['episode'] ?? null) && count($rRelease['episode']) == 2) {
 			$rTitle = $rShowData['name'] . ' - S' . sprintf('%02d', intval($rReleaseSeason))
 				. 'E' . sprintf('%02d', $rRelease['episode'][0])
 				. '-' . sprintf('%02d', $rRelease['episode'][1]);

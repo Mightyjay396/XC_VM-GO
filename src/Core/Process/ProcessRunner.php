@@ -63,6 +63,20 @@ final class ProcessRunner {
 	}
 
 	/**
+	 * Run an argv list directly and stream stdout to a file without buffering it.
+	 *
+	 * @param non-empty-list<string> $rArgv
+	 * @param string $rFilename Output path supplied by the caller.
+	 * @return int Exit status, or 127 when the process/output cannot be opened.
+	 */
+	public static function runToFile(array $rArgv, string $rFilename): int {
+		// An argv array and explicit file descriptors: no shell parses values.
+		// nosemgrep: php.lang.security.exec-use.exec-use
+		$rProcess = @proc_open($rArgv, [0 => ['file', '/dev/null', 'r'], 1 => ['file', $rFilename, 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
+		return is_resource($rProcess) ? proc_close($rProcess) : 127;
+	}
+
+	/**
 	 * Start $rArgv and do not wait for it: what a line ending in `&` did. The
 	 * caller learns of the program another way — a pid file it writes, a later
 	 * `ps` — and this process must not be held for its lifetime (a channel
@@ -118,10 +132,10 @@ final class ProcessRunner {
 		return proc_close($rProc);
 	}
 
-	/** @var (callable(non-empty-list<string>): array{0: int, 1: string})|null Tests: capture(). */
+	/** @var (callable(non-empty-list<string>, ?string): array{0: int, 1: string})|null Tests: capture(). */
 	private static $rCapturer = null;
 
-	/** Tests: answer capture() with $rCapturer (argv => [status, stdout]); null restores proc_open. */
+	/** Tests: answer capture() with $rCapturer (argv, stdin => [status, stdout]); null restores proc_open. */
 	public static function useCapturer(?callable $rCapturer): void {
 		self::$rCapturer = $rCapturer;
 	}
@@ -130,20 +144,26 @@ final class ProcessRunner {
 	 * Run $rArgv, wait for it, and return its exit status and what it wrote
 	 * to stdout (at most $rMax bytes; its stderr goes to /dev/null). For a
 	 * program whose answer the caller reads, such as `xc_agent keygen`.
+	 * $rInput is written to its stdin, which is /dev/null without it: what
+	 * argv would show every user in `ps`.
 	 *
 	 * @param non-empty-list<string> $rArgv
 	 * @return array{0: int, 1: string} [exit status (127: it did not start), stdout]
 	 */
-	public static function capture(array $rArgv, int $rMax = 65536): array {
+	public static function capture(array $rArgv, int $rMax = 65536, ?string $rInput = null): array {
 		if (self::$rCapturer !== null) {
-			return (self::$rCapturer)($rArgv);
+			return (self::$rCapturer)($rArgv, $rInput);
 		}
 		// An argv list, no shell: each element one argument, and the caller's own
 		// constant words and paths, or values it validated.
 		// nosemgrep: php.lang.security.exec-use.exec-use
-		$rProc = @proc_open($rArgv, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
+		$rProc = @proc_open($rArgv, [0 => $rInput === null ? ['file', '/dev/null', 'r'] : ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
 		if (!is_resource($rProc)) {
 			return [127, ''];
+		}
+		if ($rInput !== null) {
+			fwrite($rPipes[0], $rInput);
+			fclose($rPipes[0]);
 		}
 		$rOut = '';
 		while (!feof($rPipes[1])) {

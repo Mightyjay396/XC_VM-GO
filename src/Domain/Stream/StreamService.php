@@ -2,6 +2,8 @@
 
 namespace XcVm\Domain\Stream;
 
+use InvalidArgumentException;
+use RuntimeException;
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Database\QueryHelper;
@@ -15,6 +17,11 @@ use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Epg\EpgService;
+use XcVm\Domain\Epg\EpgConfiguration;
+use XcVm\Domain\Epg\EpgSelectionGuide;
+use XcVm\Domain\Epg\EpgBindingSelection;
+use XcVm\Domain\Epg\EpgMerge;
+use XcVm\Domain\Epg\EpgReload;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -38,6 +45,14 @@ class StreamService {
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
 	public static function process(array $rData) {
+		return array_key_exists('epg_pick_enabled', $rData)
+			? EpgConfiguration::locked(static fn() => self::processLocked($rData))
+			: self::processLocked($rData);
+	}
+
+	private static function processLocked(array $rData) {
+		$rData = Authorization::dropFfmpegArguments($rData);
+		unset($rData['epg_bindings']);
 		global $rSettings;
 		$db = self::db();
 		set_time_limit(0);
@@ -47,7 +62,10 @@ class StreamService {
 
 		if (isset($rData['edit'])) {
 			if (Authorization::check('adv', 'edit_stream')) {
-				$rArray = AdminHelpers::overwriteData(StreamRepository::getById($rData['edit']), $rData);
+				// The edit starts from the stream as stored: the row cleaner's
+				// escaping would be written back into every field not sent.
+				$db->query('SELECT * FROM `streams` WHERE `id` = ?;', intval($rData['edit']));
+				$rArray = AdminHelpers::overwriteData($db->get_raw_row(), $rData);
 			} else {
 				exit();
 			}
@@ -62,6 +80,21 @@ class StreamService {
 			}
 		}
 
+		$rSelectionSources = null;
+		if (!empty($rData['epg_pick_enabled'])) {
+			$db->query('SELECT * FROM `epg`;');
+			$sources = array_column($db->get_raw_rows(), null, 'id');
+			try {
+				$picks = EpgBindingSelection::validate((string) ($rData['epg_picks'] ?? ''), $sources);
+				$rArray['epg_bindings'] = json_encode($picks);
+				$rSelectionSources = EpgSelectionGuide::selected(array_column($picks, 'source'), $sources);
+			} catch (InvalidArgumentException $e) {
+				return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			}
+		} elseif (array_key_exists('epg_pick_enabled', $rData)) {
+			$rArray['epg_bindings'] = null;
+		}
+
 		if (isset($rData['days_to_restart']) && preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', $rData['time_to_restart'])) {
 			$rTimeArray = ['days' => [], 'at' => $rData['time_to_restart']];
 
@@ -73,7 +106,7 @@ class StreamService {
 			$rArray['auto_restart'] = '';
 		}
 
-		foreach (['fps_restart', 'gen_timestamps', 'allow_record', 'rtmp_output', 'stream_all', 'direct_source', 'direct_proxy', 'read_native'] as $rKey) {
+		foreach (['fps_restart', 'gen_timestamps', 'allow_record', 'rtmp_output', 'stream_all', 'direct_source', 'direct_proxy', 'read_native', 'force_ffmpeg'] as $rKey) {
 			$rArray[$rKey] = (int) isset($rData[$rKey]);
 		}
 
@@ -89,12 +122,15 @@ class StreamService {
 
 		$rReview = false;
 		$rImportStreams = [];
+		$rBackupSources = [];
 
 		if (isset($rData['review'])) {
 			$rReview = true;
 
 			foreach ($rData['review'] as $rImportStream) {
-				if (!$rImportStream['channel_id'] && $rImportStream['tvg_id']) {
+				// A review row need not carry channel_id or tvg_id (a plain m3u row
+				// has neither), so read both defensively — empty() covers a missing key.
+				if (empty($rImportStream['channel_id']) && !empty($rImportStream['tvg_id'])) {
 					$rEPG = EpgService::findByName($rImportStream['tvg_id']);
 
 					if (isset($rEPG)) {
@@ -120,7 +156,7 @@ class StreamService {
 							$db->query('SELECT `id`, `stream_display_name`, `stream_source`, `channel_id` FROM `streams` WHERE `type` = 1;');
 
 							foreach ($db->get_rows() as $rRow) {
-								$rName = preg_replace('/[^A-Za-z0-9 ]/', '', strtolower($rRow['stream_display_name']));
+								$rName = self::nameKey($rRow['stream_display_name']);
 
 								if (!empty($rName)) {
 									$rStreamDatabase[$rName] = $rRow['id'];
@@ -203,7 +239,7 @@ class StreamService {
 										$rExistsID = $rSourceDatabase[$rSourceID];
 									}
 
-									$rName = preg_replace('/[^A-Za-z0-9 ]/', '', strtolower($rImportArray['stream_display_name']));
+									$rName = self::nameKey($rImportArray['stream_display_name']);
 
 									if (!empty($rName) && isset($rStreamDatabase[$rName])) {
 										$rBackupID = $rStreamDatabase[$rName];
@@ -214,15 +250,9 @@ class StreamService {
 									}
 
 									if ($rBackupID && !$rExistsID && isset($rData['add_source_as_backup'])) {
-										$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?;', $rBackupID);
-
-										if ($db->num_rows() > 0) {
-											$rSources = (json_decode($db->get_row()['stream_source'], true) ?: []);
-											$rSources[] = $rURL;
-											$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode($rSources), $rBackupID);
-											EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rBackupID]));
-											$rImportStreams[] = ['update' => true, 'id' => $rBackupID];
-										}
+										// Its source is written once the import is known not to be refused (below).
+										$rBackupSources[] = [$rBackupID, $rURL];
+										$rImportStreams[] = ['update' => true, 'id' => $rBackupID];
 									} else {
 										if ($rExistsID && isset($rData['update_existing'])) {
 											$rImportArray['id'] = $rExistsID;
@@ -267,6 +297,18 @@ class StreamService {
 			return ['status' => STATUS_INVALID_INPUT, 'data' => $rRefusal];
 		}
 
+		// The backup sources an import gives existing streams, in the playlist's order.
+		foreach ($rBackupSources as [$rBackupID, $rURL]) {
+			$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?;', $rBackupID);
+
+			if ($db->num_rows() > 0) {
+				$rSources = (json_decode($db->get_row()['stream_source'], true) ?: []);
+				$rSources[] = $rURL;
+				$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode($rSources), $rBackupID);
+				EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rBackupID]));
+			}
+		}
+
 		if (0 < count($rImportStreams)) {
 			$rBouquetCreate = [];
 			$rCategoryCreate = [];
@@ -297,13 +339,21 @@ class StreamService {
 
 			$rInsertID = 0;
 			$rSavedIDs = [];
+			try {
+				$rSelectionGroup = $rSelectionSources ? EpgSelectionGuide::group($rSelectionSources) : null;
+			} catch (RuntimeException $e) {
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
+			}
+			// The new rows' icons, several at a time, before the first row is written.
+			$rIcons = $rSettings['download_images'] ? ImageUtils::downloadImages(array_column(array_filter($rImportStreams, static fn(array $rRow): bool => !($rRow['update'] ?? false)), 'stream_icon')) : [];
 
 			foreach ($rImportStreams as $rImportStream) {
 				if (!($rImportStream['update'] ?? false)) {
 					$rImportArray = $rArray;
 
 					if ($rSettings['download_images']) {
-						$rImportStream['stream_icon'] = ImageUtils::downloadImage($rImportStream['stream_icon'], 1);
+						$rIcon = $rImportStream['stream_icon'] ?? null;
+						$rImportStream['stream_icon'] = is_string($rIcon) ? ($rIcons[$rIcon] ?? $rIcon) : $rIcon;
 					}
 
 					if ($rReview) {
@@ -344,6 +394,7 @@ class StreamService {
 
 					// Only `streams` columns (and the id of a stream being updated): a review
 					// row's form-only keys (epg_api) used to reach the REPLACE and fail it.
+					unset($rImportStream['epg_bindings']);
 					$rImportArray = array_replace($rImportArray, array_intersect_key($rImportStream, $rArray + ['id' => null]));
 
 					if (!isset($rData['edit']) && !isset($rImportStream['id'])) {
@@ -361,11 +412,37 @@ class StreamService {
 						}
 					}
 
+					if ($rSelectionGroup !== null) {
+						$rImportArray['epg_id'] = $rSelectionGroup;
+						$rImportArray['channel_id'] = EpgMerge::channelId($rSelectionGroup, EpgSelectionGuide::target((int) ($rImportArray['id'] ?? 0)));
+					}
+
+					$rSelectionTx = $rSelectionGroup !== null && !$db->isInTransaction();
+					$rSelectionSavepoint = $rSelectionGroup !== null && !$rSelectionTx;
+					if (($rSelectionTx && !$db->beginTransaction()) || ($rSelectionSavepoint && !$db->query('SAVEPOINT xcvm_stream_selection;'))) {
+						return ['status' => STATUS_FAILURE, 'data' => $rData];
+					}
 					$rPrepare = QueryHelper::prepareArray($rImportArray);
 					$rQuery = 'REPLACE INTO `streams`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-
-					if ($db->query($rQuery, ...$rPrepare['data'])) {
-						$rInsertID = $db->last_insert_id();
+					try {
+						$rWritten = $db->query($rQuery, ...$rPrepare['data']);
+						$rNewID = $rWritten ? (int) $db->last_insert_id() : 0;
+						if ($rSelectionGroup !== null && (!$rWritten || !$db->query('UPDATE `streams` SET `channel_id` = ? WHERE `id` = ?;', EpgMerge::channelId($rSelectionGroup, EpgSelectionGuide::target($rNewID)), $rNewID))) {
+							throw new RuntimeException('Cannot save stream EPG selection.');
+						}
+						if (($rSelectionTx && !$db->commit()) || ($rSelectionSavepoint && !$db->query('RELEASE SAVEPOINT xcvm_stream_selection;'))) {
+							throw new RuntimeException('Cannot commit stream EPG selection.');
+						}
+					} catch (\Throwable $rError) {
+						if ($rSelectionTx) {
+							$db->rollback();
+						} elseif ($rSelectionSavepoint) {
+							$db->query('ROLLBACK TO SAVEPOINT xcvm_stream_selection;');
+						}
+						throw $rError;
+					}
+					if ($rWritten) {
+						$rInsertID = $rNewID;
 						$rStreamExists = [];
 
 						if (isset($rData['edit']) || isset($rImportStream['id'])) {
@@ -413,6 +490,9 @@ class StreamService {
 						if (isset($rData['http_proxy']) && (string) $rData['http_proxy'] !== '') {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 2, ?);', $rInsertID, $rData['http_proxy']);
 						}
+						if ((int) ($rData['proxy_id'] ?? 0) > 0) { // srcproxy : proxy de la liste → proxy_id + URL résolue dans l'argument 2
+							\XcVm\Domain\Stream\ProxyService::applyToStream((int) $rInsertID, (int) $rData['proxy_id']);
+						}
 
 						if (isset($rData['cookie']) && (string) $rData['cookie'] !== '') {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 17, ?);', $rInsertID, $rData['cookie']);
@@ -430,8 +510,12 @@ class StreamService {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 20, ?);', $rInsertID, trim($rData['force_input_acodec']));
 						}
 
+						if (isset($rData['max_height']) && (int) $rData['max_height'] > 0) {
+							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 22, ?);', $rInsertID, (string) (int) $rData['max_height']);
+						}
+
 						if ($rRestart) {
-							ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID]]);
+							ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID], 'async' => true]);
 						}
 
 						foreach ($rBouquets as $rBouquet) {
@@ -464,9 +548,28 @@ class StreamService {
 			}
 
 			self::dispatchSaved($rSavedIDs, $rData, $rReview, $rModuleFields);
+			if ($rSelectionGroup !== null && $rSavedIDs) {
+				if (!EpgReload::start($rSelectionGroup)) {
+					error_log('EPG selection saved, but its immediate reload could not start; the scheduled EPG refresh will retry.');
+				}
+			}
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 		return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
+	}
+
+	/**
+	 * The key an imported channel is matched to an existing one by: the
+	 * letters, digits and spaces of its name, lower-cased, in any script.
+	 * Empty for a name with no letter or digit, which is matched to nothing.
+	 *
+	 * @param string|null $rName Channel name.
+	 * @return string
+	 */
+	private static function nameKey(?string $rName): string {
+		$rKey = (string) preg_replace('/[^\p{L}\p{M}\p{N} ]/u', '', mb_strtolower((string) $rName, 'UTF-8'));
+
+		return trim($rKey) === '' ? '' : $rKey;
 	}
 
 	/**
@@ -535,7 +638,7 @@ class StreamService {
 			}
 		}
 
-		foreach (['gen_timestamps', 'allow_record', 'rtmp_output', 'fps_restart', 'stream_all', 'read_native'] as $rKey) {
+		foreach (['gen_timestamps', 'allow_record', 'rtmp_output', 'fps_restart', 'stream_all', 'read_native', 'force_ffmpeg'] as $rKey) {
 			if (isset($rData['c_' . $rKey])) {
 				$rArray[$rKey] = (int) isset($rData[$rKey]);
 			}
@@ -766,7 +869,7 @@ class StreamService {
 			EventDispatcher::dispatch(new StreamsChangedEvent(array_values(array_map('intval', $rStreamIDs))));
 
 			if (isset($rData['restart_on_edit'])) {
-				ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)]);
+				ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs), 'async' => true]);
 			}
 		}
 
@@ -864,17 +967,23 @@ class StreamService {
 	 *
 	 * @param mixed $rData Playlist file path or raw M3U content.
 	 * @param bool  $rFile Treat $rData as a file path (true) or content (false).
-	 * @return \M3uParser\M3uData Parsed playlist entries (iterable, countable).
+	 * @return list<\M3uParser\M3uEntry> Parsed entries that carry a URL (path-less ones dropped).
 	 */
 	public static function parseM3U(mixed $rData, bool $rFile = true) {
 		$rParser = new \M3uParser\M3uParser();
 		$rParser->addDefaultTags();
+		$rEntries = $rFile ? $rParser->parseFile($rData) : $rParser->parse($rData);
 
-		if ($rFile) {
-			return $rParser->parseFile($rData);
+		// The parser emits an entry for an #EXTINF with no following URL line, with
+		// an empty path (m3u-parser >= 6.2; older versions threw a TypeError instead).
+		$rValid = [];
+		foreach ($rEntries as $rEntry) {
+			if ($rEntry->getPath() !== '') {
+				$rValid[] = $rEntry;
+			}
 		}
 
-		return $rParser->parse($rData);
+		return $rValid;
 	}
 
 	/**
@@ -885,7 +994,10 @@ class StreamService {
 	 * @return array Archive file list.
 	 */
 	public static function getArchiveFiles(int $rServerID, int $rStreamID) {
-		return json_decode(NodeRpc::request($rServerID, ['action' => 'get_archive_files', 'stream_id' => $rStreamID]), true)['data'];
+		// A node that does not answer in time yields a null decode; return no
+		// files rather than "array offset on null".
+		$rResult = json_decode(NodeRpc::request($rServerID, ['action' => 'get_archive_files', 'stream_id' => $rStreamID]), true);
+		return is_array($rResult) && isset($rResult['data']) ? $rResult['data'] : [];
 	}
 
 	/**
@@ -955,10 +1067,9 @@ class StreamService {
 
 	/**
 	 * The language key of why a stream save can't carry a module source-driver
-	 * URL, or null. A driver's engine runs on the main server as the stream's
+	 * URL, or null. A driver's engine runs on each assigned producer node as the stream's
 	 * producer, so the URL must never reach a client (direct source / proxy),
-	 * the PHP LLOD v2 reader, or a load balancer fed directly from the source
-	 * (the module is main-only; an LB child of main pulls over the loopback).
+	 * the PHP LLOD v2 reader, or an LB without an opted-in driver.
 	 *
 	 * @param string[]   $rSources    The stream's source URLs.
 	 * @param array      $rStream     direct_source / direct_proxy / llod as saved.
@@ -970,7 +1081,7 @@ class StreamService {
 		if ($rDriven === []) {
 			return null;
 		}
-		return self::driverSettingsConflict($rStream) ?? self::driverTreeConflict($rServerTree ?? [], $rMainIDs);
+		return self::driverSettingsConflict($rStream) ?? self::driverTreeConflict($rServerTree ?? [], $rMainIDs, $rDriven);
 	}
 
 	private static function driverSettingsConflict(array $rStream): ?string {
@@ -980,9 +1091,11 @@ class StreamService {
 		return intval($rStream['llod'] ?? 0) === 2 ? 'source_driver_no_llod2' : null;
 	}
 
-	private static function driverTreeConflict(array $rServerTree, callable $rMainIDs): ?string {
+	private static function driverTreeConflict(array $rServerTree, callable $rMainIDs, array $rDriven): ?string {
 		foreach ($rServerTree as $rNode) {
-			if (($rNode['parent'] ?? '') === 'source' && !in_array(intval($rNode['id'] ?? 0), $rMainIDs(), true)) {
+			if (($rNode['parent'] ?? '') === 'source' && !in_array(intval($rNode['id'] ?? 0), $rMainIDs(), true)
+				&& count(array_filter($rDriven, static fn($rURL): bool => !SourceDriverRegistry::supportsLoadBalancer((string) $rURL))) > 0
+			) {
 				return 'source_driver_main_only';
 			}
 		}

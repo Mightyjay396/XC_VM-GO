@@ -3,7 +3,6 @@
 namespace XcVm\Public\Controllers\Admin;
 
 use XcVm\Core\Http\RequestManager;
-use XcVm\Domain\Epg\EpgService;
 
 /**
  * Контроллер редактирования EPG (admin/epg.php)
@@ -19,15 +18,25 @@ use XcVm\Domain\Epg\EpgService;
 
 class EpgController extends BaseAdminController {
 	public function index() {
+		$this->requirePermission();
+
 		$rEPGArr = null;
 		if (RequestManager::has('id')) {
-			$rEPGArr = EpgService::getById(RequestManager::get('id'));
+			// The source as stored: the form escapes what it prints and posts it back,
+			// so text read through the row cleaner ('&lt;' for '<') would be saved escaped.
+			$db = $GLOBALS['db'];
+			$db->query('SELECT * FROM `epg` WHERE `id` = ?;', intval(RequestManager::get('id')));
+			$rEPGArr = $db->get_raw_row();
 			if (!$rEPGArr) {
 				exit();
 			}
 		}
 
+		$db = $GLOBALS['db'];
+		$db->query('SELECT * FROM `epg` ORDER BY `id`;');
+		$rMergeSources = $db->get_raw_rows();
+
 		$this->setTitle('EPG');
-		$this->render('epg', ['rEPGArr' => $rEPGArr]);
+		$this->render('epg', ['rEPGArr' => $rEPGArr, 'rMergeSources' => $rMergeSources]);
 	}
 }

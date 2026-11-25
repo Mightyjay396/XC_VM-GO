@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Cli\CronJobs\ServersCronJob;
 use XcVm\Core\Cluster\AgentClient;
 use XcVm\Core\Cluster\AgentPaths;
@@ -27,7 +28,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * auto-selected from where it runs (config.ini `server_id` → is_main):
  *
  *   • ON THE MAIN — `server:diagnose <server_id>`: remote-probe the target node
- *     (ICMP / TCP / HTTP /api) and read its panel-side heartbeat + signal queue.
+ *     (ICMP / TCP) and read its panel-side heartbeat, signal queue and cluster
+ *     state (the agent's health, signed round trip, token expiry, clock skew and
+ *     outbox lag as MAIN last heard them).
  *
  *   • ON THE LB/NODE — `server:diagnose` (id optional): LOCAL self-diagnosis —
  *     the causes usually live here. Checks the node's own view from the panel DB,
@@ -155,19 +158,14 @@ class ServerDiagnoseCommand implements CommandInterface {
 		$this->line('ICMP ping', $rIcmp ? 'reply' : 'no reply', $rIcmp);
 		$rTcp = $this->tcpOpen($rIP, $rPort);
 		$this->line("TCP :{$rPort}", $rTcp === true ? 'open' : (string) $rTcp, $rTcp === true);
-		list($rCode, $rCurlErr) = $this->httpApi((string) $rServer['api_url_ip']);
-		$rHttpOk = ($rCode >= 200 && $rCode < 500);
-		$this->line('HTTP /api', $rCode ? "HTTP {$rCode}" : ('curl: ' . ($rCurlErr ?: 'no response')), $rHttpOk);
 
 		$rBeatStale = !$rTelemetry && (($rNow - intval($rServer['last_check_ago'])) > (((int) $rServer['server_type'] === 1) ? 180 : 90));
 		if (!$rIcmp && $rTcp !== true) {
 			$rProblems[] = "Host unreachable (no ICMP, port {$rPort} closed): the node is powered off, network-partitioned, or fully firewalled from the main.";
 		} elseif ($rIcmp && $rTcp !== true) {
 			$rProblems[] = "Host pings but port {$rPort} is DROPPED: most likely the node's iptables blocked the main's IP (RootSignals flood/block — public IPs are dropped silently), or nginx/the xc_vm service is down. Run `server:diagnose` ON the node for the exact cause.";
-		} elseif (!$rHttpOk) {
-			$rProblems[] = "Port {$rPort} is open but /api did not answer (" . ($rCode ? "HTTP {$rCode}" : $rCurlErr) . "): nginx is up but PHP/the app is not responding — check php-fpm on the node.";
-		} elseif ($rHttpOk && $rBeatStale) {
-			$rProblems[] = "The node answers /api yet its heartbeat is stale: its watchdog daemon (the heartbeat writer) is not running — it exits when its DB connection to the main drops — or it cannot WRITE to the panel DB. Run `server:diagnose` ON the node.";
+		} elseif ($rBeatStale) {
+			$rProblems[] = "The port is open yet the node's heartbeat is stale: its watchdog daemon (the heartbeat writer) is not running — it exits when its DB connection to the main drops — or it cannot WRITE to the panel DB. Run `server:diagnose` ON the node.";
 		}
 
 		if ($rNode !== null) {
@@ -283,7 +281,8 @@ class ServerDiagnoseCommand implements CommandInterface {
 			$rSelfBlock = ($rBlocked === true) || $rMarker;
 			$this->line('Main in iptables', $rBlocked === true ? 'DROP present' : ($rBlocked === false ? 'not blocked' : (string) $rBlocked) . ($rMarker ? ' (+flood marker)' : ''), !$rSelfBlock);
 			if ($rSelfBlock) {
-				$rProblems[] = "This node has DROPPED the main's IP {$rMainIP} in its own iptables (flood/block false-positive). Unblock: `sudo iptables -D INPUT -s {$rMainIP} -j DROP && sudo rm -f " . FLOOD_TMP_PATH . "block_{$rMainIP}`.";
+				$rSet = filter_var($rMainIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'xcvm_block6' : 'xcvm_block4';
+				$rProblems[] = "This node has DROPPED the main's IP {$rMainIP} in its own firewall (flood/block false-positive). Unblock it in MAIN's Blocked IPs (each node applies MAIN's list within minutes), or by hand: `sudo ipset del {$rSet} {$rMainIP}` (a node without ipset: `sudo iptables -D INPUT -s {$rMainIP} -j DROP`) `&& sudo rm -f " . FLOOD_TMP_PATH . "block_{$rMainIP}`.";
 			}
 		}
 
@@ -331,8 +330,9 @@ class ServerDiagnoseCommand implements CommandInterface {
 			$rProblems[] = 'The system cron service is not running — the xc_vm crontab (including cron:servers) never fires, so a dead watchdog stays dead. `sudo systemctl start cron`.';
 		}
 
-		// 6c. A hung cron:servers holds its lock and blocks every relaunch for up
-		// to 30 min (ProcessManager::acquireCronLock stale timeout is 1800s).
+		// 6c. A hung cron:servers holds its lock and blocks every relaunch until
+		// the first run after its ten-minute limit ends it
+		// (ProcessManager::exitIfCronLockHeld).
 		$rLock = ProcessManager::cronLockPath(ServersCronJob::class);
 		if (file_exists($rLock)) {
 			$rLockPID = intval(trim((string) @file_get_contents($rLock)));
@@ -340,7 +340,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 			$rHung    = $rLockPID > 0 && file_exists('/proc/' . $rLockPID) && $rLockAge > 120;
 			$this->line('servers cron lock', "held by PID {$rLockPID} for {$rLockAge}s", !$rHung);
 			if ($rHung) {
-				$rProblems[] = "A cron:servers instance (PID {$rLockPID}) has been holding its cron lock for {$rLockAge}s — it is hung (likely since the same DB/network blip that killed the watchdog) and blocks every babysitter run for up to 30 minutes. Kill it: `sudo kill -9 {$rLockPID}`; the next cron minute will relaunch the watchdog.";
+				$rProblems[] = "A cron:servers instance (PID {$rLockPID}) has been holding its cron lock for {$rLockAge}s — it is likely hung (since the same DB/network blip that killed the watchdog) and blocks every babysitter run until it ends. The first cron:servers run after it has lasted 10 minutes ends it and relaunches the watchdog; to recover sooner: `sudo kill -9 {$rLockPID}`.";
 			}
 		}
 
@@ -509,23 +509,6 @@ class ServerDiagnoseCommand implements CommandInterface {
 		return $rErrstr !== '' ? $rErrstr : 'closed/timeout';
 	}
 
-	/** @return array{0:int,1:string} [http_code, curl_error]; code 0 = no response. */
-	private function httpApi(string $rURL): array {
-		$ch = curl_init($rURL);
-		curl_setopt_array($ch, [
-			CURLOPT_RETURNTRANSFER => true,
-			CURLOPT_CONNECTTIMEOUT => 3,
-			CURLOPT_TIMEOUT        => 6,
-			CURLOPT_SSL_VERIFYPEER => false,
-			CURLOPT_SSL_VERIFYHOST => 0,
-		]);
-		curl_exec($ch);
-		$rCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-		$rErr  = curl_error($ch);
-		curl_close($ch);
-		return [$rCode, $rErr];
-	}
-
 	private function svcActive(string $rName): bool {
 		$rOut = [];
 		$rCode = 1;
@@ -546,7 +529,17 @@ class ServerDiagnoseCommand implements CommandInterface {
 				return true;
 			}
 		}
-		return false;
+		// The blocks RootSignalsCronJob::syncSets() keeps in an ipset set, one rule matching each:
+		// the set listed by a fixed command, the address looked for here.
+		$rSetOut = [];
+		$rSetCode = 1;
+		$rV6 = filter_var($rIP, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+		if ($rV6) {
+			exec('sudo -n ipset list xcvm_block6 -output save 2>/dev/null', $rSetOut, $rSetCode);
+		} else {
+			exec('sudo -n ipset list xcvm_block4 -output save 2>/dev/null', $rSetOut, $rSetCode);
+		}
+		return $rSetCode === 0 && RootSignalsCronJob::inSet($rSetOut, $rV6 ? 'xcvm_block6' : 'xcvm_block4', $rIP);
 	}
 
 	private function crontabHas(string $rNeedle): bool {

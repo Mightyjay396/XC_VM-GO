@@ -25,7 +25,7 @@ final class LogSink {
 	public const CHUNK = 1000;
 
 	/** Values' bytes per `log.*` event: well under MAIN's ingest body, whatever a row carries. */
-	public const SPOOL_BYTES = 1048576;
+	public const SPOOL_BYTES = 262144;
 
 	/**
 	 * type => [table, columns, INSERT IGNORE].
@@ -45,12 +45,13 @@ final class LogSink {
 
 	/**
 	 * `syslog`: the types a node's root side writes (RootSignalsCronJob, with
-	 * CONFIG for its credential actions, and ARTEFACT for an artefact it
-	 * refused, ArtefactStage), and the only ones
-	 * MAIN takes from a node. Not `AUTH`: cron:root_mysql blocks the
-	 * addresses of those rows.
+	 * CONFIG for its credential actions, CLUSTER for the guided cutover's
+	 * seed_connections, and ARTEFACT for an artefact it refused,
+	 * ArtefactStage), and the only ones
+	 * MAIN takes from a node. Not `AUTH`: no node writes it, and old rows of
+	 * that type on MAIN are MariaDB's own refused sign-ins.
 	 */
-	public const SYSLOG_TYPES = ['FLUSH', 'REBOOT', 'OPENSSL_EXTRA', 'RESTART', 'STOP', 'RELOAD', 'CERTBOT', 'BINARIES', 'MODULE', 'UPDATE', 'PHP-FPM', 'ARTEFACT', 'CONFIG'];
+	public const SYSLOG_TYPES = ['FLUSH', 'REBOOT', 'OPENSSL_EXTRA', 'RESTART', 'STOP', 'RELOAD', 'CERTBOT', 'BINARIES', 'MODULE', 'UPDATE', 'PHP-FPM', 'ARTEFACT', 'CONFIG', 'CLUSTER'];
 
 	/** @var (callable(string, list<array<string, mixed>>, ?object): bool)|null */
 	private static $rSink;
@@ -237,7 +238,15 @@ final class LogSink {
 			$rEvents[] = ['type' => 'log.' . $rType, 'd' => ['rows' => $rRedacted]];
 		}
 
-		return EventSpool::append('p1', $rEvents);
+		// The agent bounds batches by file, but always takes at least one
+		// whole file. Keep each bounded event in its own file: combining the
+		// entire import here can exceed MAIN's 8 MiB transport limit.
+		foreach ($rEvents as $rEvent) {
+			if (!EventSpool::append('p1', [$rEvent])) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** Replace the backend (tests). Null restores the default: events when LOGS is on, else SQL. */

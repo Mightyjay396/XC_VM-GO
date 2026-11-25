@@ -6,6 +6,8 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Backup\BackupTargets;
+use XcVm\Domain\Backup\RecoveryBundle;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -55,7 +57,7 @@ class BackupsCronJob implements CommandInterface {
 
 		$rBackups = SettingsManager::get('automatic_backups');
 		$rLastBackup = intval(SettingsManager::get('last_backup'));
-		$rPeriod = ['hourly' => 3600, 'daily' => 86400, 'weekly' => 604800, 'monthly' => 2419200];
+		$rPeriod = BackupService::PERIODS;
 
 		if (!$rForce) {
 			$rPID = getmypid();
@@ -65,6 +67,7 @@ class BackupsCronJob implements CommandInterface {
 			$db->query('UPDATE `settings` SET `backups_pid` = ?;', $rPID);
 		}
 
+		$rCreated = null;
 		if (isset($rBackups) && $rBackups != 'off' || $rForce) {
 			if ($rLastBackup + $rPeriod[$rBackups] <= time() || $rForce) {
 				if (!$rForce) {
@@ -73,9 +76,8 @@ class BackupsCronJob implements CommandInterface {
 				$db->close_mysql();
 				$rFilename = MAIN_HOME . 'backups/backup_' . date('Y-m-d_H:i:s') . '.sql';
 
-				BackupService::create($rFilename);
-
-				if (0 < filesize($rFilename)) {
+				if (BackupService::create($rFilename)) {
+					$rCreated = basename($rFilename);
 					if (SettingsManager::get('dropbox_remote')) {
 						file_put_contents($rFilename . '.uploading', time());
 						$rResponse = BackupService::uploadRemote(basename($rFilename), $rFilename);
@@ -95,23 +97,27 @@ class BackupsCronJob implements CommandInterface {
 						}
 						unlink($rFilename . '.uploading');
 					}
-				} else {
-					unlink($rFilename);
 				}
 			}
 		}
 
-		$rBackups = BackupService::getLocal();
+		// A restore's dump of the live database is its way back: neither counted nor removed here.
+		$rBackups = array_values(array_filter(BackupService::getLocal(), static fn(array $rItem): bool => !str_starts_with($rItem['filename'], BackupService::PRE_RESTORE)));
 		if (intval(SettingsManager::get('backups_to_keep')) < count($rBackups) && 0 < intval(SettingsManager::get('backups_to_keep'))) {
 			$rDelete = array_slice($rBackups, 0, count($rBackups) - intval(SettingsManager::get('backups_to_keep')));
 			foreach ($rDelete as $rItem) {
+				// Never the backup made in this run, wherever its time puts it in the list.
+				if ($rItem['filename'] === $rCreated) {
+					continue;
+				}
 				if (file_exists(MAIN_HOME . 'backups/' . $rItem['filename'])) {
 					unlink(MAIN_HOME . 'backups/' . $rItem['filename']);
 				}
 			}
 		}
 
-		if (SettingsManager::get('dropbox_remote')) {
+		// Dropbox is asked for its list only after a backup was made, not every minute.
+		if ($rCreated !== null && SettingsManager::get('dropbox_remote')) {
 			$rRemoteBackups = BackupService::getRemote();
 			if (intval(SettingsManager::get('dropbox_keep')) < count($rRemoteBackups) && 0 < intval(SettingsManager::get('dropbox_keep'))) {
 				$rDelete = array_slice($rRemoteBackups, 0, count($rRemoteBackups) - intval(SettingsManager::get('dropbox_keep')));
@@ -124,8 +130,48 @@ class BackupsCronJob implements CommandInterface {
 			}
 		}
 
+		// The backup targets (Backups page) get the new dump, and once a day the recovery bundle.
+		if ($rCreated !== null) {
+			self::offsite(MAIN_HOME . 'backups/' . $rCreated, time());
+		}
+
 		@unlink($this->rIdentifier);
 
 		return 0;
+	}
+
+	/**
+	 * Copy a new dump to every enabled backup target, failures written beside
+	 * it in its .error file (the dashboard's Backups row reads it); make the
+	 * day's recovery bundle when a passphrase is set and copy it too; then
+	 * keep each target's newest copies.
+	 */
+	private static function offsite(string $rDump, int $rNow): void {
+		if (!class_exists(BackupTargets::class)) {
+			return;
+		}
+		$rFiles = [$rDump];
+		if (RecoveryBundle::passphrase() !== null && $rNow - RecoveryBundle::newest() >= 23 * 3600 && ($rBundle = RecoveryBundle::make($rNow)) !== null) {
+			$rFiles[] = $rBundle;
+			// A week of bundles here; the targets keep as many as they are set to.
+			$rLocal = glob(MAIN_HOME . 'backups/recovery_*.bundle') ?: [];
+			sort($rLocal);
+			foreach (array_slice($rLocal, 0, max(0, count($rLocal) - 7)) as $rOld) {
+				@unlink($rOld);
+			}
+		}
+		$rErrors = [];
+		foreach (BackupTargets::enabled() as $rTarget) {
+			foreach ($rFiles as $rFile) {
+				$rError = BackupTargets::upload($rTarget, $rFile, basename($rFile));
+				if ($rError !== null) {
+					$rErrors[] = $rTarget['name'] . ': ' . $rError;
+				}
+			}
+			BackupTargets::prune($rTarget);
+		}
+		if ($rErrors !== []) {
+			file_put_contents($rDump . '.error', implode("\n", $rErrors) . "\n", FILE_APPEND);
+		}
 	}
 }

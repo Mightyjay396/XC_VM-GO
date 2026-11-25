@@ -23,6 +23,10 @@ use XcVm\Domain\Stream\CategoryTemplateService;
 
 $rIsEdit         = isset($rLine);
 $rLineBouquets   = ($rIsEdit && !empty($rLine['bouquet'])) ? (json_decode((string) $rLine['bouquet'], true) ?: []) : [];
+// Display assigned bouquets in this customer's saved order, then unassigned ones.
+$rOrderedBouquets = BouquetService::getAllSimple();
+$rBouquetPositions = array_flip(array_map('intval', $rLineBouquets));
+usort($rOrderedBouquets, static fn($a, $b) => ($rBouquetPositions[(int) $a['id']] ?? PHP_INT_MAX) <=> ($rBouquetPositions[(int) $b['id']] ?? PHP_INT_MAX));
 $rLineOutputs    = ($rIsEdit && !empty($rLine['allowed_outputs'])) ? (json_decode((string) $rLine['allowed_outputs'], true) ?: []) : [];
 $rLineIPs        = ($rIsEdit && !empty($rLine['allowed_ips'])) ? (json_decode((string) $rLine['allowed_ips'], true) ?: []) : [];
 $rLineUAs        = ($rIsEdit && !empty($rLine['allowed_ua'])) ? (json_decode((string) $rLine['allowed_ua'], true) ?: []) : [];
@@ -61,6 +65,10 @@ if ($rIsEdit && !empty($rLine['custom_data'])) {
         <input type="hidden" name="edit" value="<?= (int) $rLine['id']; ?>">
     <?php endif; ?>
     <input type="hidden" name="bouquets_selected" id="bouquets_selected" value="">
+    <?php if ($rIsEdit): ?>
+    <input type="hidden" name="bouquet_order_revision" value="<?= \XcVm\Domain\Bouquet\ResellerBouquetPolicy::orderRevision($rLine); ?>">
+    <?php endif; ?>
+    <input type="hidden" name="bouquet_order" id="bouquet_order" value="" disabled>
 
     <div class="card mb-6">
         <div class="card-header px-0 pt-2">
@@ -107,7 +115,7 @@ if ($rIsEdit && !empty($rLine['custom_data'])) {
                     <div class="row mb-6">
                         <div class="col-md-8">
                             <label class="form-label" for="exp_date"><?= $language::get('expiry'); ?></label>
-                            <input type="text" class="form-control" id="exp_date" name="exp_date" value="<?= $rIsEdit ? (is_null($rLine['exp_date']) ? '' : date('Y-m-d H:i:s', (int) $rLine['exp_date'])) : date('Y-m-d H:i:s', time() + 2592000); ?>">
+                            <input type="text" class="form-control" id="exp_date" name="exp_date" step="1" value="<?= $rIsEdit ? (is_null($rLine['exp_date']) ? '' : date('Y-m-d H:i:s', (int) $rLine['exp_date'])) : date('Y-m-d H:i:s', time() + 2592000); ?>">
                         </div>
                         <div class="col-md-4">
                             <label class="form-label d-block">&nbsp;</label>
@@ -126,6 +134,11 @@ if ($rIsEdit && !empty($rLine['custom_data'])) {
                     <div class="mb-6">
                         <label class="form-label" for="contact">WhatsApp <i title="<?= $language::get('enter_whatsapp_number_with_country_code_eg_491234567890'); ?>" class="icon-base ti tabler-help-circle text-secondary"></i></label>
                         <input type="text" class="form-control" id="contact" name="contact" placeholder="+491234567890" value="<?= $rIsEdit ? htmlspecialchars((string) $rLine['contact'], ENT_QUOTES) : ''; ?>">
+                    </div>
+
+                    <div class="mb-6">
+                        <label class="form-label" for="telegram">Telegram <i title="<?= htmlspecialchars($language::get('line_telegram_tooltip'), ENT_QUOTES); ?>" class="icon-base ti tabler-brand-telegram text-info"></i></label>
+                        <input type="text" class="form-control" id="telegram" name="telegram" maxlength="64" placeholder="@username" value="<?= $rIsEdit ? htmlspecialchars((string) ($rLine['telegram'] ?? ''), ENT_QUOTES) : ''; ?>">
                     </div>
 
                     <div class="row">
@@ -305,8 +318,8 @@ if ($rIsEdit && !empty($rLine['custom_data'])) {
                                     <th class="text-center"><?= $language::get('stations'); ?></th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                <?php foreach (BouquetService::getAllSimple() as $rBouquet): ?>
+                            <tbody id="line-bouquet-rows">
+                                <?php foreach ($rOrderedBouquets as $rBouquet): ?>
                                     <tr>
                                         <td>
                                             <div class="form-check">
@@ -314,7 +327,10 @@ if ($rIsEdit && !empty($rLine['custom_data'])) {
                                             </div>
                                         </td>
                                         <td class="text-center"><label class="form-check-label" for="line-bouquet-<?= (int) $rBouquet['id']; ?>"><?= (int) $rBouquet['id']; ?></label></td>
-                                        <td><label class="form-check-label" for="line-bouquet-<?= (int) $rBouquet['id']; ?>"><?= htmlspecialchars((string) $rBouquet['bouquet_name'], ENT_QUOTES); ?></label></td>
+                                        <td><label class="form-check-label" for="line-bouquet-<?= (int) $rBouquet['id']; ?>"><?= htmlspecialchars((string) $rBouquet['bouquet_name'], ENT_QUOTES); ?></label>
+                                            <button type="button" class="btn btn-sm btn-label-secondary ms-2" data-bouquet-move="up" aria-label="<?= $language::get('bouquet_order'); ?> ↑">↑</button>
+                                            <button type="button" class="btn btn-sm btn-label-secondary ms-2" data-bouquet-move="down" aria-label="<?= $language::get('bouquet_order'); ?> ↓">↓</button>
+                                        </td>
                                         <td class="text-center"><?= count(json_decode((string) $rBouquet['bouquet_channels'], true) ?: []); ?></td>
                                         <td class="text-center"><?= count(json_decode((string) $rBouquet['bouquet_movies'], true) ?: []); ?></td>
                                         <td class="text-center"><?= count(json_decode((string) $rBouquet['bouquet_series'], true) ?: []); ?></td>
@@ -333,6 +349,9 @@ if ($rIsEdit && !empty($rLine['custom_data'])) {
         <button type="submit" class="btn btn-primary" id="line-submit"><?= $rIsEdit ? $language::get('edit') : $language::get('add'); ?></button>
     </div>
 </form>
+<?php if ($rIsEdit): ?>
+<?= \XcVm\Core\Module\LineFormRegistry::render($rLine, 'admin'); ?>
+<?php endif; ?>
 
 <?php
 LayoutRenderer::renderFooter('admin');
@@ -340,6 +359,8 @@ LayoutRenderer::renderFooter('admin');
 <script>
     (function() {
         var errText = <?= json_encode($language::get('error_occured')); ?>;
+        // The refusals the save answers with a status of their own.
+        var statusText = <?= json_encode([STATUS_INVALID_USERNAME => $language::get('line_username_no_slash'), STATUS_INVALID_PASSWORD => $language::get('line_password_no_slash')]); ?>;
         var $ = window.jQuery;
 
         // Searchable owner picker (registered users are pre-rendered as options)
@@ -425,6 +446,10 @@ LayoutRenderer::renderFooter('admin');
             expDate = document.getElementById('exp_date');
         var applyExpire = function() {
             expDate.disabled = noExpire.checked;
+            // Flatpickr creates a separate native date-time input on mobile.
+            if (expDate._flatpickr && expDate._flatpickr.mobileInput) {
+                expDate._flatpickr.mobileInput.disabled = noExpire.checked;
+            }
         };
         noExpire.addEventListener('change', applyExpire);
         applyExpire();
@@ -459,6 +484,20 @@ LayoutRenderer::renderFooter('admin');
         bindList('ip_field', 'add_ip', 'remove_ip', 'allowed_ips', validIP);
         bindList('ua_field', 'add_ua', 'remove_ua', 'allowed_ua', null);
 
+        var bouquetOrderChanged = false;
+        document.getElementById('line-bouquet-rows').addEventListener('click', function(e) {
+            var button = e.target.closest('[data-bouquet-move]');
+            if (!button) return;
+            var row = button.closest('tr');
+            if (button.dataset.bouquetMove === 'up' && row.previousElementSibling) {
+                row.parentNode.insertBefore(row, row.previousElementSibling);
+                bouquetOrderChanged = true;
+            } else if (button.dataset.bouquetMove === 'down' && row.nextElementSibling) {
+                row.parentNode.insertBefore(row.nextElementSibling, row);
+                bouquetOrderChanged = true;
+            }
+        });
+
         // Bouquet select-all / deselect-all.
         document.getElementById('bqt-all').addEventListener('click', function() {
             document.querySelectorAll('.line-bouquet-cb').forEach(function(c) {
@@ -486,6 +525,9 @@ LayoutRenderer::renderFooter('admin');
         document.getElementById('line-form').addEventListener('submit', function(e) {
             e.preventDefault();
             document.getElementById('bouquets_selected').value = collect('line-bouquet-cb');
+            var orderField = document.getElementById('bouquet_order');
+            orderField.disabled = !bouquetOrderChanged;
+            if (bouquetOrderChanged) orderField.value = collect('line-bouquet-cb');
             ['allowed_ips', 'allowed_ua'].forEach(function(id) {
                 var sel = document.getElementById(id);
                 Array.prototype.forEach.call(sel.options, function(o) {
@@ -522,7 +564,11 @@ LayoutRenderer::renderFooter('admin');
                         return;
                     }
                     btn.disabled = false;
-                    xcToast(errText, 'error');
+                    if (dt && dt.data && dt.data.bouquet_order_conflict) {
+                        xcToast(<?= json_encode($language::get('bouquet_order_conflict')); ?>, 'error');
+                    } else {
+                        xcToast((dt && statusText[dt.status]) || errText, 'error');
+                    }
                 })
                 .catch(function() {
                     btn.disabled = false;

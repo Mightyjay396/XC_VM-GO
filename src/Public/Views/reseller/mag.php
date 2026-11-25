@@ -26,6 +26,8 @@ use XcVm\Domain\User\UserRepository;
 use XcVm\Core\Util\LayoutRenderer;
 
 $rIsEdit  = isset($rDevice['mag_id']) && !isset($_STATUS);
+$rDeviceAgents = json_decode((string) ($rDevice['allowed_user_agents'] ?? '[]'), true);
+$rDeviceAgents = is_array($rDeviceAgents) ? array_filter($rDeviceAgents, 'is_string') : [];
 $rIsTrial = isset($rRequest['trial']);
 $rAllowChange = (bool) $rPermissions['allow_change_bouquets'];
 
@@ -127,7 +129,8 @@ $rStatusMessages = [
                             <input type="text" class="form-control" id="mac" name="mac" value="<?= isset($rDevice) ? htmlspecialchars((string) $rDevice['mac'], ENT_QUOTES) : '00:1A:79:'; ?>">
                         </div>
 
-                        <?php if (count($rPermissions['all_reports']) > 0): ?>
+                        <?php // A new trial is held by the reseller that makes it: there is no owner to pick.
+                        if (count($rPermissions['all_reports']) > 0 && ($rIsEdit || !$rIsTrial)): ?>
                             <div class="mb-6">
                                 <label class="form-label" for="member_id">Owner</label>
                                 <select name="member_id" id="member_id" class="form-select select2">
@@ -153,6 +156,10 @@ $rStatusMessages = [
                                         </optgroup>
                                     <?php endif; ?>
                                 </select>
+                                <?php // A trial stays with its holder: the owner picked applies once a package makes the device official.
+                                if (isset($rLine) && $rLine['is_trial']): ?>
+                                    <div class="form-text small"><?= $language::get('trial_owner_kept'); ?></div>
+                                <?php endif; ?>
                             </div>
                         <?php endif; ?>
 
@@ -205,6 +212,11 @@ $rStatusMessages = [
                             </div>
                         </div>
 
+                        <div class="mb-6">
+                            <label class="form-label" for="telegram">Telegram <i title="<?= htmlspecialchars($language::get('line_telegram_tooltip'), ENT_QUOTES); ?>" class="icon-base ti tabler-brand-telegram text-info"></i></label>
+                            <input type="text" class="form-control" id="telegram" name="telegram" maxlength="64" placeholder="@username" value="<?= isset($rDevice) ? htmlspecialchars((string) ($rLine['telegram'] ?? ''), ENT_QUOTES) : ''; ?>">
+                        </div>
+
                         <div class="mb-2">
                             <label class="form-label" for="reseller_notes">Reseller Notes</label>
                             <textarea id="reseller_notes" name="reseller_notes" class="form-control" rows="3"><?= isset($rDevice) ? htmlspecialchars((string) $rLine['reseller_notes'], ENT_QUOTES) : ''; ?></textarea>
@@ -230,6 +242,32 @@ $rStatusMessages = [
                                 </div>
                             <?php endif; ?>
                         </div>
+                    <?php if (!empty($rPermissions['allow_restrictions'])): ?>
+                    <div class="mb-6">
+                        <input type="hidden" name="ua_policy_present" value="1">
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="lock_user_agent" name="lock_user_agent" value="1" <?= !empty($rDevice['lock_user_agent']) ? 'checked' : ''; ?>>
+                            <label class="form-check-label" for="lock_user_agent"><?= $language::get('mag_lock_user_agent'); ?></label>
+                        </div>
+                        <label class="form-label" for="detected_user_agent"><?= $language::get('mag_detected_user_agent'); ?></label>
+                        <div class="input-group mb-3">
+                            <input type="text" readonly class="form-control" id="detected_user_agent" value="<?= htmlspecialchars((string) ($rDevice['last_user_agent'] ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>">
+                            <button type="button" id="add_detected_ua" class="btn btn-primary" aria-label="<?= $language::get('add'); ?>"><i class="icon-base ti tabler-plus"></i></button>
+                        </div>
+                        <label class="form-label" for="mag_ua_field"><?= $language::get('allowed_user_agents'); ?></label>
+                        <div class="input-group mb-3">
+                            <input type="text" id="mag_ua_field" maxlength="1024" class="form-control">
+                            <button type="button" id="add_mag_ua" class="btn btn-primary" aria-label="<?= $language::get('add'); ?>"><i class="icon-base ti tabler-plus"></i></button>
+                            <button type="button" id="remove_mag_ua" class="btn btn-label-danger" aria-label="<?= $language::get('remove'); ?>"><i class="icon-base ti tabler-trash"></i></button>
+                        </div>
+                        <select id="allowed_user_agents" name="allowed_user_agents[]" size="4" class="form-select" multiple>
+                            <?php foreach ($rDeviceAgents as $rAgent): ?>
+                                <option value="<?= htmlspecialchars($rAgent, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?>"><?= htmlspecialchars($rAgent, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <?php endif; ?>
                     </div>
 
                     <?php if ($rIsEdit): ?>
@@ -278,6 +316,7 @@ $rStatusMessages = [
                             </div>
                             <div class="d-flex justify-content-start">
                                 <button type="button" id="clear-device" class="btn btn-label-warning">Clear Device Info</button>
+                                <button type="button" id="reset-stb-lock" class="btn btn-label-danger" data-id="<?= (int) $rDevice['mag_id']; ?>"><?= $language::get('reset_stb'); ?></button>
                             </div>
                         </div>
                     <?php endif; ?>
@@ -316,7 +355,7 @@ $rStatusMessages = [
                     <?php endif; ?>
 
                     <div class="tab-pane fade" id="tab-review" role="tabpanel">
-                        <div class="alert alert-danger d-flex align-items-center" role="alert" style="display:none;" id="no-credits">
+                        <div class="alert alert-danger" role="alert" style="display:none;" id="no-credits">
                             <i class="icon-base ti tabler-ban me-2"></i> You do not have enough credits to complete this transaction!
                         </div>
                         <div class="table-responsive mb-4">
@@ -376,7 +415,7 @@ LayoutRenderer::renderFooter('reseller');
         var errText = <?= json_encode($language::get('error_occured')); ?>;
         var statusMessages = <?= json_encode($rStatusMessages); ?>;
 
-        var ownerCredits = <?= (int) $rUserInfo['credits']; ?>;
+        var ownerCredits = <?= (float) $rUserInfo['credits']; ?>;
         var allowChangeBouquets = <?= $rAllowChange ? 'true' : 'false'; ?>;
         var userPackage = <?= isset($rLine) ? (intval($rLine['package_id']) ?: 'null') : 'null'; ?>;
         var userBouquet = <?= isset($rLine) ? json_encode(array_map('intval', json_decode((string) $rLine['bouquet'], true) ?: [])) : '[]'; ?>;
@@ -542,8 +581,51 @@ LayoutRenderer::renderFooter('reseller');
         }
         getPackage();
 
+        if (document.getElementById('allowed_user_agents')) {
+        var uaList = document.getElementById('allowed_user_agents');
+        var addAgent = function(value) {
+            if (!value || value.length > 1024) return;
+            if (!Array.prototype.some.call(uaList.options, function(o) { return o.value === value; })) {
+                uaList.add(new Option(value, value));
+            }
+        };
+        document.getElementById('add_detected_ua').addEventListener('click', function() {
+            addAgent(document.getElementById('detected_user_agent').value);
+        });
+        document.getElementById('add_mag_ua').addEventListener('click', function() {
+            var field = document.getElementById('mag_ua_field');
+            addAgent(field.value);
+            field.value = '';
+        });
+        document.getElementById('remove_mag_ua').addEventListener('click', function() {
+            Array.prototype.slice.call(uaList.selectedOptions).forEach(function(o) { o.remove(); });
+        });
+
+        }
+
+        var resetStb = document.getElementById('reset-stb-lock');
+        if (resetStb) resetStb.addEventListener('click', function() {
+            if (!window.confirm(<?= json_encode($language::get('reset_stb') . '?'); ?>)) return;
+            resetStb.disabled = true;
+            var payload = {id: resetStb.getAttribute('data-id'), type: 'reset_stb_lock'};
+            fetch('./api?action=send_event&data=' + encodeURIComponent(JSON.stringify(payload)), {
+                method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest'}
+            }).then(function(r) { return r.json(); }).then(function(result) {
+                if (!result || result.result !== true) throw new Error('reset failed');
+                window.location.reload();
+            }).catch(function() { resetStb.disabled = false; xcToast('Reset failed.', 'error'); });
+        });
+
         form.addEventListener('submit', function(e) {
             e.preventDefault();
+            var agents = document.getElementById('allowed_user_agents');
+            if (agents) {
+                if (document.getElementById('lock_user_agent').checked && !agents.options.length) {
+                    xcToast(<?= json_encode($language::get('mag_user_agent_required')); ?>, 'warning');
+                    return;
+                }
+                Array.prototype.forEach.call(agents.options, function(o) { o.selected = true; });
+            }
             var sel = document.getElementById('allowed_ips');
             if (sel) { Array.prototype.forEach.call(sel.options, function(o) { o.selected = true; }); }
             var btn = document.getElementById('submit_button');

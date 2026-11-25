@@ -5,14 +5,14 @@ use XcVm\Core\Util\LayoutRenderer;
 /**
  * Reseller Streams (Bootstrap 5). Full-parity port of admin/streams.php adapted to
  * the reseller contract: clean-JSON keyed serverSide DataTable
- * (ResellerTableRenderer::handleStreams emits data-only rows), with the icon,
+ * (ResellerTableController::handleStreams emits data-only rows), with the icon,
  * title (+ archive marker), category, connections badge and per-row action
  * dropdown all rendered client-side.
  *
  * Reseller differences vs admin (the reseller API/renderer simply does not expose
  * these, so the view legitimately omits them): no bulk toolbar (reseller has no
  * `multi` endpoint), no edit / start / stop / restart / delete / fingerprint /
- * player (ResellerApiDispatcher exposes only `action=connections&sub=purge`), no
+ * player (Reseller\Ajax exposes only `action=connections&sub=purge`), no
  * server / status / EPG / stream-info columns (the reseller streams query does not
  * fetch that data). The only row action is Kill Connections, gated by
  * `reseller_client_connection_logs`. The category filter is limited to the
@@ -77,7 +77,7 @@ LayoutRenderer::renderFooter('reseller');
         var esc = function(s) {
             var d = document.createElement('div');
             d.textContent = (s == null ? '' : String(s));
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         };
         var canKill = <?= $rCanKill ? 'true' : 'false'; ?>;
         var lang = {
@@ -157,7 +157,7 @@ LayoutRenderer::renderFooter('reseller');
                             return badge;
                         }
                         // The badge opens the connection list; the hammer purges the whole stream at once.
-                        return '<span class="text-nowrap"><a href="live_connections?stream=' + encodeURIComponent(row.id) + '&stream_id=' + encodeURIComponent(row.id) + '">' + badge + '</a> '
+                        return '<span class="text-nowrap"><a href="live_connections?stream_id=' + encodeURIComponent(row.id) + '">' + badge + '</a> '
                             + '<button type="button" class="btn btn-sm btn-icon btn-label-danger js-act" title="' + esc(lang.kill) + '" data-id="' + esc(row.id) + '"><i class="icon-base ti tabler-hammer"></i></button></span>';
                     }
                 }

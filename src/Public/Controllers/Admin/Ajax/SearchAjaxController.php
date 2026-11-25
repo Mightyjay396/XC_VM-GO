@@ -3,6 +3,7 @@
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
@@ -50,7 +51,16 @@ class SearchAjaxController extends BaseAjaxController {
 		if (!empty($rTermSP)) {
 			$rItems = [];
 
+			// A group finds in a search what its pages show it: the search listed
+			// every kind of record, with its details, to every group.
+			$rPages = ['lines' => 'lines', 'mag_devices' => 'mags', 'enigma2_devices' => 'enigmas', 'users' => 'users', 'streams_series' => 'series'];
+			$rStreamPages = [1 => 'streams', 2 => 'movies', 3 => 'created_channels', 4 => 'radios', 5 => 'episodes'];
+			$rStreamTypes = array_filter($rStreamPages, static fn(string $rPage): bool => PageAuthorization::checkPermissions($rPage));
+
 			foreach ($rTables as $rTable => $rTableInfo) {
+				if ($rTable == 'streams' ? $rStreamTypes === [] : !PageAuthorization::checkPermissions($rPages[$rTable])) {
+					continue;
+				}
 				if ($rTable == 'streams') {
 					$db->query('SELECT `' . $rTable . '`.*, MATCH(' . $rTableInfo[2] . ') AGAINST (? IN BOOLEAN MODE) AS `score1`, MATCH(' . $rTableInfo[2] . ') AGAINST (? IN BOOLEAN MODE) AS `score2` FROM `' . $rTable . '` WHERE MATCH(' . $rTableInfo[2] . ') AGAINST (? IN BOOLEAN MODE) OR `id` = ? ORDER BY `score1` + `score2` DESC LIMIT ' . $rLimit . ';', $rTermSP, $rTermSP . '*', $rTermSP . '*', intval($rTerm));
 				} else {
@@ -58,6 +68,9 @@ class SearchAjaxController extends BaseAjaxController {
 				}
 
 				foreach ($db->get_rows() as $rRow) {
+					if ($rTable == 'streams' && !isset($rStreamTypes[intval($rRow['type'])])) {
+						continue;
+					}
 					similar_text($rTerm, strtolower(preg_replace('/[^[:alnum:][:space:]]/u', '', $rRow[$rTableInfo[4]])), $rPerc);
 
 					if ($rTable == 'streams' && $rRow['id'] == intval($rTerm)) {
@@ -167,7 +180,7 @@ class SearchAjaxController extends BaseAjaxController {
 				if (SettingsManager::get('redis_handler')) {
 					$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, true, true);
 				} else {
-					$db->query('SELECT `stream_id`, COUNT(*) AS `count` FROM `lines_live` WHERE `stream_id` IN (' . implode(',', $rStreamIDs) . ') AND `hls_end` = 0;');
+					$db->query('SELECT `stream_id`, COUNT(*) AS `count` FROM `lines_live` WHERE `stream_id` IN (' . implode(',', $rStreamIDs) . ') AND `hls_end` = 0 GROUP BY `stream_id`;');
 
 					foreach ($db->get_rows() as $rRow) {
 						$rConnectionCount[$rRow['stream_id']] = $rRow['count'];
@@ -249,7 +262,7 @@ class SearchAjaxController extends BaseAjaxController {
 						$rLinesInfo[$rRow['user_id']]['online'] = true;
 						$rStreamNameIDs[] = intval($rRow['stream_id']);
 					}
-					$db->query('SELECT `user_id`, COUNT(*) AS `count` FROM `lines_live` WHERE `user_id` IN (' . implode(',', array_map('intval', $rLineIDs)) . ') AND `hls_end` = 0;');
+					$db->query('SELECT `user_id`, COUNT(*) AS `count` FROM `lines_live` WHERE `user_id` IN (' . implode(',', array_map('intval', $rLineIDs)) . ') AND `hls_end` = 0 GROUP BY `user_id`;');
 
 					foreach ($db->get_rows() as $rRow) {
 						$rLineConnectionCount[$rRow['user_id']] = $rRow['count'];
@@ -369,7 +382,7 @@ class SearchAjaxController extends BaseAjaxController {
 		return [
 			'layout' => $rLive ? 'live' : 'vod',
 			'title' => $rTitle,
-			'title_link' => Authorization::check('adv', 'manage_streams') ? ('stream_view?id=' . intval($rItem['id'])) : null,
+			'title_link' => Authorization::check('adv', 'streams') ? ('stream_view?id=' . intval($rItem['id'])) : null,
 			'category' => $rCategory,
 			'server' => $rServerName,
 			'image' => $rLive
@@ -493,7 +506,7 @@ class SearchAjaxController extends BaseAjaxController {
 			'connections' => $rConn,
 			'flags' => ['restreamer' => (bool) ($rLineInfo['is_restreamer'] ?? false), 'trial' => (bool) $rLineInfo['is_trial']],
 			'badge' => ['variant' => 'pink'],
-			'actions' => $this->lineActions(intval($rLineInfo['id']), $rType . '?id=' . intval($rItem[$rItem['table'] == 'mag_devices' ? 'mag_id' : 'device_id']), $rItem['admin_enabled'], $rItem['enabled'], $rConn),
+			'actions' => $this->lineActions(intval($rLineInfo['id']), $rType . '?id=' . intval($rItem[$rItem['table'] == 'mag_devices' ? 'mag_id' : 'device_id']), $rLineInfo['admin_enabled'], $rLineInfo['enabled'], $rConn),
 		];
 	}
 
@@ -564,7 +577,7 @@ class SearchAjaxController extends BaseAjaxController {
 				}
 			}
 
-			if (count(json_decode($rServerItem['cchannel_rsources'], true)) != count(json_decode($rItem['stream_source'], true)) && !$rServerItem['parent_id']) {
+			if (count(json_decode((string) $rServerItem['cchannel_rsources'], true) ?: []) != count(json_decode((string) $rItem['stream_source'], true) ?: []) && !$rServerItem['parent_id']) {
 				return 6;
 			}
 

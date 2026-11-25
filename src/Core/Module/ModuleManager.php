@@ -13,6 +13,7 @@ use XcVm\Core\Exception\Module\ModuleException;
 use XcVm\Core\Exception\Module\ModuleNotFoundException;
 use XcVm\Core\Http\CurlClient;
 use XcVm\Core\Http\Router;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -32,6 +33,20 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class ModuleManager {
+	/**
+	 * The line module:migrate prints once the steps have run. Its exit status
+	 * alone does not say so: PHP also ends with 0 on exit('message').
+	 */
+	public const STEPS_DONE = 'module:migrate: steps done';
+
+	/**
+	 * The platform pinned this panel's install_id to another machine (the config
+	 * directory was copied, or the server was replaced): it refuses registration
+	 * and paid modules until the binding is reset on xcvm.tech.
+	 */
+	private const PANEL_MOVED_MESSAGE = 'This panel is registered on xcvm.tech from another machine. '
+		. 'If the server was replaced, ask xcvm.tech support to reset the panel\'s hardware binding.';
+
 	private string $modulesPath;
 
 	private string $overridesPath;
@@ -66,10 +81,8 @@ class ModuleManager {
 	 * Absolute path of the stored archive for a custom (non-store) module.
 	 *
 	 * MAIN keeps a copy of every uploaded module archive named
-	 * {name}_{version}.zip so LB servers can pull it back over the internal
-	 * system API (action=getFile). Because every server shares the same
-	 * MAIN_HOME layout, the LB can reconstruct this exact path from the name +
-	 * version carried in the install_module signal.
+	 * {name}_{version}.zip: the artefact a load balancer is granted with
+	 * install_module (ArtefactRegistry `module/<name>/<version>`).
 	 */
 	public function archivePathFor(string $name, string $version): string {
 		$name    = $this->sanitizeModuleName($name);
@@ -191,7 +204,11 @@ class ModuleManager {
 		$this->assertCoreCompatible($moduleDir, $name);
 		// Guarantee a hash_id (generating + persisting one when the upload lacks it)
 		// so the module is always placed in a `{name}_{hash5}` directory, never bare.
-		$targetDir = $this->modulesPath . '/' . $this->moduleDirName($name, $this->ensureHashId($moduleDir));
+		$hashId    = $this->ensureHashId($moduleDir);
+		$targetDir = $this->modulesPath . '/' . $this->moduleDirName($name, $hashId);
+
+		// A release that renamed the module: the copy installed under its old name.
+		$this->adoptRenamedCopies($name, $hashId, $moduleDir);
 
 		// Remove every other copy of this module (a legacy bare `{name}` directory,
 		// or an install under a different hash). The source is skipped on purpose: a
@@ -209,17 +226,27 @@ class ModuleManager {
 	}
 
 	/**
-	 * Refuse a module whose `requires_core` rules out this core. A refused copy
+	 * Refuse a module the loader would leave out, or could not load anything
+	 * with: one whose module.json it cannot use, whose `requires_core` rules out
+	 * this core, or whose dependencies lead back to itself. A refused copy
 	 * that already sits in modulesPath (the platform extension extracts there)
 	 * is removed, so it is not left beside the installed one.
 	 *
 	 * @param string $moduleDir Directory holding the new module.json.
 	 * @param string $name      Module name, for the message.
-	 * @throws \RuntimeException When the module needs another core.
+	 * @throws \RuntimeException When the manifest is unusable, the module needs another core,
+	 *                           or it would close a dependency cycle.
 	 */
 	private function assertCoreCompatible(string $moduleDir, string $name): void {
-		$meta  = json_decode((string) @file_get_contents($moduleDir . '/module.json'), true);
-		$error = ModuleLoader::coreRequirementError((string) (is_array($meta) ? ($meta['requires_core'] ?? '') : ''));
+		$meta   = json_decode((string) @file_get_contents($moduleDir . '/module.json'), true);
+		$reason = ModuleLoader::manifestError($moduleDir . '/module.json', $name);
+		$error  = $reason !== null
+			? "has a module.json that cannot be loaded ({$reason})"
+			: ModuleLoader::coreRequirementError((string) (is_array($meta) ? ($meta['requires_core'] ?? '') : ''));
+		if ($error === null && is_array($meta)) {
+			$cycle = $this->dependencyCycle($name, $meta);
+			$error = $cycle === null ? null : "would close a dependency cycle ({$cycle})";
+		}
 		if ($error === null) {
 			return;
 		}
@@ -227,6 +254,52 @@ class ModuleManager {
 			$this->deleteDirectory($moduleDir);
 		}
 		throw new \RuntimeException("Module '{$name}' {$error}.");
+	}
+
+	/**
+	 * The dependency cycle a module with this manifest would close with the
+	 * modules on disk, as `a -> b -> a`, or null when there is none.
+	 *
+	 * The loader stops on a cycle instead of leaving its modules out
+	 * (ModuleLoader::resolveLoadOrder()), so one must not be put in place.
+	 * Optional dependencies count, as they do for the load order; so does a
+	 * module that is switched off, since switching it on would close the cycle.
+	 *
+	 * @param string $name Module name.
+	 * @param array  $meta Its new module.json.
+	 */
+	private function dependencyCycle(string $name, array $meta): ?string {
+		$names = static fn(array $manifest): array => array_map('trim', array_filter(
+			array_merge($manifest['dependencies'] ?? [], $manifest['optional_dependencies'] ?? []),
+			'is_string'
+		));
+
+		$requires = [];
+		foreach ($this->listModules() as $module) {
+			$requires[$module['name']] = $names($module);
+		}
+		$requires[$name] = $names($meta);
+
+		// Depth-first from $name: only a path that comes back to it counts.
+		$seen = [];
+		$walk = function (string $node) use (&$walk, &$seen, $requires, $name): ?array {
+			foreach ($requires[$node] as $next) {
+				if ($next === $name) {
+					return [$node, $next];
+				}
+				if (isset($requires[$next]) && !isset($seen[$next])) {
+					$seen[$next] = true;
+					$tail = $walk($next);
+					if ($tail !== null) {
+						return [$node, ...$tail];
+					}
+				}
+			}
+			return null;
+		};
+
+		$cycle = $walk($name);
+		return $cycle === null ? null : implode(' -> ', $cycle);
 	}
 
 	/**
@@ -275,6 +348,39 @@ class ModuleManager {
 				$this->deleteDirectory($dir);
 			}
 		}
+	}
+
+	/**
+	 * Hand an install made under a module's old name over to $name. A directory
+	 * whose manifest carries the same hash_id under another name is this module
+	 * before a rename: its config/modules.php entry (state, installed_version)
+	 * moves to $name and the directory goes, so the loader never boots both and
+	 * the schema is not installed a second time.
+	 */
+	private function adoptRenamedCopies(string $name, string $hashId, string $keep): void {
+		$keepReal = realpath($keep);
+		foreach (glob($this->modulesPath . '/*', GLOB_ONLYDIR) ?: [] as $dir) {
+			$meta = json_decode((string) @file_get_contents($dir . '/module.json'), true);
+			$old  = is_array($meta) ? trim((string) ($meta['name'] ?? '')) : '';
+			if ($old === '' || $old === $name || realpath($dir) === $keepReal
+				|| strtolower((string) ($meta['hash_id'] ?? '')) !== $hashId
+			) {
+				continue;
+			}
+			$this->renameOverrides($old, $name);
+			$this->deleteDirectory($dir);
+		}
+	}
+
+	/** Move $old's config/modules.php entry to $new, unless $new already has one. */
+	private function renameOverrides(string $old, string $new): void {
+		$overrides = $this->readOverrides();
+		if (!isset($overrides[$old])) {
+			return;
+		}
+		$overrides[$new] ??= $overrides[$old];
+		unset($overrides[$old]);
+		$this->writeOverrides($overrides);
 	}
 
 	/**
@@ -457,6 +563,9 @@ class ModuleManager {
 	/**
 	 * Install any on-disk module that has never been installed.
 	 *
+	 * Nothing is fetched here: a module reaches the disk only when the operator
+	 * installs it (the Modules page, the store, an uploaded archive).
+	 *
 	 * Bundled modules (e.g. ministra) are booted on every request but only get
 	 * their install() / migrations run when explicitly installed. On a fresh
 	 * panel nothing would create their tables, so this runs once during the
@@ -481,12 +590,6 @@ class ModuleManager {
 		// (e.g. tmdb): a stale on-disk copy would still boot and its commands
 		// would collide with the core-registered ones.
 		$this->purgeCoreProvidedModules();
-
-		// Fetch any standard-set module that lives in a remote source (git/url/
-		// platform) and isn't on disk yet — a no-op while every standard module is
-		// bundled on-disk. Fetched modules are installed by provisionStandardSet(),
-		// so the on-disk pass below simply skips them.
-		$provisioned = $this->provisionStandardSet();
 
 		$modules   = $this->listModules();
 		$installed = [];
@@ -542,195 +645,7 @@ class ModuleManager {
 			}
 		}
 
-		return array_values(array_unique(array_merge($provisioned, $done)));
-	}
-
-	/**
-	 * The standard module set the panel provisions by default (config/bundled_modules.php).
-	 *
-	 * Foundation for modules-in-separate-repos: each entry is keyed by the module's
-	 * permanent `hash_id`. When the config file is absent, falls back to whatever
-	 * is on disk (treated as `bundled`).
-	 *
-	 * @return array<int, array{hash_id?:string,name?:string,source?:string,repository?:string,channel?:string,slug?:string,url?:string}>
-	 */
-	public function getStandardSet(): array {
-		$path = defined('CONFIG_PATH')
-			? CONFIG_PATH . 'bundled_modules.php'
-			: dirname(__DIR__, 2) . '/config/bundled_modules.php';
-
-		if (is_file($path)) {
-			$data = require $path;
-			if (is_array($data)) {
-				return array_values(array_filter($data, 'is_array'));
-			}
-		}
-
-		// Fallback: derive from on-disk modules (all treated as bundled).
-		$out = [];
-		foreach ($this->listModules() as $m) {
-			$out[] = ['hash_id' => (string) ($m['hash_id'] ?? ''), 'name' => $m['name'], 'source' => 'bundled'];
-		}
-		return $out;
-	}
-
-	/**
-	 * Resolve the on-disk module name that carries a given permanent `hash_id`.
-	 *
-	 * The stable identity lookup: lets the panel recognise "the same module" across
-	 * a rename or a repo move, where `name` alone is unreliable.
-	 *
-	 * @param string $hashId Permanent module hash_id.
-	 * @return string|null Module name, or null if no on-disk module has that hash_id.
-	 */
-	public function findModuleByHashId(string $hashId): ?string {
-		$hashId = trim($hashId);
-		if ($hashId === '') {
-			return null;
-		}
-		foreach ($this->listModules() as $m) {
-			if (($m['hash_id'] ?? '') === $hashId) {
-				return $m['name'];
-			}
-		}
-		return null;
-	}
-
-	/**
-	 * Provision the standard set: fetch+install any standard-set module that lives
-	 * in a remote source (git/url/platform) and is not on disk yet.
-	 *
-	 * `bundled` entries and modules already present (matched by `hash_id`) are left
-	 * to syncBundledModules()'s on-disk install. Per-entry failures are logged, not
-	 * fatal. No-op today (every standard module is bundled on-disk).
-	 *
-	 * @return string[] Names/hash_ids of modules fetched this pass.
-	 */
-	public function provisionStandardSet(): array {
-		$done = [];
-		foreach ($this->getStandardSet() as $entry) {
-			$hash = (string) ($entry['hash_id'] ?? '');
-			$name = (string) ($entry['name'] ?? '');
-
-			// Already on disk (bundled or previously fetched)? Nothing to fetch.
-			// A same-name directory whose identity does NOT match the pinned
-			// hash_id is a stale pre-pin copy (e.g. a legacy-migrated bundled
-			// module from an older release) — it must be replaced, not kept:
-			// otherwise the panel runs outdated module code forever.
-			$onDisk   = $hash !== '' ? $this->findModuleByHashId($hash) : null;
-			$staleDir = null;
-			if ($onDisk === null && $name !== '') {
-				$dir = $this->modulePathFor($name);
-				if (is_dir($dir) && is_file($dir . '/module.json')) {
-					if ($hash === '') {
-						$onDisk = $name; // no pin — any same-name copy counts
-					} else {
-						$staleDir = $dir;
-					}
-				}
-			}
-			if ($onDisk !== null) {
-				continue;
-			}
-
-			$source = (string) ($entry['source'] ?? 'bundled');
-			if ($source === 'bundled') {
-				error_log("provisionStandardSet: '{$name}' is declared bundled but missing on disk — skipped.");
-				continue;
-			}
-
-			try {
-				if ($staleDir !== null) {
-					error_log("provisionStandardSet: '{$name}' on disk (" . basename($staleDir) . ") does not match the pinned hash_id — replacing with the pinned release.");
-					$this->deleteDirectory($staleDir);
-				}
-				$this->installModuleFromSource($entry);
-				$done[] = $name !== '' ? $name : $hash;
-			} catch (\Throwable $e) {
-				error_log("provisionStandardSet: fetch of '" . ($name !== '' ? $name : $hash) . "' failed: " . $e->getMessage());
-			}
-		}
 		return $done;
-	}
-
-	/**
-	 * Fetch a NOT-yet-present module from a standard-set entry's source and install it.
-	 *
-	 * Mirrors updateModuleFromSource() but for a first install (no local module.json
-	 * to read the source from — it comes from the entry). Verifies the fetched
-	 * `hash_id` against the entry so a repo/URL cannot supply a different module.
-	 *
-	 * @param array $entry A getStandardSet() entry (source/repository/…, hash_id).
-	 * @throws \RuntimeException on download/verify/install failure.
-	 */
-	private function installModuleFromSource(array $entry): void {
-		$update = [
-			'source'     => (string) ($entry['source'] ?? 'bundled'),
-			'repository' => (string) ($entry['repository'] ?? ''),
-			'channel'    => (string) ($entry['channel'] ?? 'stable'),
-			'slug'       => (string) ($entry['slug'] ?? ($entry['name'] ?? '')),
-			'url'        => (string) ($entry['url'] ?? ''),
-		];
-		$expectedHash = (string) ($entry['hash_id'] ?? '');
-
-		// platform — the store install flow handles download/decrypt/license/LB.
-		if ($update['source'] === 'platform') {
-			$apiKey = (string) (SettingsManager::get('platform_api_key') ?? '');
-			$slug   = $update['slug'] !== '' ? $update['slug'] : (string) ($entry['name'] ?? '');
-			$this->downloadFromPlatform($slug, '', $apiKey);
-			return;
-		}
-
-		$version = (new ModuleUpdateChecker())->latestAvailable([
-			'update'            => $update,
-			'version'           => '',
-			'installed_version' => '',
-		]);
-		if ($version === null) {
-			throw new \RuntimeException('No installable version resolved from source.');
-		}
-
-		[$url, $md5] = $this->resolveSourceDownload($update, $version);
-		if ($url === '') {
-			throw new \RuntimeException('No download URL resolved from source.');
-		}
-
-		$archive  = (string) @tempnam(sys_get_temp_dir(), 'xc_modinst_');
-		$tempBase = rtrim(sys_get_temp_dir(), '/') . '/xc_modinst_' . bin2hex(random_bytes(8));
-		try {
-			$this->downloadToFile($url, $archive);
-			if ($md5 !== '' && !hash_equals(strtolower($md5), (string) md5_file($archive))) {
-				throw new \RuntimeException('Checksum mismatch on the downloaded module archive.');
-			}
-
-			$this->extractArchive($archive, $tempBase);
-			$moduleDir = $this->resolveExtractedModuleDir($tempBase);
-
-			$meta    = json_decode((string) @file_get_contents($moduleDir . '/module.json'), true);
-			$gotHash = is_array($meta) ? (string) ($meta['hash_id'] ?? '') : '';
-			if ($expectedHash !== '' && $gotHash !== '' && !hash_equals($expectedHash, $gotHash)) {
-				throw new \RuntimeException('hash_id mismatch — fetched module is not the expected one.');
-			}
-
-			$name     = $this->placeModuleFiles($moduleDir);
-			$manifest = $this->readModuleManifest($name);
-			$ver      = (string) ($manifest['version'] ?? $version);
-
-			$this->storeModuleArchive($archive, $name, $ver);
-			if ((string) ($this->readOverrides()[$name]['installed_version'] ?? '') !== '') {
-				// Files were re-provisioned for an already-installed module (a
-				// stale copy was replaced) — catch the schema up incrementally
-				// instead of re-running the initial install migrations.
-				$this->updateModule($name);
-			} else {
-				$this->installModule($name, $ver);
-			}
-			$this->recordModuleSource($name, 'local');
-			$this->distributeToLoadBalancers($name, $manifest, 'local', $ver);
-		} finally {
-			@unlink($archive);
-			$this->deleteDirectory($tempBase);
-		}
 	}
 
 	/**
@@ -739,7 +654,7 @@ class ModuleManager {
 	 * Scans the modules directory for module.json files, merges with
 	 * config/modules.php overrides, and returns sorted results.
 	 *
-	 * @return array<int, array{name: string, description: string, version: string, requires_core: string, environment: string, priority: int, dependencies: array, optional_dependencies: array, has_navbar: bool, has_settings: bool, enabled: bool, state: ModuleState, path: string, installed_version: string, source: string, previous_version: string, dependency_warnings: string[]}> Module list.
+	 * @return array<int, array{name: string, title: string, hash_id: string, update: array{source: string, repository: string, channel: string, url: string}, description: string, version: string, requires_core: string, environment: string, priority: int, dependencies: array, optional_dependencies: array, has_navbar: bool, has_settings: bool, enabled: bool, state: ModuleState, path: string, installed_version: string, available_version: string, source: string, previous_version: string, dependency_warnings: string[]}> Module list.
 	 */
 	public function listModules(): array {
 		$overrides = $this->readOverrides();
@@ -750,6 +665,7 @@ class ModuleManager {
 		// Pre-resolve each module's state by name so the dependency diagnostics
 		// below can see the full set while building items.
 		$stateByName = [];
+		$titleByName = [];
 		foreach ($jsonFiles as $jsonFile) {
 			$meta    = json_decode((string) @file_get_contents($jsonFile), true) ?: [];
 			// Key by the CANONICAL manifest name, not the `{name}_{hash5}` directory —
@@ -758,34 +674,48 @@ class ModuleManager {
 			$stateByName[$depName] = ModuleState::fromRaw(
 				$overrides[$depName]['state'] ?? ($overrides[$depName]['enabled'] ?? null)
 			);
+			$titleByName[$depName] = self::titleFrom(is_array($meta) ? $meta : [], $depName);
 		}
 
 		foreach ($jsonFiles as $jsonFile) {
-			$meta  = json_decode((string) @file_get_contents($jsonFile), true) ?: [];
+			$meta  = json_decode((string) @file_get_contents($jsonFile), true);
+			$meta  = is_array($meta) ? $meta : [];
 			$name  = (string) ($meta['name'] ?? basename(dirname($jsonFile))); // canonical name
 			$state = $stateByName[$name] ?? ModuleState::fromRaw(null);
 
+			// Names only: a module.json the loader leaves out may hold anything here.
 			$dependencies = ModuleLoader::filterCoreProvidedDependencies(
-				is_array($meta['dependencies'] ?? null) ? $meta['dependencies'] : []
+				is_array($meta['dependencies'] ?? null) ? array_filter($meta['dependencies'], 'is_string') : []
 			);
 
 			// Flag a module that is nominally Enabled but won't actually load:
 			// ModuleLoader skips it when a required dependency is missing or not
 			// loadable (e.g. plex is Enabled but watch is Failed/Disabled). Mirrors
 			// ModuleLoader::pruneUnsatisfiableModules(). A module built for another
-			// core is skipped the same way (ModuleLoader::discoverModules()).
+			// core, or with a module.json the loader cannot use, is skipped the
+			// same way (ModuleLoader::discoverModules()).
 			$dependencyWarnings = self::coreWarnings($meta);
+			$manifestError      = ModuleLoader::manifestError($jsonFile, $name);
+			if ($manifestError !== null) {
+				$dependencyWarnings[] = "Not loaded: it has a module.json that cannot be loaded ({$manifestError}).";
+			}
+			$quarantine = ModuleQuarantine::reason($this->modulesPath, basename(dirname($jsonFile)));
+			if ($quarantine !== null) {
+				$dependencyWarnings[] = "Not loaded: quarantined after a fatal error ({$quarantine}). Replacing its files lifts it.";
+			}
 			foreach ($dependencies as $dep) {
+				$depTitle = $titleByName[$dep] ?? $dep;
 				if (!isset($stateByName[$dep])) {
-					$dependencyWarnings[] = "Required dependency '{$dep}' is missing.";
+					$dependencyWarnings[] = "Required dependency '{$depTitle}' is missing.";
 				} elseif (!$stateByName[$dep]->isLoadable()) {
-					$dependencyWarnings[] = "Required dependency '{$dep}' is not enabled ("
+					$dependencyWarnings[] = "Required dependency '{$depTitle}' is not enabled ("
 						. $stateByName[$dep]->value . ').';
 				}
 			}
 
 			$items[] = [
 				'name'                  => $name,
+				'title'                 => $titleByName[$name] ?? $name,
 				'hash_id'               => (string) ($meta['hash_id'] ?? ''),
 				'update'                => ModuleLoader::normalizeUpdateBlock($meta, $name),
 				'description'           => $meta['description'] ?? '',
@@ -809,10 +739,25 @@ class ModuleManager {
 		}
 
 		usort($items, function ($a, $b) {
-			return strcmp($a['name'], $b['name']);
+			return strcasecmp($a['title'], $b['title']);
 		});
 
 		return $items;
+	}
+
+	/**
+	 * What people call a module: its module.json `title` (the store writes the
+	 * listing's name there), else its `name` — the code identifier that stays
+	 * the key for config/modules.php, the class and dependencies.
+	 */
+	public function titleOf(string $name): string {
+		return self::titleFrom($this->readModuleManifest($name), $name);
+	}
+
+	/** @param array<string, mixed> $meta A module.json. */
+	private static function titleFrom(array $meta, string $name): string {
+		$title = is_string($meta['title'] ?? null) ? trim($meta['title']) : '';
+		return $title !== '' ? $title : $name;
 	}
 
 	/**
@@ -840,7 +785,15 @@ class ModuleManager {
 	/**
 	 * Install a module by name.
 	 *
-	 * Loads the module instance, runs install(), and enables it.
+	 * Loads the module instance, runs install(), and enables it. Over an
+	 * existing install, the deltas between the version its schema is at and
+	 * the new one are applied first, as updateModule() does.
+	 *
+	 * A process that already loaded the module (a web request boots every
+	 * enabled module first) keeps that class: install() and getMigrations()
+	 * are then those of the version loaded. The schema files are always the
+	 * ones on disk. A caller that has just replaced the files therefore goes
+	 * through migrateReplaced().
 	 *
 	 * @param string $name Module name (lowercase, alphanumeric + hyphens).
 	 * @throws \RuntimeException If the module cannot be loaded.
@@ -859,9 +812,20 @@ class ModuleManager {
 		// overwrites it, or updating a disabled module switches it back on.
 		$rRestore = $this->stateAfterInstall($name);
 
+		// Set when this is an install over an existing one (a store update or
+		// rollback, an archive uploaded again): the version the schema is at.
+		$rFrom = self::schemaVersion((array) ($this->readOverrides()[$name] ?? []));
+
 		$this->setState($name, ModuleState::Installing);
 
 		try {
+			// The master schema leaves the tables of an existing install as they
+			// are, so the deltas since that version run first; without them the
+			// new version would be recorded over the old schema.
+			if ($rFrom !== '') {
+				$this->applyUpdateSteps($name, $this->pendingUpdateSteps($name, $module, $rFrom, (string) $targetVersion));
+			}
+
 			$db = $this->getDb() ?? DatabaseFactory::get();
 			// Apply the module's master schema, then its own install() hook for any
 			// non-SQL setup. NB: schema files are DDL (CREATE/ALTER), which
@@ -869,7 +833,9 @@ class ModuleManager {
 			// rollback safety, and its rollback() on error throws "no active
 			// transaction", masking the real SQL error. So run directly and let the
 			// genuine failure propagate to the catch below (and into the logs).
-			if ($db !== null) {
+			// A module without a master installs by replaying its deltas: over an
+			// existing install the ones above are all that is due.
+			if ($db !== null && ($rFrom === '' || is_file($modulePath . '/database.sql'))) {
 				// Fresh install applies the module's master schema (database.sql).
 				ModuleMigrator::install($modulePath, $db, (string) $targetVersion);
 			}
@@ -897,7 +863,14 @@ class ModuleManager {
 		$name = $this->sanitizeModuleName($name);
 		$this->assertNoInstalledDependents($name, 'uninstall');
 
-		$module = $this->loadModuleInstance($name);
+		// A quarantined module's code cannot run (requiring it is the fatal that
+		// quarantined it), so its uninstall() hook is skipped; its schema still
+		// goes, from the plain SQL teardown file.
+		$quarantine = $this->quarantineReason($name);
+		$module     = $quarantine === null ? $this->loadModuleInstance($name) : null;
+		if ($quarantine !== null) {
+			error_log("ModuleManager: uninstalling quarantined module '{$name}' without its uninstall() hook ({$quarantine})");
+		}
 
 		// The module's own uninstall() hook runs first (it clears the data/rows
 		// it created), then the module's schema is torn down via its single
@@ -905,7 +878,7 @@ class ModuleManager {
 		// otherwise leave the module recorded as installed and Enabled with
 		// half-deleted data, so mark it Failed and let the admin see it.
 		try {
-			$module->uninstall();
+			$module?->uninstall();
 			$db = $this->getDb() ?? DatabaseFactory::get();
 			if ($db !== null) {
 				ModuleMigrator::uninstall($this->modulePathFor($name), $db);
@@ -1060,6 +1033,7 @@ class ModuleManager {
 	 * If no version is recorded (legacy install), falls back to full installModule().
 	 * If already at the current version, does nothing.
 	 * Otherwise runs all getMigrations() entries with version > installedVersion
+	 * (or the later version the schema is already at, see schemaVersion())
 	 * and version <= module->getVersion(), in ascending semver order.
 	 *
 	 * @param string $name Module name.
@@ -1081,8 +1055,70 @@ class ModuleManager {
 			return;
 		}
 
-		$this->applyUpdateSteps($name, $this->pendingUpdateSteps($name, $module, $fromVersion, $toVersion));
+		// As installModule(): the state an attempt that failed left (Failed) goes
+		// once the steps have run, and a module switched off stays off. Without
+		// it a module updated at the second attempt stayed Failed, and unloaded.
+		$rRestore = $this->stateAfterInstall($name);
+		$this->applyUpdateSteps($name, $this->pendingUpdateSteps($name, $module, self::schemaVersion($overrides[$name]), $toVersion));
+		$this->writeState($name, $rRestore);
 		$this->recordInstalledVersion($name, $toVersion);
+	}
+
+	/**
+	 * installModule() or updateModule() for a module whose files this process
+	 * has just replaced.
+	 *
+	 * PHP keeps the class it loaded first. A process that had loaded the module
+	 * before (a web request boots every enabled module first) would run the
+	 * install() and getMigrations() of the version it replaced, so the steps
+	 * then run in a console.php process of their own (module:migrate), started
+	 * as this user, which loads the class from the files now on disk. That
+	 * process does not boot the module first (ModuleLoader::stepsRunHere()):
+	 * the steps come before the new version's boot(), as on a first install.
+	 * What it recorded in config/modules.php is read back here. Unless it
+	 * printed STEPS_DONE and ended with status 0, this throws what it printed,
+	 * so the caller puts the previous files back as it does when a step fails
+	 * in this process.
+	 *
+	 * A manager of other directories than the panel's own runs the steps
+	 * itself: console.php would run them on the panel's.
+	 *
+	 * @param string      $name    Module name (already sanitized).
+	 * @param string      $action  'install' or 'update'.
+	 * @param string|null $version install: the version to record, see installModule().
+	 * @throws \RuntimeException When a step fails or the process does not run.
+	 */
+	private function migrateReplaced(string $name, string $action, ?string $version = null): void {
+		$ownPaths = defined('MAIN_HOME') && defined('CONFIG_PATH') && defined('PHP_BIN')
+			&& $this->modulesPath === MAIN_HOME . 'Modules'
+			&& $this->overridesPath === CONFIG_PATH . 'modules.php';
+
+		if (!$ownPaths || !(new ModuleLoader())->isDeclared($name, $this->modulePathFor($name))) {
+			if ($action === 'update') {
+				$this->updateModule($name);
+			} else {
+				$this->installModule($name, $version);
+			}
+			return;
+		}
+
+		// ModuleLoader::stepsRunHere() reads the module's name off this line.
+		$command = [PHP_BIN, MAIN_HOME . 'console.php', 'module:migrate', $action, $name];
+		if ($version !== null) {
+			$command[] = $version;
+		}
+		[$status, $output] = ProcessRunner::capture($command);
+
+		// The other process rewrote config/modules.php: drop the copy OPcache
+		// holds for this one (see writeOverrides()).
+		if (function_exists('opcache_invalidate')) {
+			opcache_invalidate($this->overridesPath, true);
+		}
+
+		$output = trim($output);
+		if ($status !== 0 || !str_contains($output, self::STEPS_DONE)) {
+			throw new \RuntimeException($output !== '' ? $output : "module:migrate {$action} {$name} ended with status {$status}");
+		}
 	}
 
 	/**
@@ -1212,7 +1248,7 @@ class ModuleManager {
 		// platform — reuse the full store flow (self-contained rollback + LB fan-out).
 		if ($source === 'platform') {
 			$apiKey = (string) (SettingsManager::get('platform_api_key') ?? '');
-			$this->downloadFromPlatform(($update['slug'] !== '' ? $update['slug'] : $name), '', $apiKey);
+			$this->downloadFromPlatform($this->storeIdOf($name), '', $apiKey);
 			$this->recordAvailableVersion($name, null);
 			return $this->manifestVersion($name);
 		}
@@ -1262,16 +1298,18 @@ class ModuleManager {
 			$this->assertSameModuleForThisCore($moduleDir, $manifest, $name);
 
 			$targetDir = $this->modulePathFor($name);
+			$rEntry    = $this->readOverrides()[$name] ?? [];
+			$rState    = ModuleState::fromRaw($rEntry['state'] ?? ($rEntry['enabled'] ?? null));
 			$backupDir = $this->backupModuleDir($name, $targetDir);
 			try {
 				$this->copyDirectory($moduleDir, $targetDir);
-				$this->updateModule($name); // incremental migrations to the new manifest version
+				$this->migrateReplaced($name, 'update'); // incremental migrations to the new manifest version
 
 				$fresh          = $this->readModuleManifest($name);
 				$resolvedVer    = (string) ($fresh['version'] ?? $version);
 				$this->recordAvailableVersion($name, null);
 
-				// Keep a local archive so LB nodes can pull it (getFile), then fan out.
+				// Keep a local archive, the artefact LB nodes are granted, then fan out.
 				$this->storeModuleArchive($archive, $name, $resolvedVer);
 				$this->distributeToLoadBalancers($name, $fresh, 'local', $resolvedVer);
 
@@ -1279,9 +1317,21 @@ class ModuleManager {
 					$this->deleteDirectory($backupDir);
 				}
 
+				// A release that renamed the module landed in the old directory and
+				// config entry — both move to the new name (identity was pinned above).
+				$newName = $this->sanitizeModuleName($this->manifestNameFromDir($targetDir));
+				if ($newName !== $name) {
+					$this->renameOverrides($name, $newName);
+					$renamedDir = $this->modulesPath . '/' . $this->moduleDirName($newName, $this->ensureHashId($targetDir));
+					if (!@rename($targetDir, $renamedDir)) {
+						$this->copyDirectory($targetDir, $renamedDir);
+						$this->deleteDirectory($targetDir);
+					}
+				}
+
 				return $resolvedVer;
 			} catch (\Throwable $e) {
-				$this->restoreModuleBackup($name, $targetDir, $backupDir, $installed !== '' ? $installed : null);
+				$this->restoreModuleBackup($name, $targetDir, $backupDir, $installed !== '' ? $installed : null, $rState);
 				throw new \RuntimeException("Update of '{$name}' failed — rolled back: " . $e->getMessage(), 0, $e);
 			}
 		} finally {
@@ -1470,9 +1520,30 @@ class ModuleManager {
 			$this->extractArchive($zipFilePath, $tempBase);
 
 			$moduleDir  = $this->resolveExtractedModuleDir($tempBase);
-			$moduleName = $this->placeModuleFiles($moduleDir);
+			$moduleName = $this->sanitizeModuleName($this->manifestNameFromDir($moduleDir));
 
-			$this->installModule($moduleName);
+			// An archive uploaded over a module already on disk replaces its files.
+			// Once the archive is accepted that copy is set aside, and put back as it
+			// was, version and state, if the new one cannot be placed or installed.
+			$this->assertCoreCompatible($moduleDir, $moduleName);
+			$previous      = $this->readOverrides()[$moduleName] ?? [];
+			$previousState = ModuleState::fromRaw($previous['state'] ?? ($previous['enabled'] ?? null));
+			$previousDir   = $this->modulePathFor($moduleName);
+			$backupDir     = $this->backupModuleDir($moduleName, $previousDir);
+			try {
+				$this->placeModuleFiles($moduleDir);
+				$this->migrateReplaced($moduleName, 'install');
+			} catch (\Throwable $e) {
+				if ($backupDir !== null) {
+					$this->dropRivalModuleDirs($moduleName, $backupDir);
+					$this->restoreModuleBackup($moduleName, $previousDir, $backupDir, $previous['installed_version'] ?? null);
+					$this->writeState($moduleName, $previousState);
+				}
+				throw $e;
+			}
+			if ($backupDir !== null) {
+				$this->deleteDirectory($backupDir);
+			}
 
 			// Keep a copy of the uploaded archive so it can be redistributed to
 			// LB servers (which have no access to the store for custom modules).
@@ -1624,10 +1695,9 @@ class ModuleManager {
 
 	/**
 	 * The install_module payload a load balancer gets. A custom module's
-	 * carries its archive's size and SHA-256, so a node that pulls the
-	 * archive the legacy way (getFile) installs only these bytes.
+	 * archive goes with it as the artefact MAIN grants (ArtefactGrants::forRoot).
 	 *
-	 * @return array{action: string, source: string, name: string, version: string, size?: int, sha256?: string}
+	 * @return array{action: string, source: string, name: string, version: string, store_id?: string}
 	 */
 	public function lbInstallPayload(string $name, string $source, string $version): array {
 		$rPayload = [
@@ -1636,10 +1706,9 @@ class ModuleManager {
 			'name'    => $name,
 			'version' => $version,
 		];
-		$rArchive = $this->archivePathFor($name, $version);
-		if ($rPayload['source'] === 'local' && is_file($rArchive)) {
-			$rPayload['size']   = (int) filesize($rArchive);
-			$rPayload['sha256'] = (string) hash_file('sha256', $rArchive);
+		if ($rPayload['source'] === 'platform') {
+			// The LB pulls from the store, which knows the module by its store id.
+			$rPayload['store_id'] = $this->storeIdOf($name);
 		}
 		return $rPayload;
 	}
@@ -1668,32 +1737,41 @@ class ModuleManager {
 	 * Fires PackageInstalledEvent and hot-reloads the module into the
 	 * current ServiceContainer without requiring a PHP-FPM restart.
 	 *
-	 * @param string      $slug    Module slug as listed on the platform.
+	 * The store knows a module by its store id — the permanent hash_id of its
+	 * module.json (a store slug from an older catalogue is still accepted). The
+	 * panel keys everything else (config/modules.php, the directory, the .lic)
+	 * by the module's NAME from module.json, which may differ from either.
+	 *
+	 * @param string      $storeId hash_id (or legacy store slug) of the module.
 	 * @param string      $version Exact version string (e.g. "1.2.0"), or '' for the latest.
-	 * @param string|null $apiKey  API key for the SaaS platform.
+	 * @param string|null $apiKey  Modules API key; null or '' for a free module.
+	 * @return string Name of the module installed (its module.json `name`).
 	 * @throws \RuntimeException If the C extension is missing, download fails, or install fails.
 	 */
-	public function downloadFromPlatform(string $slug, string $version = '', ?string $apiKey = null): void {
-		$slug = $this->sanitizeModuleName($slug);
-		// Resolve the module's ACTUAL directory (canonical `{name}_{hash5}`, or a
-		// legacy bare one) rather than assuming the bare form: otherwise the backup
-		// below finds nothing and the pulled copy lands beside the existing install
-		// instead of replacing it.
-		$targetDir = $this->modulePathFor($slug);
+	public function downloadFromPlatform(string $storeId, string $version = '', ?string $apiKey = null): string {
+		$storeId = $this->sanitizeModuleName($storeId);
+		// The copy installed here already (null on a first install). Resolve its
+		// ACTUAL directory (canonical `{name}_{hash5}`, or a legacy bare one):
+		// otherwise the backup below finds nothing and the pulled copy lands beside
+		// the existing install instead of replacing it.
+		$prevName  = $this->installedNameFor($storeId);
+		$targetDir = $this->modulePathFor($prevName ?? $storeId);
 
 		// Snapshot current state so a failed (re)install rolls back cleanly. We
 		// MOVE the existing module aside (outside modulesPath so the loader never
 		// scans it) — this both gives a clean dir for the new extract and a
 		// restore point. installed_version is captured for the version record.
-		$prevVersion = $this->readOverrides()[$slug]['installed_version'] ?? null;
-		$backupDir   = $this->backupModuleDir($slug, $targetDir);
+		$rEntry      = $prevName !== null ? ($this->readOverrides()[$prevName] ?? []) : [];
+		$prevVersion = $rEntry['installed_version'] ?? null;
+		$rState      = ModuleState::fromRaw($rEntry['state'] ?? ($rEntry['enabled'] ?? null));
+		$backupDir   = $prevName !== null ? $this->backupModuleDir($prevName, $targetDir) : null;
 
 		try {
-			$result = $this->pullFilesFromPlatform($slug, $version, $apiKey);
+			$result = $this->pullFilesFromPlatform($storeId, $version, $apiKey);
 			// The extension extracts wherever it likes; fold that into the canonical
 			// `{name}_{hash5}` directory and track it as the rollback target below.
-			$this->placeModuleFiles($result['path']);
-			$modulePath      = $this->modulePathFor($slug);
+			$name            = $this->placeModuleFiles($result['path']);
+			$modulePath      = $this->modulePathFor($name);
 			$targetDir       = $modulePath;
 			$resolvedVersion = (string) ($result['version'] ?: $version);
 
@@ -1701,11 +1779,11 @@ class ModuleManager {
 			// platform encoded the module with --with-license, the loader rejects the
 			// encoded files at require-time unless a valid .lic is already present.
 			// No-op when the platform has licensing disabled.
-			$this->acquireModuleLicense($slug, $apiKey);
+			$this->acquireModuleLicense($storeId, $name, $apiKey);
 
 			// Record the version the PLATFORM served (authoritative for store
 			// installs); the module's module.json/getVersion() may lag behind.
-			$this->installModule($slug, $resolvedVersion);
+			$this->migrateReplaced($name, 'install', $resolvedVersion);
 
 			EventDispatcher::dispatch(new PackageInstalledEvent(
 				slug:        $result['module'],
@@ -1714,27 +1792,28 @@ class ModuleManager {
 				installedAt: time(),
 			));
 
-			$this->hotReload($slug, $modulePath);
+			$this->hotReload($name, $modulePath);
 
 			// Mark as store-installed and remember the version the Rollback
 			// button should target. The previous version is authoritative from
 			// the PLATFORM (it holds release history); it may be null when the
 			// platform has no prior approved version. (NB: $prevVersion below is
 			// the LOCAL pre-install version, used only for failure rollback.)
-			$this->recordPlatformSource($slug, $result['previous_version'] ?? null);
+			$this->recordPlatformSource($name, $result['previous_version'] ?? null);
 
 			// If the manifest targets load balancers, tell every LB to pull the
 			// same module from the platform with its own install_id (MAIN-only).
-			$this->distributeToLoadBalancers($slug, $this->readModuleManifest($slug), 'platform', $resolvedVersion);
+			$this->distributeToLoadBalancers($name, $this->readModuleManifest($name), 'platform', $resolvedVersion);
 
 			// Success — drop the rollback snapshot.
 			if ($backupDir !== null) {
 				$this->deleteDirectory($backupDir);
 			}
+			return $name;
 		} catch (\Throwable $e) {
-			$restored = $this->restoreModuleBackup($slug, $targetDir, $backupDir, $prevVersion);
+			$restored = $this->restoreModuleBackup($prevName ?? $storeId, $targetDir, $backupDir, $prevVersion, $rState);
 			throw new \RuntimeException(
-				"Platform install of '{$slug}' failed"
+				"Platform install of '{$storeId}' failed"
 				. ($restored
 					? ' — rolled back to previous version' . ($prevVersion ? " {$prevVersion}" : '')
 					: '')
@@ -1746,6 +1825,34 @@ class ModuleManager {
 	}
 
 	/**
+	 * The store id of an installed module: the hash_id of its module.json, the
+	 * identity the store serves it under. Falls back to the name for a module
+	 * without one (installed from an older store, where the slug was the name).
+	 */
+	private function storeIdOf(string $name): string {
+		$hash = strtolower((string) ($this->readModuleManifest($name)['hash_id'] ?? ''));
+		return preg_match('/^[a-f0-9]{32}$/', $hash) ? $hash : $this->sanitizeModuleName($name);
+	}
+
+	/**
+	 * Name of the installed module the store id names, or null when it is not
+	 * installed here. A hash_id is matched against every module.json; a legacy
+	 * store slug is taken to be the module name, as older stores assumed.
+	 */
+	private function installedNameFor(string $storeId): ?string {
+		if (!preg_match('/^[a-f0-9]{32}$/', $storeId)) {
+			return is_dir($this->modulePathFor($storeId)) ? $storeId : null;
+		}
+		foreach (glob($this->modulesPath . '/*', GLOB_ONLYDIR) ?: [] as $dir) {
+			$meta = json_decode((string) @file_get_contents($dir . '/module.json'), true);
+			if (is_array($meta) && strtolower((string) ($meta['hash_id'] ?? '')) === $storeId) {
+				return $this->sanitizeModuleName($this->manifestNameFromDir($dir));
+			}
+		}
+		return null;
+	}
+
+	/**
 	 * Roll a store-installed module back to its previously installed version.
 	 *
 	 * Uses the `previous_version` recorded at the last store install (still
@@ -1753,30 +1860,30 @@ class ModuleManager {
 	 * exact version, then clears `previous_version` (one-shot rollback). LBs are
 	 * re-synced to the rolled-back version via the normal distribution path.
 	 *
-	 * @param string      $slug   Module slug.
+	 * @param string      $name   Module name.
 	 * @param string|null $apiKey Platform API key.
 	 * @throws \RuntimeException If the module was not installed from the store or
 	 *                          has no recorded previous version.
 	 */
-	public function rollbackFromPlatform(string $slug, ?string $apiKey = null): void {
-		$slug      = $this->sanitizeModuleName($slug);
+	public function rollbackFromPlatform(string $name, ?string $apiKey = null): void {
+		$name      = $this->sanitizeModuleName($name);
 		$overrides = $this->readOverrides();
-		$entry     = $overrides[$slug] ?? [];
+		$entry     = $overrides[$name] ?? [];
 
 		if (($entry['source'] ?? '') !== 'platform') {
-			throw new \RuntimeException("Module '{$slug}' was not installed from the store; cannot roll back.");
+			throw new \RuntimeException("Module '{$name}' was not installed from the store; cannot roll back.");
 		}
 		$previous = $entry['previous_version'] ?? '';
 		if ($previous === '') {
-			throw new \RuntimeException("No previous version recorded for '{$slug}'.");
+			throw new \RuntimeException("No previous version recorded for '{$name}'.");
 		}
 
 		// Re-installs the previous version (explicit, not "latest").
-		$this->downloadFromPlatform($slug, $previous, $apiKey);
+		$this->downloadFromPlatform($this->storeIdOf($name), $previous, $apiKey);
 
 		// One-shot: drop the previous-version marker so the rollback button hides
 		// until the next successful update creates a new restore point.
-		$this->clearPreviousVersion($slug);
+		$this->clearPreviousVersion($name);
 	}
 
 	/** Mark a module as store-installed and (optionally) record the replaced version. */
@@ -1813,9 +1920,11 @@ class ModuleManager {
 	 * entitled, or the loader/extension lacks the needed functions, it silently
 	 * writes nothing — so unlicensed-encoded modules still install normally.
 	 *
+	 * @param string $storeId What the store knows the module by (see storeIdOf()).
+	 * @param string $slug    Installed module name — where the .lic is written.
 	 * @return bool True if a .lic was written.
 	 */
-	private function acquireModuleLicense(string $slug, ?string $apiKey): bool {
+	private function acquireModuleLicense(string $storeId, string $slug, ?string $apiKey): bool {
 		if (!class_exists('XC_VM') || !function_exists('ioncube_server_data')) {
 			return false;
 		}
@@ -1827,7 +1936,7 @@ class ModuleManager {
 		}
 
 		try {
-			$res = \XC_VM::module_license($slug, base64_encode($serverData), $apiKey ?? '');
+			$res = \XC_VM::module_license($storeId, base64_encode($serverData), ($apiKey ?? '') !== '' ? $apiKey : null);
 		} catch (\Throwable $e) {
 			error_log("ModuleManager: license request failed for '{$slug}': " . $e->getMessage());
 			return false;
@@ -1836,7 +1945,7 @@ class ModuleManager {
 		if (!is_array($res) || empty($res['ok'])) {
 			$reason = is_array($res) ? ($res['reason'] ?? 'unknown') : 'no_response';
 			error_log("ModuleManager: license NOT issued for '{$slug}': {$reason}"
-				. (($apiKey ?? '') === '' ? ' (api_key пуст — для лицензии он обязателен)' : ''));
+				. (($apiKey ?? '') === '' ? ' (no Modules API key: a paid module needs one)' : ''));
 			return false;
 		}
 
@@ -1867,8 +1976,9 @@ class ModuleManager {
 	 *
 	 * @return bool True if a fresh .lic was written.
 	 */
-	public function renewModuleLicense(string $slug, ?string $apiKey = null): bool {
-		return $this->acquireModuleLicense($this->sanitizeModuleName($slug), $apiKey);
+	public function renewModuleLicense(string $name, ?string $apiKey = null): bool {
+		$name = $this->sanitizeModuleName($name);
+		return $this->acquireModuleLicense($this->storeIdOf($name), $name, $apiKey);
 	}
 
 	/** Remove the recorded previous version for a module. */
@@ -1910,8 +2020,16 @@ class ModuleManager {
 	 * Restore a module backup created by backupModuleDir() after a failed
 	 * install, re-recording the previous installed version. Returns true if a
 	 * backup was restored.
+	 *
+	 * The files go back, the schema does not: the version the deltas reached
+	 * stays on record (see recordInstalledVersion()), so the next attempt
+	 * resumes after them.
+	 *
+	 * $rState is the state to leave the module in: the one it had before the
+	 * failed install, so a module that was not loaded (switched off, or left
+	 * failed by an earlier attempt) does not start loading.
 	 */
-	private function restoreModuleBackup(string $slug, string $targetDir, ?string $backupDir, ?string $prevVersion): bool {
+	private function restoreModuleBackup(string $slug, string $targetDir, ?string $backupDir, ?string $prevVersion, ModuleState $rState = ModuleState::Enabled): bool {
 		// Remove the (possibly partial) failed install first.
 		$realModules = realpath($this->modulesPath);
 		$realTarget  = realpath($targetDir) ?: $targetDir;
@@ -1931,7 +2049,7 @@ class ModuleManager {
 		if ($prevVersion !== null) {
 			$this->recordInstalledVersion($slug, $prevVersion);
 		}
-		$this->setState($slug, ModuleState::Enabled);
+		$this->writeState($slug, $rState);
 		return true;
 	}
 
@@ -1944,14 +2062,15 @@ class ModuleManager {
 	 * LB so it loads under environment=lb/any. Each LB registers and downloads
 	 * with its OWN install_id.
 	 *
-	 * @param string      $slug    Module slug on the platform.
+	 * @param string      $storeId hash_id (or legacy store slug) of the module.
 	 * @param string      $version Exact version string.
 	 * @param string|null $apiKey  Shared platform API key (from settings).
+	 * @return string Installed module name from its manifest.
 	 */
-	public function deployFromPlatformFilesOnly(string $slug, string $version, ?string $apiKey = null): void {
-		$result = $this->pullFilesFromPlatform($slug, $version, $apiKey);
-		$this->placeModuleFiles($result['path']);
-		$modulePath = $this->modulePathFor($slug);
+	public function deployFromPlatformFilesOnly(string $storeId, string $version, ?string $apiKey = null): string {
+		$result     = $this->pullFilesFromPlatform($storeId, $version, $apiKey);
+		$name       = $this->placeModuleFiles($result['path']);
+		$modulePath = $this->modulePathFor($name);
 
 		EventDispatcher::dispatch(new PackageInstalledEvent(
 			slug:        $result['module'],
@@ -1960,14 +2079,15 @@ class ModuleManager {
 			installedAt: time(),
 		));
 
-		$this->recordInstalledVersion($slug, (string) ($result['version'] ?: $version));
-		$this->setState($slug, ModuleState::Enabled);
-		$this->hotReloadSafe($slug, $modulePath);
+		$this->recordInstalledVersion($name, (string) ($result['version'] ?: $version));
+		$this->setState($name, ModuleState::Enabled);
+		$this->hotReloadSafe($name, $modulePath);
+		return $name;
 	}
 
 	/**
-	 * Register the panel and pull (download + decrypt + extract) a module's
-	 * files from the platform via the C extension. Does NOT run installModule().
+	 * Register the panel (with a key) and pull (download + decrypt + extract) a
+	 * module's files from the platform via the C extension. Does NOT run installModule().
 	 *
 	 * @return array{ok: bool, module: string, version: string, path: string}
 	 * @throws \RuntimeException On a missing extension, registration or download failure.
@@ -1977,23 +2097,34 @@ class ModuleManager {
 			throw new \RuntimeException('XC_VM extension is not loaded. Install xcvm_core.so and enable it in php.ini.');
 		}
 
-		// Ensure this panel is registered with the platform before installing.
-		// module_install() asks the SaaS to wrap the module key in an X25519
-		// SealedBox for *this* panel's public key; if the panel was never
-		// registered the /plugins/key endpoint answers "panel_not_registered"
-		// and the install fails. Registration is an idempotent upsert keyed by
-		// install_id, so running it before every install also guarantees the
-		// server holds the public key matching our current local secret key.
-		$reg = \XC_VM::panel_register($apiKey ?? '');
-		if (!is_array($reg) || empty($reg['ok'])) {
-			$regReason = $reg['message'] ?? ($reg['reason'] ?? 'unknown');
-			throw new \RuntimeException("Panel registration with platform failed for module '{$slug}': {$regReason}");
+		$apiKey = ($apiKey ?? '') !== '' ? $apiKey : null;
+
+		// A paid module's key is wrapped in an X25519 SealedBox for *this* panel's
+		// public key, so the panel registers first (an idempotent upsert keyed by
+		// install_id, which also keeps the server's public key matching our current
+		// secret key). Registration needs the Modules API key; a free module
+		// installs without either.
+		if ($apiKey !== null) {
+			$reg = \XC_VM::panel_register($apiKey);
+			if (!is_array($reg) || empty($reg['ok'])) {
+				$regReason = $reg['message'] ?? ($reg['reason'] ?? ($reg['error'] ?? 'unknown'));
+				if ($regReason === 'panel_moved') {
+					throw new \RuntimeException(self::PANEL_MOVED_MESSAGE);
+				}
+				throw new \RuntimeException("Panel registration with platform failed for module '{$slug}': {$regReason}");
+			}
 		}
 
-		$result = \XC_VM::module_install($slug, $version, $apiKey ?? '');
+		$result = \XC_VM::module_install($slug, $version, $apiKey);
 
 		if (!is_array($result) || empty($result['ok'])) {
-			$reason = $result['error'] ?? 'unknown';
+			$reason = $result['error'] ?? ($result['reason'] ?? 'unknown');
+			if ($reason === 'not_entitled') {
+				throw new \RuntimeException('This module is paid: buy it on xcvm.tech and set the Modules API key (Settings → API).');
+			}
+			if ($reason === 'panel_moved') {
+				throw new \RuntimeException(self::PANEL_MOVED_MESSAGE);
+			}
 			throw new \RuntimeException("Platform download failed for module '{$slug}': {$reason}");
 		}
 
@@ -2061,6 +2192,10 @@ class ModuleManager {
 	/**
 	 * Persist the installed version for a module in config/modules.php.
 	 *
+	 * The recorded version follows the files, and may go back (a rollback, an
+	 * update whose files were restored). The schema does not: when the version
+	 * goes back, the one its deltas reached stays beside it as `schema_version`.
+	 *
 	 * @param string $name    Module name.
 	 * @param string $version Installed version string.
 	 */
@@ -2069,8 +2204,26 @@ class ModuleManager {
 		if (!isset($overrides[$name]) || !is_array($overrides[$name])) {
 			$overrides[$name] = [];
 		}
+		$schema = self::schemaVersion($overrides[$name]);
 		$overrides[$name]['installed_version'] = $version;
+		unset($overrides[$name]['schema_version']);
+		if ($schema !== '' && version_compare($schema, $version, '>')) {
+			$overrides[$name]['schema_version'] = $schema;
+		}
 		$this->writeOverrides($overrides);
+	}
+
+	/**
+	 * The version a module's schema is at: the recorded version, or the later
+	 * one its deltas reached before that went back. Deltas are due from here.
+	 *
+	 * @param array $entry The module's entry in config/modules.php.
+	 * @return string '' when the module is not installed.
+	 */
+	private static function schemaVersion(array $entry): string {
+		$installed = (string) ($entry['installed_version'] ?? '');
+		$schema    = (string) ($entry['schema_version'] ?? '');
+		return version_compare($schema, $installed, '>') ? $schema : $installed;
 	}
 
 	/**
@@ -2083,7 +2236,7 @@ class ModuleManager {
 		if (!isset($overrides[$name]['installed_version'])) {
 			return;
 		}
-		unset($overrides[$name]['installed_version']);
+		unset($overrides[$name]['installed_version'], $overrides[$name]['schema_version']);
 		if (empty($overrides[$name])) {
 			unset($overrides[$name]);
 		}
@@ -2123,6 +2276,40 @@ class ModuleManager {
 	}
 
 	/**
+	 * Look for a newer version of every installed module at its declared source
+	 * and record it (or clear a stale flag). A source that does not answer keeps
+	 * the flag it had: clearing it would hide a real update until the next check.
+	 * ModuleUpdatesCronJob runs it weekly, the modules page on demand.
+	 *
+	 * @return array{found: list<string>, failed: list<string>, checked: int}
+	 *         found: "name (installed -> latest)"; failed: "name: reason"
+	 */
+	public function checkUpdates(?ModuleUpdateChecker $rChecker = null): array {
+		$rChecker ??= new ModuleUpdateChecker();
+		$rResult  = ['found' => [], 'failed' => [], 'checked' => 0];
+
+		foreach ($this->listModules() as $rModule) {
+			$rInstalled = (string) ($rModule['installed_version'] ?? '');
+			if ($rInstalled === '') {
+				continue;
+			}
+			$rResult['checked']++;
+			$rLatest = $rChecker->latestAvailable($rModule);
+
+			if ($rLatest !== null && version_compare($rLatest, $rInstalled, '>')) {
+				$this->recordAvailableVersion($rModule['name'], $rLatest);
+				$rResult['found'][] = $rModule['name'] . ' (' . $rInstalled . ' -> ' . $rLatest . ')';
+			} elseif ($rChecker->lastError() !== null) {
+				$rResult['failed'][] = $rModule['name'] . ': ' . $rChecker->lastError();
+			} else {
+				$this->recordAvailableVersion($rModule['name'], null);
+			}
+		}
+
+		return $rResult;
+	}
+
+	/**
 	 * Load and return a module instance by name.
 	 *
 	 * @param string $name Module name.
@@ -2131,6 +2318,10 @@ class ModuleManager {
 	 */
 	private function loadModuleInstance(string $name) {
 		$name = $this->sanitizeModuleName($name);
+		$quarantine = $this->quarantineReason($name);
+		if ($quarantine !== null) {
+			throw new ModuleException("Module '{$name}' is quarantined after a fatal error, so its code cannot run: {$quarantine}");
+		}
 		$loader = new ModuleLoader();
 		// Resolve the real directory ({name}_{hash5}, or a legacy bare {name}) — the
 		// module rarely lives at the bare path, so passing that would fail to find
@@ -2146,6 +2337,11 @@ class ModuleManager {
 		}
 
 		return $module;
+	}
+
+	/** Why the module's code must not be loaded (ModuleQuarantine), or null. */
+	private function quarantineReason(string $name): ?string {
+		return ModuleQuarantine::reason($this->modulesPath, basename($this->modulePathFor($name)));
 	}
 
 	/**
@@ -2169,12 +2365,72 @@ class ModuleManager {
 	 * @return array<string, array> Module overrides keyed by module name.
 	 */
 	private function readOverrides(): array {
+		return $this->rOverridesRead = $this->loadOverrides();
+	}
+
+	/** What readOverrides() last answered: writeOverrides() puts only what changed since onto the file. */
+	private ?array $rOverridesRead = null;
+
+	/** config/modules.php as it is on disk now. */
+	private function loadOverrides(): array {
 		if (!file_exists($this->overridesPath)) {
 			return [];
 		}
 
+		self::revalidate($this->overridesPath);
 		$data = require $this->overridesPath;
 		return is_array($data) ? $data : [];
+	}
+
+	/**
+	 * $rMine's changes since $rBase, put onto $rTheirs: a module's entry field
+	 * by field, an entry that was removed removed. What $rMine left as it read
+	 * it stays as $rTheirs has it.
+	 *
+	 * @param array<string, mixed> $rBase   The file as this manager read it.
+	 * @param array<string, mixed> $rMine   What it wants written.
+	 * @param array<string, mixed> $rTheirs The file as it is now.
+	 * @return array<string, mixed>
+	 */
+	public static function mergeOverrides(array $rBase, array $rMine, array $rTheirs): array {
+		foreach (array_keys($rBase + $rMine) as $rName) {
+			$rWas = $rBase[$rName] ?? null;
+			$rIs = $rMine[$rName] ?? null;
+			if ($rWas === $rIs) {
+				continue;
+			}
+			if (!is_array($rIs) || !is_array($rTheirs[$rName] ?? null)) {
+				if ($rIs === null) {
+					unset($rTheirs[$rName]);
+				} else {
+					$rTheirs[$rName] = $rIs;
+				}
+				continue;
+			}
+			$rWas = is_array($rWas) ? $rWas : [];
+			foreach (array_keys($rWas + $rIs) as $rField) {
+				if (!array_key_exists($rField, $rIs)) {
+					unset($rTheirs[$rName][$rField]);
+				} elseif (!array_key_exists($rField, $rWas) || $rWas[$rField] !== $rIs[$rField]) {
+					$rTheirs[$rName][$rField] = $rIs[$rField];
+				}
+			}
+		}
+		return $rTheirs;
+	}
+
+	/**
+	 * Drop OPcache's copy of a state file that changed on disk, before a require.
+	 *
+	 * nginx spreads the panel over four PHP-FPM masters, each with an OPcache of
+	 * its own (revalidate_freq 20). writeOverrides() invalidates only the master
+	 * that wrote, so the other three served, and booted, the old module state
+	 * for up to 20 s. Not forced: recompiled only when the mtime changed.
+	 */
+	public static function revalidate(string $rPath): void {
+		if (function_exists('opcache_invalidate')) {
+			opcache_invalidate($rPath);
+		}
 	}
 
 	/**
@@ -2187,6 +2443,31 @@ class ModuleManager {
 	 * @throws \RuntimeException If the file cannot be written or renamed.
 	 */
 	private function writeOverrides(array $overrides): void {
+		// One writer at a time, and each writes what it changed since it read
+		// the file onto the file as it is now. It was written back whole, as it
+		// was read: of two processes changing it at once (a module job, a cron,
+		// `status`, a load balancer's install) the second undid the first's
+		// change. The lock is on this file, read-only: none to create.
+		$rLock = @fopen(__FILE__, 'r');
+		if ($rLock !== false) {
+			flock($rLock, LOCK_EX);
+		}
+		try {
+			if ($this->rOverridesRead !== null) {
+				$overrides = self::mergeOverrides($this->rOverridesRead, $overrides, $this->loadOverrides());
+			}
+			$this->storeOverrides($overrides);
+			$this->rOverridesRead = $overrides;
+		} finally {
+			if ($rLock !== false) {
+				flock($rLock, LOCK_UN);
+				fclose($rLock);
+			}
+		}
+	}
+
+	/** Replace config/modules.php with $overrides (writeOverrides(), under its lock). */
+	private function storeOverrides(array $overrides): void {
 		ksort($overrides);
 
 		$content = "<?php\n\nreturn " . var_export($overrides, true) . ";\n";
@@ -2261,8 +2542,27 @@ class ModuleManager {
 		throw new \RuntimeException('Cannot extract .zip: install the PHP zip extension or the `unzip` command (or upload a .tar.gz).');
 	}
 
-	/** Detect a tar/tar.gz archive by extension, or gzip magic bytes for tmp uploads. */
+	/**
+	 * What kind of archive a file is, by its content: 'zip', 'tar' (plain or
+	 * gzip) or null. The name does not say: an upload has none, and a stored
+	 * archive is named .zip whatever it is (archivePathFor()).
+	 */
+	public static function archiveKind(string $path): ?string {
+		$head = (string) @file_get_contents($path, false, null, 0, 262);
+
+		return match (true) {
+			str_starts_with($head, 'PK') => 'zip',
+			str_starts_with($head, "\x1f\x8b"), substr($head, 257, 5) === 'ustar' => 'tar',
+			default => null,
+		};
+	}
+
+	/** Detect a tar/tar.gz archive by its content (archiveKind()), else by its extension. */
 	private function looksLikeTar(string $path): bool {
+		$kind = self::archiveKind($path);
+		if ($kind !== null) {
+			return $kind === 'tar';
+		}
 		$lower = strtolower($path);
 		if (str_ends_with($lower, '.tar.gz') || str_ends_with($lower, '.tgz') || str_ends_with($lower, '.tar')) {
 			return true;
