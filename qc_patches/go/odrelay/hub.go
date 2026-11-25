@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -22,7 +23,8 @@ type chunk struct {
 	key  bool  // starts with a video keyframe packet
 	pts  int64 // keyframe PTS (90 kHz) or -1
 	psi  []byte
-	slt  bool // offline video loop
+	slt  bool      // offline video loop
+	t    time.Time // arrival
 }
 
 type seg struct {
@@ -60,6 +62,29 @@ type Hub struct {
 	// PSI: last PAT/PMT packets, video PID
 	pat, pmt     []byte
 	pmtPID, vPID int
+	vType        byte // PMT stream type of the video PID
+	inbandPS     bool // keyframes carry SPS/PPS in band: joins wait for one of those
+	resume       map[string]resumePos
+	active       map[string]*viewer // open connection per client key
+	lastKeyPTS   int64              // PTS of the last keyframe pushed
+	dedup        bool               // source reconnected: drop what viewers already got (provider prebuffer)
+	dedupSince   time.Time
+	muxEpoch     time.Time     // HLS mux: wall-clock origin so restarted sessions keep one timeline
+	muxEnd       int64         // HLS mux: last output timestamp (90 kHz)
+	segMin       float64       // HLS segment length (panel seg_time)
+	segList      int           // HLS playlist length (panel seg_list_size)
+	idle         time.Duration // kept after the last viewer (panel on_demand_instant_off_grace)
+	scanT        time.Duration // first valid TS deadline per source (panel on_demand_scan_time)
+	stallT       time.Duration // max gap without valid TS once playing (panel segment_wait_time)
+	segDel       int           // extra segments kept after the playlist (panel seg_delete_threshold)
+	segWait      time.Duration // live: panel segment_wait_time before a silent source is restarted
+	panel        string        // last panel values seen (logged on change)
+	keySeen      bool
+	cl           *http.Client  // per-channel client (XC_VM http_proxy); nil = shared
+	unsup        string        // source format Go can't carry whole (golive hands over to ffmpeg)
+	failSleep    time.Duration // wait after every source failed (panel stream_fail_sleep)
+	failExit     bool          // close a failing hub nobody watches (panel on_demand_failure_exit)
+	noVideo      bool          // PMT without video (radio): every PES start is a join point
 	// HLS segmenter (only once an HLS viewer asked)
 	hls    bool
 	segs   []seg
@@ -73,24 +98,56 @@ type Hub struct {
 type viewer struct {
 	h   *Hub
 	pos int64
+	key string // client (line+IP) for resume on reconnect
+}
+
+// resumePos: where a client left, so a quick reconnect continues instead of replaying the prebuffer.
+type resumePos struct {
+	seq int64
+	t   time.Time
 }
 
 var client = &http.Client{Timeout: 0, Transport: &http.Transport{
-	DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-	TLSHandshakeTimeout:   5 * time.Second,
-	ResponseHeaderTimeout: 5 * time.Second,
-	DisableCompression:    true,
-	MaxIdleConnsPerHost:   4,
+	DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+	TLSHandshakeTimeout: 5 * time.Second,
+	TLSClientConfig:     &tls.Config{ClientSessionCache: tls.NewLRUClientSessionCache(512)}, // resumed TLS: one round trip less
+	DisableCompression:  true,
+	MaxIdleConnsPerHost: 4,
 }}
 
+// goodSrc remembers, per channel, the source that last delivered, so the next open skips refused ones.
+var (
+	goodSrc   = map[string]int{}
+	goodSrcMu sync.Mutex
+)
+
 func newHub(id string, srcs []string, hdr map[string]string) *Hub {
-	h := &Hub{id: id, srcs: srcs, hdr: hdr, lastV: time.Now(), created: time.Now(), lastReal: time.Now(), segSeq: time.Now().Unix()}
+	h := &Hub{id: id, srcs: srcs, hdr: hdr, lastV: time.Now(), created: time.Now(), lastReal: time.Now(), segSeq: time.Now().Unix(), lastKeyPTS: -1, segMin: segMin, segList: segList, idle: idle, scanT: 8 * time.Second, stallT: 15 * time.Second, segDel: 3, failSleep: 3 * time.Second}
+	goodSrcMu.Lock()
+	if i, ok := goodSrc[id]; ok && i < len(srcs) {
+		h.src = i
+	}
+	goodSrcMu.Unlock()
 	h.cond = sync.NewCond(&h.mu)
 	return h
 }
 
-func (h *Hub) leave(_ *viewer) {
+func (h *Hub) leave(v *viewer) {
 	h.mu.Lock()
+	if v != nil && h.active[v.key] == v {
+		delete(h.active, v.key)
+	}
+	if v != nil && v.key != "" && v.pos > 0 {
+		if h.resume == nil {
+			h.resume = map[string]resumePos{}
+		}
+		for k, r := range h.resume {
+			if time.Since(r.t) > time.Minute {
+				delete(h.resume, k)
+			}
+		}
+		h.resume[v.key] = resumePos{v.pos, time.Now()}
+	}
 	h.viewers--
 	h.lastV = time.Now()
 	h.mu.Unlock()
@@ -100,35 +157,79 @@ func (h *Hub) stats() map[string]any {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return map[string]any{"viewers": h.viewers, "ring_bytes": h.size, "up_bytes": h.upBytes, "started": h.started,
-		"age_s": int(time.Since(h.created).Seconds()), "hls": h.hls, "segs": len(h.segs), "src": h.src, "idle_s": int(time.Since(h.lastV).Seconds()), "offline": h.offline}
+		"age_s": int(time.Since(h.created).Seconds()), "hls": h.hls, "segs": len(h.segs), "src": h.src, "idle_s": int(time.Since(h.lastV).Seconds()), "offline": h.offline, "info": h.mediaInfo()}
 }
 
-// startPos: newest keyframe chunk in the ring (fanout-like join), else newest chunk.
-func (h *Hub) startPos() int64 {
+// startPos: newest keyframe chunk at least pb old (XC_VM prebuffer: the player gets pb seconds at once),
+// else the oldest keyframe in the ring, else the newest chunk. pb 0 = live edge.
+func (h *Hub) startPos(pb time.Duration) int64 {
+	edge := time.Now().Add(-pb)
+	oldest := int64(-1)
 	for i := len(h.ring) - 1; i >= 0; i-- {
-		if h.ring[i].key {
+		if !h.ring[i].key {
+			continue
+		}
+		if pb <= 0 || !h.ring[i].t.After(edge) {
 			return h.ring[i].seq
 		}
+		oldest = h.ring[i].seq
+	}
+	if oldest >= 0 {
+		return oldest
 	}
 	return h.ring[len(h.ring)-1].seq
 }
 
 // waitStart waits for the first keyframe and returns PAT+PMT to send before it.
-func (v *viewer) waitStart(ctx context.Context, d time.Duration) ([]byte, bool) {
+func (v *viewer) waitStart(ctx context.Context, d, pb time.Duration) ([]byte, bool) {
 	h := v.h
 	deadline := time.Now().Add(d)
 	stop := context.AfterFunc(ctx, func() { h.mu.Lock(); h.cond.Broadcast(); h.mu.Unlock() })
 	defer stop()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for !h.hasKey() && !h.closed && ctx.Err() == nil && time.Now().Before(deadline) {
+	from := int64(-1) // reconnect within 30 s: next keyframe after what this client already got
+	if r, ok := h.resume[v.key]; ok && v.key != "" && time.Since(r.t) < 30*time.Second && len(h.ring) > 0 && r.seq >= h.ring[0].seq {
+		from = r.seq
+		delete(h.resume, v.key)
+	}
+	if a := h.active[v.key]; v.key != "" && a != nil && a != v && len(h.ring) > 0 && a.pos >= h.ring[0].seq {
+		from = a.pos // same client reconnects while its old connection is still open
+	}
+	if v.key != "" {
+		if h.active == nil {
+			h.active = map[string]*viewer{}
+		}
+		h.active[v.key] = v
+	}
+	for h.keyFrom(from) < 0 && !h.closed && ctx.Err() == nil && time.Now().Before(deadline) {
 		waitTimeout(h, time.Until(deadline))
 	}
 	if len(h.ring) == 0 || h.closed {
 		return nil, false
 	}
-	v.pos = h.startPos()
+	if p := h.keyFrom(from); from >= 0 && p >= 0 {
+		v.pos = p
+	} else {
+		v.pos = h.startPos(pb)
+	}
 	return h.ring[v.pos-h.ring[0].seq].psi, true
+}
+
+// keyFrom: first keyframe chunk with seq >= from (from < 0: any keyframe), -1 if none.
+func (h *Hub) keyFrom(from int64) int64 {
+	if from < 0 {
+		if h.hasKey() {
+			return 0
+		}
+		return -1
+	}
+	for _, c := range h.ring {
+		if c.key && c.seq >= from {
+			return c.seq
+		}
+	}
+	return -1
 }
 
 func (h *Hub) hasKey() bool {
@@ -153,7 +254,7 @@ func (v *viewer) next(ctx context.Context) ([]byte, bool) {
 		if n := len(h.ring); n > 0 {
 			first := h.ring[0].seq
 			if v.pos < first { // lagged past the ring: jump to live keyframe instead of disconnecting
-				v.pos = h.startPos()
+				v.pos = h.startPos(0)
 			}
 			if v.pos <= h.ring[n-1].seq {
 				c := h.ring[v.pos-first]
@@ -192,6 +293,23 @@ func (h *Hub) push(b []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	k, pts := h.scan(b)
+	if h.dedup && time.Since(h.dedupSince) < 20*time.Second {
+		if k < 0 || pts < 0 || h.lastKeyPTS < 0 {
+			return
+		}
+		d := (pts - h.lastKeyPTS) & (1<<33 - 1)
+		if d >= 1<<32 {
+			d -= 1 << 33
+		}
+		if d <= 0 && d > -90000*60 { // same or older picture: already sent to viewers
+			return
+		}
+		b, k = b[k:], 0
+	}
+	h.dedup = false
+	if k >= 0 && pts >= 0 {
+		h.lastKeyPTS = pts
+	}
 	if h.offline && len(h.pat) > 0 { // back from the offline video: real PSI first
 		log.Printf("hub %s source back, offline video off", h.id)
 		h.offline, h.discNext = false, true
@@ -208,13 +326,17 @@ func (h *Hub) push(b []byte) {
 		h.add(b, k == 0, pts)
 	}
 	h.upBytes += int64(len(b))
+	if !h.keySeen && k >= 0 {
+		h.keySeen = true
+		log.Printf("hub %s cold: first keyframe at %dms", h.id, time.Since(h.created).Milliseconds())
+	}
 	h.started = true
 	h.cond.Broadcast()
 }
 
 func (h *Hub) add(b []byte, key bool, pts int64) {
 	h.seq++
-	c := chunk{seq: h.seq, data: b, key: key, pts: pts}
+	c := chunk{seq: h.seq, data: b, key: key, pts: pts, t: time.Now()}
 	if key {
 		c.psi = append(append([]byte{}, h.pat...), h.pmt...)
 	}
@@ -233,7 +355,7 @@ func (h *Hub) add(b []byte, key bool, pts int64) {
 // addSlate stores one offline-video loop as a keyframe chunk (it carries its own PSI) and as its own HLS segment.
 func (h *Hub) addSlate(b []byte) {
 	h.seq++
-	h.ring = append(h.ring, chunk{seq: h.seq, data: b, key: true, pts: -1, slt: true})
+	h.ring = append(h.ring, chunk{seq: h.seq, data: b, key: true, pts: -1, slt: true, t: time.Now()})
 	h.size += len(b)
 	for h.size > ringMax && len(h.ring) > 1 {
 		h.size -= len(h.ring[0].data)
@@ -277,13 +399,13 @@ func (h *Hub) segment(c chunk) {
 		if d < 0 {
 			d = now.Sub(h.curT).Seconds()
 		}
-		min := segMin
+		min := h.segMin
 		if len(h.segs) == 0 {
 			min = 1 // short first segment: HLS opens faster
 		}
 		if c.key && d >= min {
 			h.closeSeg(d)
-		} else if now.Sub(h.curT) > 12*time.Second { // no keyframe seen: cut anyway
+		} else if now.Sub(h.curT) > time.Duration(max(2*h.segMin, 4)*float64(time.Second)) { // no keyframe seen: cut at 2x panel seg_time
 			h.closeSeg(now.Sub(h.curT).Seconds())
 			h.openSeg(c, now)
 		}
@@ -306,7 +428,7 @@ func (h *Hub) closeSeg(d float64) {
 	h.segSeq++
 	h.segs = append(h.segs, seg{seq: h.segSeq, data: h.cur, dur: d, disc: h.discNext && h.anySeg})
 	h.discNext, h.anySeg = false, true
-	if len(h.segs) > segKeep {
+	if len(h.segs) > h.segList+h.segDel {
 		if h.segs[0].disc {
 			h.discDrop++
 		}
@@ -329,7 +451,7 @@ func ptsDur(a, b int64) float64 {
 
 func (h *Hub) playlist() string {
 	n := len(h.segs)
-	from := n - segList
+	from := n - h.segList
 	if from < 0 {
 		from = 0
 	}
@@ -397,11 +519,10 @@ func (h *Hub) scan(b []byte) (int, int64) {
 			}
 		case pid == h.pmtPID && pid != 0 && pusi:
 			h.pmt = append(h.pmt[:0], p...)
-			if v := pmtVideo(p); v > 0 {
-				h.vPID = v
-			}
+			v, t := pmtVideo(p)
+			h.vPID, h.vType, h.noVideo = v, t, v == 0
 		}
-		if key < 0 && (h.vPID == 0 || pid == h.vPID) && p[3]&0x20 != 0 && p[4] > 0 && p[5]&0x40 != 0 {
+		if key < 0 && h.isKey(p, pid, pusi) {
 			key = i
 			if pusi {
 				kpts = pesPTS(p)
@@ -409,6 +530,82 @@ func (h *Hub) scan(b []byte) (int, int64) {
 		}
 	}
 	return key, kpts
+}
+
+// isKey: a video access unit a decoder can start on. H.264/HEVC are read from the NAL units (IDR, with SPS/PPS
+// when the source sends them in band), not from the random-access flag some sources set on non-IDR frames.
+func (h *Hub) isKey(p []byte, pid int, pusi bool) bool {
+	rai := p[3]&0x20 != 0 && p[4] > 0 && p[5]&0x40 != 0
+	if h.noVideo {
+		return pusi && pid != 0 && pid != h.pmtPID && pid != 0x1fff
+	}
+	if h.vPID == 0 {
+		return rai
+	}
+	if pid != h.vPID || !pusi {
+		return false
+	}
+	if h.vType == 0x01 || h.vType == 0x02 { // MPEG-2: sequence header
+		return rai || mpeg2Seq(p)
+	}
+	if h.vType != 0x1b && h.vType != 0x24 {
+		return rai
+	}
+	ps, idr := nalScan(p, h.vType == 0x24)
+	if ps { // parameter sets open the access unit; its IDR slice may be in the next packets
+		h.inbandPS = true
+		return true
+	}
+	return idr && !h.inbandPS
+}
+
+// nalScan reports parameter-set and IDR/IRAP NAL units in the PES start packet of a video access unit.
+func nalScan(p []byte, hevc bool) (ps, idr bool) {
+	off := payOff(p)
+	if off < 0 || off+9 > pkt {
+		return
+	}
+	q := p[off:]
+	if q[0] != 0 || q[1] != 0 || q[2] != 1 {
+		return
+	}
+	es := q[min(9+int(q[8]), len(q)):]
+	for i := 0; i+3 < len(es); i++ {
+		if es[i] != 0 || es[i+1] != 0 || es[i+2] != 1 {
+			continue
+		}
+		if hevc {
+			switch t := (es[i+3] >> 1) & 0x3f; {
+			case t >= 32 && t <= 34:
+				ps = true
+			case t >= 16 && t <= 21:
+				idr = true
+			}
+		} else {
+			switch es[i+3] & 0x1f {
+			case 7, 8:
+				ps = true
+			case 5:
+				idr = true
+			}
+		}
+		i += 2
+	}
+	return
+}
+
+func mpeg2Seq(p []byte) bool {
+	off := payOff(p)
+	if off < 0 {
+		return false
+	}
+	q := p[off:]
+	for i := 0; i+3 < len(q); i++ {
+		if q[i] == 0 && q[i+1] == 0 && q[i+2] == 1 && q[i+3] == 0xb3 {
+			return true
+		}
+	}
+	return false
 }
 
 func payOff(p []byte) int {
@@ -452,20 +649,20 @@ func patPMT(p []byte) int {
 	return 0
 }
 
-func pmtVideo(p []byte) int {
+func pmtVideo(p []byte) (int, byte) {
 	s := section(p)
 	if len(s) < 12 || s[0] != 0x02 {
-		return 0
+		return 0, 0
 	}
 	for i := 12 + (int(s[10]&0x0f)<<8 | int(s[11])); i+5 <= len(s); {
 		st, pid := s[i], int(s[i+1]&0x1f)<<8|int(s[i+2])
 		switch st {
 		case 0x01, 0x02, 0x10, 0x1b, 0x24, 0x42, 0xea:
-			return pid
+			return pid, st
 		}
 		i += 5 + (int(s[i+3]&0x0f)<<8 | int(s[i+4]))
 	}
-	return 0
+	return 0, 0
 }
 
 func pesPTS(p []byte) int64 {
@@ -483,16 +680,21 @@ func pesPTS(p []byte) int64 {
 func (h *Hub) idleExpired() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.viewers == 0 && time.Since(h.lastV) > idle
+	return h.viewers == 0 && time.Since(h.lastV) > h.idle
 }
 
 // tryClose removes the hub atomically with getHub (hubsMu first), so no viewer joins a closing hub.
 func (h *Hub) tryClose(force bool) bool {
+	return h.closeIf(force, func() bool { return h.viewers == 0 && time.Since(h.lastV) > h.idle })
+}
+
+// closeIf closes the hub when ok() holds, checked under the same locks getHub takes: a joining viewer is never cut.
+func (h *Hub) closeIf(force bool, ok func() bool) bool {
 	hubsMu.Lock()
 	defer hubsMu.Unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !force && !(h.viewers == 0 && time.Since(h.lastV) > idle) {
+	if !force && !ok() {
 		return false
 	}
 	h.closed = true
@@ -524,23 +726,37 @@ func (h *Hub) run() {
 		h.mu.Lock()
 		h.src = (h.src + 1) % len(h.srcs)
 		h.mu.Unlock()
-		switch { // source down: keep retrying behind the offline video while someone watches
-		case fails <= 20:
-			time.Sleep(300 * time.Millisecond)
-		case fails <= 60:
-			time.Sleep(time.Second)
-		default:
-			time.Sleep(3 * time.Second)
+		if fails%len(h.srcs) != 0 { // untried backup sources: no wait
+			continue
 		}
+		h.mu.Lock()
+		sleep, exit := h.failSleep, h.failExit
+		h.mu.Unlock()
+		// panel on_demand_failure_exit: stop asking the provider for a dead channel nobody watches (no TS viewer, no recent HLS poll)
+		if exit && h.closeIf(false, func() bool { return h.viewers == 0 && time.Since(h.lastV) > h.failSleep }) {
+			log.Printf("hub %s: every source failed, nobody watching -> closed (on_demand_failure_exit)", h.id)
+			return
+		}
+		time.Sleep(sleep) // panel stream_fail_sleep; offline video meanwhile
 	}
 }
 
 func (h *Hub) pull(src string) int64 {
-	req, _ := http.NewRequest("GET", src, nil)
+	if isHLS(src) {
+		return h.pullHLS(src)
+	}
+	h.mu.Lock()
+	wait := h.scanT
+	h.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", src, nil)
 	for k, v := range h.hdr {
 		req.Header.Set(k, v)
 	}
-	resp, err := client.Do(req)
+	hdrWait := time.AfterFunc(wait, cancel) // provider answer bounded by panel on_demand_scan_time
+	resp, err := h.httpc().Do(req)
+	hdrWait.Stop()
 	if err != nil {
 		if ue, ok := err.(*url.Error); ok {
 			err = ue.Err // never log the source URL (provider credentials)
@@ -557,31 +773,32 @@ func (h *Hub) pull(src string) int64 {
 		}
 		return 0
 	}
+	h.mu.Lock()
+	if !h.started {
+		log.Printf("hub %s cold: source answered in %dms", h.id, time.Since(h.created).Milliseconds())
+	}
+	si, scanT, stallT := h.src, h.scanT, h.stallT
+	if h.started { // reconnect: the provider may resend seconds the viewers already have
+		h.dedup, h.dedupSince = true, time.Now()
+	}
+	h.mu.Unlock()
+	goodSrcMu.Lock()
+	goodSrc[h.id] = si
+	goodSrcMu.Unlock()
 	var total int64
 	buf := make([]byte, 0, 128*pkt)
 	tmp := make([]byte, 32*1024)
-	stall := time.AfterFunc(15*time.Second, func() { resp.Body.Close() })
+	stall := time.AfterFunc(scanT, func() { resp.Body.Close() }) // no valid TS within panel on_demand_scan_time: next source
 	defer stall.Stop()
 	for {
 		n, err := resp.Body.Read(tmp)
 		if n > 0 {
-			stall.Reset(15 * time.Second)
 			buf = append(buf, tmp[:n]...)
-			if len(buf) > 0 && buf[0] != 0x47 {
-				if s := sync47(buf); s >= 0 {
-					buf = buf[s:]
-				} else if len(buf) > 2*pkt {
-					buf = append(buf[:0], buf[len(buf)-2*pkt:]...)
-				}
-			}
-			if buf[0] == 0x47 {
-				if m := len(buf) / pkt * pkt; m >= 16*pkt {
-					out := make([]byte, m)
-					copy(out, buf[:m])
-					buf = append(buf[:0], buf[m:]...)
-					h.push(out)
-					total += int64(m)
-				}
+			var good int
+			buf, good = h.feed(buf)
+			if good > 0 {
+				total += int64(good)
+				stall.Reset(stallT) // panel segment_wait_time; only valid TS keeps the connection: a 200 page or junk is dropped like a dead source
 			}
 		}
 		if err != nil || h.idleExpired() {
@@ -591,6 +808,41 @@ func (h *Hub) pull(src string) int64 {
 			return total
 		}
 	}
+}
+
+// feed pushes every run of packets that each start with the sync byte, resyncs past corrupt ones
+// (like a demuxer), and returns the unconsumed tail and the bytes pushed.
+func (h *Hub) feed(buf []byte) ([]byte, int) {
+	pushed := 0
+	for len(buf) > 0 {
+		if buf[0] != 0x47 {
+			s := sync47(buf)
+			if s < 0 {
+				if len(buf) > 2*pkt {
+					buf = append(buf[:0], buf[len(buf)-2*pkt:]...)
+				}
+				break
+			}
+			buf = buf[s:]
+		}
+		k := 0
+		for (k+1)*pkt <= len(buf) && buf[k*pkt] == 0x47 {
+			k++
+		}
+		bad := k < len(buf)/pkt
+		if k >= 16 || (bad && k >= 3) { // a lone 0x47 in junk is not a packet run
+			out := make([]byte, k*pkt)
+			copy(out, buf)
+			h.push(out)
+			pushed += len(out)
+			buf = buf[k*pkt:]
+		}
+		if !bad {
+			break
+		}
+		buf = buf[1:]
+	}
+	return append([]byte(nil), buf...), pushed
 }
 
 // sync47 returns the offset of the first byte aligned on three consecutive TS sync bytes, -1 if none.

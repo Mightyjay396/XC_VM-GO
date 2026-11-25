@@ -1,5 +1,5 @@
---- a/Domain/Stream/StreamProcess.php
-+++ b/Domain/Stream/StreamProcess.php
+--- /tmp/r274_main/Domain/Stream/StreamProcess.php	2026-11-20 16:29:51.000000000 +0000
++++ files_2.7.4/main/Domain/Stream/StreamProcess.php	2026-11-25 22:30:55.931678573 +0000
 @@ -768,7 +768,7 @@
  		if ($rOnDemand == 1) {
  			$rProbesize = max(0, intval($rProbesizeOndemand)) ?: (max(0, intval($rSettings['probesize_ondemand'] ?? 0)) ?: 1000000);
@@ -28,7 +28,15 @@
  			} else {
  				$rReadNative = '';
  			}
-@@ -1162,7 +1165,7 @@
+@@ -1139,6 +1142,7 @@
+ 			}
+ 
+ 			$rFFMPEG = ((isset($rStream['stream_info']['transcode_attributes']['gpu']) ? $rFFMPEG_GPU : $rFFMPEG_CPU)) . ' -y -nostdin -hide_banner -loglevel ' . (($rSettings['ffmpeg_warnings'] ? 'warning' : 'error')) . ' -err_detect ignore_err -thread_queue_size 1024 ' . $rOptions . ' {GEN_PTS} {READ_NATIVE} ' . $rLLODInputFlags . '-probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' -progress "' . $rProgressFile . '" {CONCAT} -i {STREAM_SOURCE} {LOGO} -max_muxing_queue_size 1024 ';
++			if (in_array((string) intval($rStreamID), preg_split('/\s+/', trim((string) @file_get_contents(MAIN_HOME . 'config/golive_streams.txt'))), true) && is_executable('/opt/odrelay/ffmpeg-golive')) { $rFFMPEG = '/opt/odrelay/ffmpeg-golive --ffmpeg=' . $rFFMPEG; } // QC-GOLIVE: live channel in Go (ffmpeg drop-in, falls back to ffmpeg by itself)
+ 
+ 			self::applyDefaultCopyCodecs($rStream['stream_info']['transcode_attributes']);
+ 
+@@ -1162,7 +1166,7 @@
  			$rFLVOptions = '{MAP} {AAC_FILTER}';
  		}
  
@@ -37,7 +45,7 @@
  		// Fast start: shorten the first segment so players can begin sooner.
  		// Capped at seg_time so a small seg_time never produces a longer first segment.
  		$rInitTime = min(2, intval($rSegmentSettings['seg_time']));
-@@ -1636,7 +1639,7 @@
+@@ -1636,7 +1640,7 @@
  		}
  		$rStreamSource = StreamUtils::parseStreamURL($rSource, (string) (array_column($rStreamArguments, 'value', 'argument_key')['proxy'] ?? ''), (int) (array_column($rStreamArguments, 'value', 'argument_key')['max_height'] ?? 0));
  		$rProtocol = strtolower(substr($rStreamSource, 0, (int) strpos($rStreamSource, '://')));
@@ -46,7 +54,7 @@
  	}
  
  	/**
-@@ -1951,6 +1954,36 @@
+@@ -1951,6 +1955,36 @@
  			}
  			$rFetchOptions = implode(' ', StreamUtils::getArguments($rArguments, $rProtocol, 'fetch'));
  
@@ -83,7 +91,7 @@
  			$rFFMPEG = self::buildLive([
  				// Portable: force dts_legacy_ffmpeg off so buildLive does not swap the
  				// {ffmpeg_cpu} token for MAIN's legacy binary path (FfmpegPaths::legacy)
-@@ -1963,7 +1996,7 @@
+@@ -1963,7 +1997,7 @@
  				'probesize' => $rProbesize, 'analyseDuration' => $rAnalyseDuration,
  				'llod' => $rLLOD, 'loopback' => $rLoopback,
  				'segmentStart' => 0, 'delayActive' => false,
@@ -92,7 +100,7 @@
  				// Portable: the command carries the {ffmpeg_cpu} token, but -nofix_dts
  				// is a property of the ffmpeg version/build (cluster-wide), so decide
  				// it from MAIN's real binary of that version — the same build the
-@@ -1974,7 +2007,8 @@
+@@ -1974,7 +2008,8 @@
  			]);
  
  			$rEntry = ['label' => $rLabels[$i], 'cmd' => $rFFMPEG];
@@ -102,7 +110,7 @@
  				$rNative = [
  					'streamID' => $rStreamID, 'source' => $rStreamSource, 'arguments' => array_column($rArguments, null, 'argument_key'),
  					'segmentSettings' => $rSegmentSettings, 'ingestSock' => $rIngestSock,
-@@ -1989,12 +2023,12 @@
+@@ -1989,12 +2024,12 @@
  				if ($rBackend === 'auto') {
  					$rEntry['fallback_cmd'] = $rFFMPEG;
  				}
@@ -118,7 +126,7 @@
  			}
  			$rSpecSources[] = $rEntry;
  		}
-@@ -2088,6 +2122,33 @@
+@@ -2088,6 +2123,33 @@
  	 * and probing each one on the hand-over path would cost seconds per source,
  	 * so a source with nothing cached gets the minimum buildLive() needs.
  	 */
@@ -152,7 +160,7 @@
  	private static function cachedProbe(string $rSource, string $rStreamSource): array {
  		$rCache = CACHE_TMP_PATH . md5($rSource);
  		if (file_exists($rCache)) {
-@@ -3000,6 +3061,35 @@
+@@ -3000,6 +3062,35 @@
  					$rProbeOptions = implode(' ', StreamUtils::getArguments($rProbeArguments, $rProtocol, 'fetch'));
  					$rFetchOptions = implode(' ', StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'fetch'));
  

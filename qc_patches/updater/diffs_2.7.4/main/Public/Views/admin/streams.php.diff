@@ -1,0 +1,10 @@
+--- /tmp/r274_main/Public/Views/admin/streams.php	2026-11-20 16:30:12.000000000 +0000
++++ files_2.7.4/main/Public/Views/admin/streams.php	2026-11-25 22:31:08.902678516 +0000
+@@ -288,6 +288,7 @@
+         var PRODUCER = {
+             fanout: ['info', 'fanout'],
+             ffmpeg: ['secondary', 'ffmpeg'],
++            go: ['success', 'go'], // QC-GOLIVE-PRODUCER
+             php: ['secondary', 'php'],
+             driver: ['primary', 'module']
+         };

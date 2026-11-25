@@ -695,7 +695,7 @@ class StreamProcess {
 	 * @return string The `-f tee …` output fragment.
 	 */
 	private static function buildHlsTeeOutput($rOptions, $rSegmentSettings, $rKeyFrames, $rInitTime, $rStreamID, string $rIngestSock) {
-		$rHls = '[f=hls:onfail=ignore' // résilience : un paquet fautif (DTS, discontinuité SSAI) ne doit jamais abattre tout l''encodeur (QC)
+		$rHls = '[f=hls:onfail=ignore' // résilience : un paquet fautif (DTS, discontinuité SSAI) ne doit jamais abattre tout l''encodeur (QCIPTV)
 			. ':hls_init_time=' . $rInitTime
 			. ':hls_time=' . intval($rSegmentSettings['seg_time'])
 			. ':hls_list_size=' . intval($rSegmentSettings['seg_list_size'])
@@ -1134,7 +1134,7 @@ class StreamProcess {
 			$container = (isset($rFFProbeOutput) && is_array($rFFProbeOutput)) ? ($rFFProbeOutput['container'] ?? null) : null;
 			if (empty($rStream['server_info']['parent_id']) && (($rStream['stream_info']['read_native'] == 1) || ($container && stristr($container, 'hls') && $rSettings['read_native_hls']) || empty($rProtocol) || ($container && stristr($container, 'mp4')) || ($container && stristr($container, 'matroska')))) {
 				$rReadNative = '-re';
-				if (@is_file('/etc/qc_nore_ids') && in_array((string) $rStreamID, preg_split('/\s+/', trim(@file_get_contents('/etc/qc_nore_ids')), -1, PREG_SPLIT_NO_EMPTY), true)) { $rReadNative = ''; } // QC-NORE-IDS : test sans -re
+				if (@is_file('/etc/qc_nore_ids') && in_array((string) $rStreamID, preg_split('/\s+/', trim(@file_get_contents('/etc/qc_nore_ids')), -1, PREG_SPLIT_NO_EMPTY), true)) { $rReadNative = ''; } // QC-NORE-IDS : test sans -re (TVA/Akamai)
 				if (!preg_match('#/ffmpeg_bin/[47]\.#', (string) $rFFMPEG_CPU) && strpos((string) $rFetchOptions, 'readrate_catchup') === false) { // QC-HLS-CATCHUP QC-CATCHUP-BIN
 					$rReadNative .= ' -readrate_catchup 1.5';
 				}
@@ -1157,6 +1157,7 @@ class StreamProcess {
 
 			$rFFMPEG = ((isset($rStream['stream_info']['transcode_attributes']['gpu']) ? $rFFMPEG_GPU : $rFFMPEG_CPU)) . ' -y -nostdin -hide_banner -loglevel ' . (($rSettings['ffmpeg_warnings'] ? 'warning' : 'error')) . ' -err_detect ignore_err -thread_queue_size 1024 ' . $rOptions . ' {GEN_PTS} {READ_NATIVE} ' . $rLLODInputFlags . '-probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' -progress "' . $rProgressFile . '" {CONCAT} -i {STREAM_SOURCE} {LOGO} -max_muxing_queue_size 1024 ';
 			if (preg_match('#/ffmpeg_bin/8\.#', (string) ($data['ffmpegReal'] ?? $rFFMPEG_CPU))) { $rFFMPEG = preg_replace('# -loglevel (error|warning) #', ' -loglevel datetime+$1 ', $rFFMPEG, 1); } // QC-ERRLOG-TIME : erreurs ffmpeg horodatées dans <id>.errors
+			if (in_array((string) intval($rStreamID), preg_split('/\s+/', trim((string) @file_get_contents(MAIN_HOME . 'config/golive_streams.txt'))), true) && is_executable('/opt/odrelay/ffmpeg-golive')) { $rFFMPEG = '/opt/odrelay/ffmpeg-golive --ffmpeg=' . $rFFMPEG; } // QC-GOLIVE: live channel in Go (ffmpeg drop-in, falls back to ffmpeg by itself)
 
 			self::applyDefaultCopyCodecs($rStream['stream_info']['transcode_attributes']);
 
@@ -1268,7 +1269,7 @@ class StreamProcess {
 
 		// QC-CKTS : ClearKey DASH -> moteur ckts (MPEG-TS continu) pour les ids de /etc/qc_ckts_ids ; sinon DASH inchangé
 		if (empty($rStream['stream_info']['custom_ffmpeg']) && preg_match('#^http://127\.0\.0\.1:\d+/mpd\?#', (string) $rStreamSource)
-			&& array_intersect(['*', (string) intval($rStreamID)], preg_split('/\s+/', trim((string) @file_get_contents('/etc/qc_ckts_ids'))))
+			&& in_array((string) intval($rStreamID), preg_split('/\s+/', trim((string) @file_get_contents('/etc/qc_ckts_ids'))), true)
 			&& preg_match('/-cenc_decryption_keys\s+(\S+)/', (string) $rFetchOptions, $rCkK)
 			&& preg_match_all('/-map\s+0:(\d+)/', (string) $rMap, $rCkM) && count($rCkM[1]) == 2
 			&& @file_get_contents('http://127.0.0.1:' . (in_array(intval($rStreamID), array_map('intval', @file('/etc/qc_ckts_canary', FILE_IGNORE_NEW_LINES) ?: []), true) ? 8161 : 8160) . '/ok?id=' . intval($rStreamID), false, stream_context_create(['http' => ['timeout' => 2]])) === 'ok') {
@@ -1723,7 +1724,7 @@ class StreamProcess {
 		$rSegTime = max(1, intval($rSettings['seg_time'] ?? 10));
 		$rStallSec = $rSegTime * 6; // the monitor's "playlist unchanged for seg_time × 6"
 		if (stripos((string) ($rStreamInfo['stream_source'] ?? ''), '.mpd') !== false) {
-			$rStallSec = max($rStallSec, 150); // DASH via mpdproxy : CDN lent ou pause pub SSAI ne doit pas tuer la chaîne (QC)
+			$rStallSec = max($rStallSec, 150); // DASH via mpdproxy : CDN lent ou pause pub SSAI (Prime) ne doit pas tuer la chaîne (QCIPTV)
 		}
 		$rHealth = [
 			'stall_sec'      => $rStallSec,
@@ -1942,7 +1943,7 @@ class StreamProcess {
 			}
 			$rFetchOptions = implode(' ', StreamUtils::getArguments($rArguments, $rProtocol, 'fetch'));
 
-			// QC ClearKey (chemin supervisé par le fanout) : clé dans l'URL → options avant -i + build « -dash » pour cette source
+			// QCIPTV ClearKey (chemin supervisé par le fanout) : clé dans l'URL → options avant -i + build « -dash » pour cette source
 			$rDrmOptions = StreamUtils::drmOptions($rStreamSource);
 			$rEntryFfmpegCpu = $rFFMPEGCpu;
 			$rEntryFfmpegGpu = $rFFMPEGGpu;
@@ -1997,7 +1998,7 @@ class StreamProcess {
 			]);
 
 			$rEntry = ['label' => $rLabels[$i], 'cmd' => $rFFMPEG];
-			// QC ClearKey : le remuxeur Go ne déchiffre pas → toujours ffmpeg (build -dash) pour une source avec clé
+			// QCIPTV ClearKey : le remuxeur Go ne déchiffre pas → toujours ffmpeg (build -dash) pour une source avec clé
 			if ($rNativeStream && $rDrmOptions === '' && self::isNativeSource($rStreamSource)) {
 				$rNative = [
 					'streamID' => $rStreamID, 'source' => $rStreamSource, 'arguments' => array_column($rArguments, null, 'argument_key'),
@@ -2121,7 +2122,7 @@ class StreamProcess {
 		return str_replace('-bsf:v setts=time_base=1/90000 -bsf:a setts=time_base=1/90000', '-bsf:v ' . $rS(3000) . ' -bsf:a ' . $rS(1920), $rMap);
 	}
 
-	/** QC ClearKey : -map par défaut d'une source DASH multi-représentations = meilleure vidéo + toutes les pistes audio (sonde ffprobe, cache 6 h). */
+	/** QCIPTV ClearKey : -map par défaut d'une source DASH multi-représentations = meilleure vidéo + toutes les pistes audio (sonde ffprobe, cache 6 h). */
 	private static function drmDefaultMap(string $rStreamSource, string $rDrmOptions, string $rProbeBin): string {
 		$rCache = CACHE_TMP_PATH . md5($rStreamSource) . '_drmmap2';
 		if (file_exists($rCache) && filemtime($rCache) > time() - 21600) {
@@ -2166,7 +2167,7 @@ class StreamProcess {
 			$rMap = '-map 0:v:0 -map 0:a';
 		}
 		// DASH : tbn 10 MHz côté tee ; le +1 anti « Non-monotonic DTS » de fftools disparaît au rescale 90 kHz des esclaves hls/mpegts
-		// → « non monotonically increasing dts » → tee abort → exit 234. Sortie forcée en 1/90000 (QC).
+		// → « non monotonically increasing dts » → tee abort → exit 234. Sortie forcée en 1/90000 (QCIPTV).
 		$rMap .= ' -bsf:v setts=time_base=1/90000 -bsf:a setts=time_base=1/90000';
 		if ($rJSON && $rVideos > 0) { // ne pas mettre en cache une sonde tronquée (timeout)
 			@file_put_contents($rCache, $rMap);
@@ -3091,7 +3092,7 @@ class StreamProcess {
 						$rFetchOptions = trim($rFetchOptions . ' -extension_picky 0');
 					}
 
-					// QC ClearKey : clé dans l'URL → options de déchiffrement avant -i et build ffmpeg « -dash » (démuxeur DASH)
+					// QCIPTV ClearKey : clé dans l'URL → options de déchiffrement avant -i et build ffmpeg « -dash » (démuxeur DASH)
 					$rDrmOptions = StreamUtils::drmOptions($rStreamSource);
 					if ($rDrmOptions !== '') {
 						$rStaticSource = StreamUtils::dashStaticSource($rStreamSource, (string) ($rArgsByKey['proxy']['value'] ?? ''));

@@ -1,0 +1,5209 @@
+<?php
+
+namespace XcVm\Public\Controllers\Admin;
+
+use XcVm\Core\Auth\ApiTokens;
+use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Auth\AuthRepository;
+use XcVm\Core\Auth\SessionManager;
+use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Enum\ClientFilter;
+use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Module\TableRegistry;
+use XcVm\Core\Reference\StatusBadge;
+use XcVm\Core\Util\NetworkUtils;
+use XcVm\Domain\Device\EnigmaService;
+use XcVm\Domain\Device\MagService;
+use XcVm\Domain\Epg\EpgService;
+use XcVm\Domain\Line\ActiveCodeService;
+use XcVm\Domain\Line\PackageService;
+use XcVm\Domain\Server\ServerRepository;
+use XcVm\Domain\Stream\CategoryService;
+use XcVm\Domain\Stream\ConnectionTracker;
+use XcVm\Domain\User\ResellerAPI;
+use XcVm\Domain\User\UserCredits;
+use XcVm\Domain\User\UserRepository;
+use XcVm\Domain\User\UserService;
+use XcVm\Infrastructure\Bootstrap\WebApiBootstrap;
+use XcVm\Infrastructure\Redis\RedisManager;
+use XcVm\Streaming\Fanout\FanoutMode;
+
+/**
+ * TableController — DataTables JSON endpoint for admin panel.
+ *
+ * Procedural legacy body is temporarily hosted here during migration.
+ *
+ * @package XC_VM_Public_Controllers_Admin
+ */
+class TableController extends BaseAdminController {
+	public function index() {
+		// При вызове через Front Controller bootstrap уже выполнен
+		if (!defined('MAIN_HOME')) {
+			session_start();
+			session_write_close();
+			define('MAIN_HOME', dirname(__DIR__, 3) . '/');
+			require_once MAIN_HOME . 'vendor/autoload.php';
+			WebApiBootstrap::init('admin');
+		} else {
+			session_write_close();
+		}
+
+		global $db, $rPermissions, $rUserInfo, $rSettings;
+
+		if (!PHP_ERRORS) {
+			if (empty($_SERVER['HTTP_X_REQUESTED_WITH']) || strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) != 'xmlhttprequest') {
+				exit();
+			}
+		}
+
+		$rReturn = ["draw" => (int) RequestManager::get("draw"), "recordsTotal" => 0, "recordsFiltered" => 0, "data" => []];
+		$rIsAPI = false;
+		if (RequestManager::has("api_key")) {
+			$rReturn = ["status" => "STATUS_SUCCESS", "data" => []];
+			// A token (whose scope must cover reading this table) or a legacy key.
+			$rKeyUser = ApiTokens::userFor((string) RequestManager::get("api_key"), (string) NetworkUtils::getUserIP(), 'admin');
+			if ($rKeyUser === null || !ApiTokens::allows('get_' . RequestManager::get("id"))) {
+				echo json_encode(["status" => "STATUS_FAILURE", "error" => "Invalid API key."]);
+				exit;
+			}
+			$rIsAPI = true;
+			$this->hydrateApiUser($rKeyUser);
+		} elseif ($_SERVER["REMOTE_ADDR"] == "127.0.0.1" && RequestManager::has("api_user_id")) {
+			$rIsAPI = true;
+			$this->hydrateApiUser((int) RequestManager::get("api_user_id"));
+		} elseif (isset($_SESSION["hash"])) {
+			// Session path: same hydration as the API branches, then validate the
+			// session's integrity. Unlike the HTML bootstrap this returns JSON on
+			// failure (no cookies / redirects / setup query — this is a data endpoint).
+			$this->hydrateApiUser((int) $_SESSION["hash"]);
+			if (!SessionManager::adminSessionValid($rUserInfo, $rPermissions, $rSettings)) {
+				SessionManager::clearContext("admin");
+				echo json_encode($rReturn);
+				exit;
+			}
+		} else {
+			echo json_encode($rReturn);
+			exit;
+		}
+
+		$rType = RequestManager::get("id");
+
+		$rStart = (int) RequestManager::get("start");
+		$rLimit = (int) RequestManager::get("length");
+		if ((1000 < $rLimit || $rLimit <= 0) && !$rIsAPI) {
+			$rLimit = 1000;
+		}
+		if (SettingsManager::getAll()["redis_handler"]) {
+			RedisManager::ensureConnected();
+		}
+
+		switch ($rType) {
+			case "lines":
+				$this->handleLines($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "active_codes":
+				$this->handleActiveCodes($rReturn, $rStart, $rLimit);
+				return;
+			case "mags":
+				$this->handleMags($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "enigmas":
+				$this->handleEnigmas($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "streams":
+				$this->handleStreams($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "radios":
+				$this->handleRadios($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "movies":
+				$this->handleMovies($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "episode_list":
+				$this->handleEpisodeList($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "line_activity":
+				$this->handleLineActivity($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "live_connections":
+				$this->handleLiveConnections($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "stream_list":
+				$this->handleStreamList($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "movie_list":
+				$this->handleMovieList($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "radio_list":
+				$this->handleRadioList($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "series_list":
+				$this->handleSeriesList($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "credits_log":
+				$this->handleCreditsLog($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "client_logs":
+				$this->handleClientLogs($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "reg_user_logs":
+				$this->handleRegUserLogs($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "stream_errors":
+				$this->handleStreamErrors($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "stream_unique":
+				$this->handleStreamUnique($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "reg_users":
+				$this->handleRegUsers($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "asns":
+				$this->handleAsns($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "series":
+				$this->handleSeries($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "episodes":
+				$this->handleEpisodes($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "backups":
+				$this->handleBackups($rReturn);
+				return;
+			case "mysql_syslog":
+				$this->handleMysqlSyslog($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "panel_logs":
+				$this->handlePanelLogs($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "login_logs":
+				$this->handleLoginLogs($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "admin_actions":
+				$this->handleAdminActions($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "queue":
+				$this->handleQueue($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "restream_logs":
+				$this->handleRestreamLogs($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "mag_events":
+				$this->handleMagEvents($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "bouquets_streams":
+				$this->handleBouquetsStreams($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "bouquets_vod":
+				$this->handleBouquetsVod($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "bouquets_series":
+				$this->handleBouquetsSeries($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "bouquets_radios":
+				$this->handleBouquetsRadios($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "streams_short":
+				$this->handleStreamsShort($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "movies_short":
+				$this->handleMoviesShort($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "radios_short":
+				$this->handleRadiosShort($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "series_short":
+				$this->handleSeriesShort($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "vod_selection":
+				$this->handleVodSelection($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "provider_streams":
+				$this->handleProviderStreams($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "parent_servers":
+				$this->handleParentServers($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "failures_modal":
+				$this->handleFailuresModal($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "epg_modal":
+				$this->handleEpgModal($rReturn, $rLimit, $rIsAPI);
+				return;
+			case "stream_logs":
+				$this->handleStreamLogs($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			case "ondemand":
+				$this->handleOndemand($rReturn, $rStart, $rLimit, $rIsAPI);
+				return;
+			default:
+				if (TableRegistry::has((string) $rType)) {
+					$rHandler = TableRegistry::get((string) $rType);
+					$rReturn = $rHandler($rReturn, $rStart, $rLimit, $rIsAPI);
+					echo json_encode($rReturn);
+				}
+				return;
+		}
+	}
+
+	/**
+	 * Boot the admin framework and resolve the acting user's permissions into the
+	 * view-facing globals ($rUserInfo, $rPermissions). Shared by the api_key,
+	 * api_user_id and session branches of index() (replaces the former
+	 * `include "functions.php"` on the session path).
+	 */
+	private function hydrateApiUser(int $rUserID): void {
+		global $rUserInfo, $rPermissions;
+
+		require_once MAIN_HOME . "bootstrap.php";
+		\XC_Bootstrap::boot(\XC_Bootstrap::CONTEXT_ADMIN);
+		$rUserInfo = UserRepository::getRegisteredUserById($rUserID);
+		$rPermissions = AuthRepository::getPermissions($rUserInfo["member_group_id"]);
+		// A group that stores no list lists no permissions (Authorization::check).
+		$rPermissions["advanced"] = json_decode((string) $rPermissions["allowed_pages"], true) ?: [];
+		if ((string) $rUserInfo["timezone"] !== '') {
+			date_default_timezone_set($rUserInfo["timezone"]);
+		}
+	}
+
+	private function handleActiveCodes($rReturn, $rStart, $rLimit) {
+		global $db;
+		if (!Authorization::check("adv", "users") && !Authorization::check("adv", "mass_edit_lines")) {
+			exit;
+		}
+
+		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
+		$rOrder = [
+			false, // control
+			false, // checkbox
+			'`activation_codes`.`activation_code`',
+			'`activation_codes`.`batch_name`',
+			'`activation_codes`.`package_id`',
+			'`users`.`username`',
+			'`activation_codes`.`status`',
+			'`lines`.`exp_date`',
+			'`lines`.`username`',
+			'`activation_codes`.`mac`',
+			'`activation_codes`.`created_at`',
+			false // actions
+		];
+
+		$rOrderRow = (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '')
+			? (int) (RequestManager::get("order")[0]["column"])
+			: 10;
+
+		$rOrderBy = (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow] !== false)
+			? "ORDER BY {$rOrder[$rOrderRow]} {$rOrderDirection}"
+			: "ORDER BY `activation_codes`.`created_at` DESC";
+
+		$rWhere = [];
+		$rWhereV = [];
+
+		// Reseller filter
+		$resellerFilter = (int) (RequestManager::get("reseller") ?? 0);
+		if ($resellerFilter > 0) {
+			$rWhere[] = "`activation_codes`.`created_by` = ?";
+			$rWhereV[] = $resellerFilter;
+		}
+
+		// Status filter: 1=Ready/Stock, 2=Active, 3=Expired, 4=Disabled
+		$filter = RequestManager::get("filter");
+		if ((string) $filter !== '' && $filter != 0) {
+			if ($filter == 1) {
+				$rWhere[] = "`activation_codes`.`status` = 1";
+			} elseif ($filter == 2) {
+				$rWhere[] = "`activation_codes`.`status` = 2 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP())";
+			} elseif ($filter == 3) {
+				$rWhere[] = "`activation_codes`.`status` = 2 AND `lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` <= UNIX_TIMESTAMP()";
+			} elseif ($filter == 4) {
+				$rWhere[] = "`activation_codes`.`status` = 0";
+			}
+		}
+
+		// Batch filter
+		$batchFilter = trim((string) RequestManager::get("batch"));
+		if ($batchFilter !== '') {
+			$rWhere[] = "`activation_codes`.`batch_name` = ?";
+			$rWhereV[] = $batchFilter;
+		}
+
+		// Package filter
+		$packageFilter = (int) (RequestManager::get("package") ?? 0);
+		if ($packageFilter > 0) {
+			$rWhere[] = "`activation_codes`.`package_id` = ?";
+			$rWhereV[] = $packageFilter;
+		}
+
+		// Search
+		$searchVal = trim(RequestManager::get("search")["value"] ?? '');
+		if ($searchVal !== '') {
+			$searchParam = "%{$searchVal}%";
+			$rWhere[] = "(`activation_codes`.`activation_code` LIKE ? OR `activation_codes`.`batch_name` LIKE ? OR `lines`.`username` LIKE ? OR `users`.`username` LIKE ? OR `activation_codes`.`mac` LIKE ?)";
+			$rWhereV[] = $searchParam;
+			$rWhereV[] = $searchParam;
+			$rWhereV[] = $searchParam;
+			$rWhereV[] = $searchParam;
+			$rWhereV[] = $searchParam;
+		}
+
+		$whereClause = $rWhere !== [] ? ("WHERE " . implode(" AND ", $rWhere)) : "";
+
+		$countSql = "SELECT COUNT(*) as `total` FROM `activation_codes` LEFT JOIN `lines` ON `lines`.`id` = `activation_codes`.`subscriber_id` LEFT JOIN `users` ON `users`.`id` = `activation_codes`.`created_by` {$whereClause};";
+		$db->query($countSql, ...$rWhereV);
+		$rReturn["recordsTotal"] = $rReturn["recordsFiltered"] = (int) ($db->get_row()["total"] ?? 0);
+
+		$sql = "SELECT
+					`activation_codes`.*,
+					`lines`.`username` as `sub_username`,
+					`lines`.`exp_date` as `sub_exp_date`,
+					`lines`.`enabled` as `line_enabled`,
+					`users`.`username` as `creator_username`
+				FROM `activation_codes`
+				LEFT JOIN `lines` ON `lines`.`id` = `activation_codes`.`subscriber_id`
+				LEFT JOIN `users` ON `users`.`id` = `activation_codes`.`created_by`
+				{$whereClause}
+				{$rOrderBy}
+				LIMIT {$rStart}, {$rLimit};";
+
+		$db->query($sql, ...$rWhereV);
+		$rows = $db->get_rows() ?: [];
+
+		$data = [];
+		$packagesCache = [];
+		$now = time();
+
+		foreach ($rows as $row) {
+			$pkgId = (int) $row["package_id"];
+			if (!isset($packagesCache[$pkgId])) {
+				$pkg = PackageService::getById($pkgId);
+				$packagesCache[$pkgId] = $pkg["package_name"] ?? "Package #" . $pkgId;
+			}
+
+			$status = (int) $row["status"];
+			$expUnix = $row["sub_exp_date"] ? (int) $row["sub_exp_date"] : 0;
+			$expExpired = ($status === 2 && $expUnix && $expUnix < $now);
+			$createdUnix = $row["created_at"] ? (int) $row["created_at"] : 0;
+
+			// Clean, keyed row payload; the Bootstrap 5 view renders every badge /
+			// status / action button client-side. The subscriber password is
+			// intentionally NOT exposed here.
+			$data[] = [
+				"id" => (int) $row["id"],
+				"code" => (string) $row["activation_code"],
+				"batch" => (string) ($row["batch_name"] ?: "None"),
+				"package_name" => $packagesCache[$pkgId],
+				"is_trial" => !empty($row["is_trial"]),
+				"creator" => (string) ($row["creator_username"] ?: "Admin"),
+				"status" => $status,
+				"exp_unix" => $expUnix,
+				"exp_str" => $expUnix ? date("Y-m-d H:i", $expUnix) : "",
+				"exp_expired" => $expExpired,
+				"remaining_days" => ($expUnix && !$expExpired && $status !== 0 && $status !== 1) ? (int) ceil(($expUnix - $now) / 86400) : 0,
+				"sub_username" => $row["sub_username"] !== null ? (string) $row["sub_username"] : null,
+				"mac" => !empty($row["mac"]) ? (string) $row["mac"] : null,
+				"created_str" => $createdUnix ? date("Y-m-d H:i", $createdUnix) : "-",
+			];
+		}
+
+		$rReturn["data"] = $data;
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleLines($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings;
+		if (!Authorization::check("adv", "users") && !Authorization::check("adv", "mass_edit_lines")) {
+			exit;
+		}
+		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
+		// Leading false, false = Responsive control + bulk-select checkbox columns (Bootstrap 5).
+		$rOrder = [false, false, "`lines`.`id`", "`lines`.`username`", "`lines`.`password`", "`lines`.`member_id`", "`lines`.`enabled` - `lines`.`admin_enabled`", "`active_connections` > 0", "`lines`.`is_trial`", "`lines`.`is_restreamer`", "`active_connections`", "`lines`.`max_connections`", "`lines`.`exp_date`", "`active_connections` " . $rOrderDirection . ", `last_activity`", false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "(`is_mag` + `is_e2`) = 0";
+		$rWhere[] = ActiveCodeService::LISTED_LINES;
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 6) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`lines`.`username` LIKE ? OR `lines`.`password` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`max_connections` LIKE ? OR `lines`.`reseller_notes` LIKE ? OR `lines`.`admin_notes` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (RequestManager::get("filter") == 1) {
+				$rWhere[] = "(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))";
+			} elseif (RequestManager::get("filter") == 2) {
+				$rWhere[] = "`lines`.`enabled` = 0";
+			} elseif (RequestManager::get("filter") == 3) {
+				$rWhere[] = "`lines`.`admin_enabled` = 0";
+			} elseif (RequestManager::get("filter") == 4) {
+				$rWhere[] = "(`lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` <= UNIX_TIMESTAMP())";
+			} elseif (RequestManager::get("filter") == 5) {
+				$rWhere[] = "`lines`.`is_trial` = 1";
+			} elseif (RequestManager::get("filter") == 6) {
+				$rWhere[] = "`lines`.`is_restreamer` = 1";
+			} elseif (RequestManager::get("filter") == 7) {
+				$rWhere[] = "`lines`.`is_stalker` = 1";
+			} elseif (RequestManager::get("filter") == 8) {
+				$rWhere[] = "(`lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` > UNIX_TIMESTAMP() AND `lines`.`exp_date` <= (UNIX_TIMESTAMP() + (86400*14)))";
+			}
+		}
+		if ((string) (RequestManager::get("reseller") ?? '') !== '') {
+			$rWhere[] = "`lines`.`member_id` = ?";
+			$rWhereV[] = RequestManager::get("reseller");
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(`id`) AS `count` FROM `lines` " . $rWhereString . ";";
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `lines`.`id`, `lines`.`member_id`, `lines`.`last_activity`, `lines`.`last_activity_array`, `lines`.`username`, `lines`.`password`, `lines`.`exp_date`, `lines`.`admin_enabled`, `lines`.`is_restreamer`, `lines`.`enabled`, `lines`.`admin_notes`, `lines`.`reseller_notes`, `lines`.`max_connections`, `lines`.`is_trial`, `lines`.`contact`, (SELECT COUNT(*) AS `active_connections` FROM `lines_live` WHERE `user_id` = `lines`.`id` AND `hls_end` = 0) AS `active_connections` FROM `lines` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+
+				$rActivityIDs = $rLineInfo = $rLineIDs = [];
+				foreach ($rRows as $rRow) {
+					$rLineIDs[] = (int) $rRow["id"];
+					$rLineInfo[(int) $rRow["id"]] = ["owner_name" => null, "stream_display_name" => null, "stream_id" => null, "last_active" => null];
+					$rLastInfo = [];
+
+					if (!empty($rRow['last_activity_array'])) {
+						$decoded = json_decode($rRow['last_activity_array'], true);
+						if (is_array($decoded)) {
+							$rLastInfo = $decoded;
+						}
+					}
+
+					if ($rLastInfo !== []) {
+						$id = (int) $rRow['id'];
+						$rLineInfo[$id]['stream_id']   = $rLastInfo['stream_id'] ?? null;
+						$rLineInfo[$id]['last_active'] = $rLastInfo['date_end'] ?? null;
+					} elseif (!empty($rRow['last_activity'])) {
+						$rActivityIDs[] = (int) $rRow['last_activity'];
+					}
+				}
+
+				if (0 < count($rLineIDs)) {
+					$db->query("SELECT `users`.`username`, `lines`.`id` FROM `users` LEFT JOIN `lines` ON `lines`.`member_id` = `users`.`id` WHERE `lines`.`id` IN (" . implode(",", $rLineIDs) . ");");
+					foreach ($db->get_rows() as $rRow) {
+						$rLineInfo[$rRow["id"]]["owner_name"] = $rRow["username"];
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						$rConnectionCount = ConnectionTracker::getUserConnections($rLineIDs, true);
+						$rConnectionMap = ConnectionTracker::getFirstConnection($rLineIDs);
+						$rStreamIDs = [];
+						foreach ($rConnectionMap as $rUserID => $rConnection) {
+							if (!in_array($rConnection["stream_id"], $rStreamIDs)) {
+								$rStreamIDs[] = (int) $rConnection["stream_id"];
+							}
+						}
+						$rStreamMap = [];
+						if (0 < count($rStreamIDs)) {
+							$db->query("SELECT `id`, `stream_display_name` FROM `streams` WHERE `id` IN (" . implode(",", $rStreamIDs) . ");");
+							foreach ($db->get_rows() as $rRow) {
+								$rStreamMap[$rRow["id"]] = $rRow["stream_display_name"];
+							}
+						}
+						foreach ($rConnectionMap as $rUserID => $rConnection) {
+							$rLineInfo[$rUserID]["stream_display_name"] = $rStreamMap[$rConnection["stream_id"]];
+							$rLineInfo[$rUserID]["stream_id"] = $rConnection["stream_id"];
+							$rLineInfo[$rUserID]["last_active"] = $rConnection["date_start"];
+						}
+						unset($rConnectionMap);
+					} else {
+						$db->query("SELECT `lines_live`.`user_id`, `lines_live`.`stream_id`, `lines_live`.`date_start` AS `last_active`, `streams`.`stream_display_name` FROM `lines_live` LEFT JOIN `streams` ON `streams`.`id` = `lines_live`.`stream_id` INNER JOIN (SELECT `user_id`, MAX(`date_start`) AS `ts` FROM `lines_live` GROUP BY `user_id`) `maxt` ON (`lines_live`.`user_id` = `maxt`.`user_id` AND `lines_live`.`date_start` = `maxt`.`ts`) WHERE `lines_live`.`hls_end` = 0 AND `lines_live`.`user_id` IN (" . implode(",", $rLineIDs) . ");");
+						foreach ($db->get_rows() as $rRow) {
+							$rLineInfo[$rRow["user_id"]]["stream_display_name"] = $rRow["stream_display_name"];
+							$rLineInfo[$rRow["user_id"]]["stream_id"] = $rRow["stream_id"];
+							$rLineInfo[$rRow["user_id"]]["last_active"] = $rRow["last_active"];
+						}
+					}
+				}
+				if (0 < count($rActivityIDs)) {
+					$db->query("SELECT `user_id`, `stream_id`, `date_end` AS `last_active` FROM `lines_activity` WHERE `activity_id` IN (" . implode(",", $rActivityIDs) . ");");
+					foreach ($db->get_rows() as $rRow) {
+						if (!isset($rLineInfo[$rRow["user_id"]]["stream_id"])) {
+							$rLineInfo[$rRow["user_id"]]["stream_id"] = $rRow["stream_id"];
+							$rLineInfo[$rRow["user_id"]]["last_active"] = $rRow["last_active"];
+						}
+					}
+				}
+				foreach ($rRows as $rRow) {
+					$rRow = array_merge($rRow, $rLineInfo[$rRow["id"]]);
+
+					if (SettingsManager::getAll()["redis_handler"]) {
+						$rRow["active_connections"] = isset($rConnectionCount[$rRow["id"]]) ? $rConnectionCount[$rRow["id"]] : 0;
+					}
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rStatus = "active";
+						if (!$rRow["admin_enabled"]) {
+							$rStatus = "banned";
+						} elseif (!$rRow["enabled"]) {
+							$rStatus = "disabled";
+						} elseif ($rRow["exp_date"] && $rRow["exp_date"] < time()) {
+							$rStatus = "expired";
+						}
+						if ($rRow["exp_date"]) {
+							$rExpStr = date($rSettings["date_format"], $rRow["exp_date"]) . " " . date("H:i:s", $rRow["exp_date"]);
+						} else {
+							$rExpStr = null;
+						}
+						$rLastStr = !empty($rRow["last_active"]) ? date($rSettings["date_format"], $rRow["last_active"]) . " " . date("H:i:s", $rRow["last_active"]) : null;
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"username" => $rRow["username"],
+							"password" => $rRow["password"],
+							"owner_name" => $rRow["owner_name"],
+							"member_id" => (int) $rRow["member_id"],
+							"status" => $rStatus,
+							"trial" => (bool) $rRow["is_trial"],
+							"restreamer" => (bool) $rRow["is_restreamer"],
+							"active_connections" => (int) $rRow["active_connections"],
+							"max_connections" => (int) $rRow["max_connections"],
+							"exp_str" => $rExpStr,
+							"exp_unix" => $rRow["exp_date"] ? (int) $rRow["exp_date"] : null,
+							"exp_expired" => $rRow["exp_date"] && $rRow["exp_date"] < time(),
+							"stream_id" => isset($rRow["stream_id"]) ? (int) $rRow["stream_id"] : null,
+							"stream_display_name" => $rRow["stream_display_name"] ?? null,
+							"last_active" => !empty($rRow["last_active"]) ? (int) $rRow["last_active"] : null,
+							"last_str" => $rLastStr,
+							"notes" => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], static fn(string $rNote): bool => $rNote !== '')),
+							"admin_enabled" => (bool) $rRow["admin_enabled"],
+							"enabled" => (bool) $rRow["enabled"],
+							"contact" => $rRow["contact"],
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleMags($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings;
+		if (!Authorization::check("adv", "manage_mag") && !Authorization::check("adv", "mass_edit_mags")) {
+			exit;
+		}
+		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
+		$rOrder = [false, false, "`lines`.`id`", "`lines`.`username`", "`mag_devices`.`mac`", "`mag_devices`.`stb_type`", "`lines`.`member_id`", "`lines`.`enabled`", "`active_connections` > 0", "`lines`.`is_trial`", "`lines`.`exp_date`", "`active_connections` " . $rOrderDirection . ", `last_activity`", false];
+		$rOrderColumn = RequestManager::get("order")[0]["column"] ?? '';
+		$rOrderRow = ((string) $rOrderColumn !== '') ? (int) $rOrderColumn : 0;
+		$rWhere = $rWhereV = [];
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 6) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `mag_devices`.`stb_type` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`reseller_notes` LIKE ? OR `lines`.`admin_notes` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (RequestManager::get("filter") == 1) {
+				$rWhere[] = "(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))";
+			} elseif (RequestManager::get("filter") == 2) {
+				$rWhere[] = "`lines`.`enabled` = 0";
+			} elseif (RequestManager::get("filter") == 3) {
+				$rWhere[] = "`lines`.`admin_enabled` = 0";
+			} elseif (RequestManager::get("filter") == 4) {
+				$rWhere[] = "(`lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` <= UNIX_TIMESTAMP())";
+			} elseif (RequestManager::get("filter") == 5) {
+				$rWhere[] = "`lines`.`is_trial` = 1";
+			}
+		}
+		if ((string) (RequestManager::get("reseller") ?? '') !== '') {
+			$rWhere[] = "`lines`.`member_id` = ?";
+			$rWhereV[] = RequestManager::get("reseller");
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `lines` RIGHT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines`.`id` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `lines`.`id`, `lines`.`username`, `lines`.`member_id`, `lines`.`last_activity`, `lines`.`last_activity_array`, `mag_devices`.`mac`, `mag_devices`.`stb_type`, `mag_devices`.`mag_id`, `lines`.`exp_date`, `lines`.`admin_enabled`, `lines`.`enabled`, `lines`.`admin_notes`, `lines`.`reseller_notes`, `lines`.`max_connections`, `lines`.`is_trial`, (SELECT count(*) FROM `lines_live` WHERE `lines`.`id` = `lines_live`.`user_id` AND `hls_end` = 0) AS `active_connections` FROM `lines` RIGHT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines`.`id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rActivityIDs = $rLineInfo = $rLineIDs = [];
+				foreach ($rRows as $rRow) {
+					if ($rRow["id"]) {
+						$rLineIDs[] = (int) $rRow["id"];
+						$rLineInfo[(int) $rRow["id"]] = ["owner_name" => null, "stream_display_name" => null, "stream_id" => null, "last_active" => null];
+					}
+					$rLastInfo = [];
+
+					if (!empty($rRow['last_activity_array'])) {
+						$decoded = json_decode($rRow['last_activity_array'], true);
+						if (is_array($decoded)) {
+							$rLastInfo = $decoded;
+						}
+					}
+
+					if ($rLastInfo !== []) {
+						$rLineInfo[(int) $rRow["id"]]["stream_id"] = $rLastInfo["stream_id"];
+						$rLineInfo[(int) $rRow["id"]]["last_active"] = $rLastInfo["date_end"];
+					} elseif ($rRow["last_activity"]) {
+						$rActivityIDs[] = (int) $rRow["last_activity"];
+					}
+				}
+				if (0 < count($rLineIDs)) {
+					$db->query("SELECT `users`.`username`, `lines`.`id` FROM `users` LEFT JOIN `lines` ON `lines`.`member_id` = `users`.`id` WHERE `lines`.`id` IN (" . implode(",", $rLineIDs) . ");");
+					foreach ($db->get_rows() as $rRow) {
+						$rLineInfo[$rRow["id"]]["owner_name"] = $rRow["username"];
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						$rConnectionCount = ConnectionTracker::getUserConnections($rLineIDs, true);
+						$rConnectionMap = ConnectionTracker::getFirstConnection($rLineIDs);
+						$rStreamIDs = [];
+						foreach ($rConnectionMap as $rUserID => $rConnection) {
+							if (!in_array($rConnection["stream_id"], $rStreamIDs)) {
+								$rStreamIDs[] = (int) $rConnection["stream_id"];
+							}
+						}
+						$rStreamMap = [];
+						if (0 < count($rStreamIDs)) {
+							$db->query("SELECT `id`, `stream_display_name` FROM `streams` WHERE `id` IN (" . implode(",", $rStreamIDs) . ");");
+							foreach ($db->get_rows() as $rRow) {
+								$rStreamMap[$rRow["id"]] = $rRow["stream_display_name"];
+							}
+						}
+						foreach ($rConnectionMap as $rUserID => $rConnection) {
+							$rLineInfo[$rUserID]["stream_display_name"] = $rStreamMap[$rConnection["stream_id"]];
+							$rLineInfo[$rUserID]["stream_id"] = $rConnection["stream_id"];
+							$rLineInfo[$rUserID]["last_active"] = $rConnection["date_start"];
+						}
+						unset($rConnectionMap);
+					} else {
+						$db->query("SELECT `lines_live`.`user_id`, `lines_live`.`stream_id`, `lines_live`.`date_start` AS `last_active`, `streams`.`stream_display_name` FROM `lines_live` LEFT JOIN `streams` ON `streams`.`id` = `lines_live`.`stream_id` INNER JOIN (SELECT `user_id`, MAX(`date_start`) AS `ts` FROM `lines_live` GROUP BY `user_id`) `maxt` ON (`lines_live`.`user_id` = `maxt`.`user_id` AND `lines_live`.`date_start` = `maxt`.`ts`) WHERE `lines_live`.`user_id` IN (" . implode(",", $rLineIDs) . ");");
+						foreach ($db->get_rows() as $rRow) {
+							$rLineInfo[$rRow["user_id"]]["stream_display_name"] = $rRow["stream_display_name"];
+							$rLineInfo[$rRow["user_id"]]["stream_id"] = $rRow["stream_id"];
+							$rLineInfo[$rRow["user_id"]]["last_active"] = $rRow["last_active"];
+						}
+					}
+				}
+				if (0 < count($rActivityIDs)) {
+					$db->query("SELECT `user_id`, `stream_id`, `date_end` AS `last_active` FROM `lines_activity` WHERE `activity_id` IN (" . implode(",", $rActivityIDs) . ");");
+					foreach ($db->get_rows() as $rRow) {
+						if (!isset($rLineInfo[$rRow["user_id"]]["stream_id"])) {
+							$rLineInfo[$rRow["user_id"]]["stream_id"] = $rRow["stream_id"];
+							$rLineInfo[$rRow["user_id"]]["last_active"] = $rRow["last_active"];
+						}
+					}
+				}
+				$rOnlineInfo = \XcVm\Domain\Stream\OnlineConnectionInfo::forUsers($db, $rLineIDs, (bool) SettingsManager::getAll()['redis_handler']);
+				foreach ($rRows as $rRow) {
+					$rRow = array_merge($rRow, $rOnlineInfo[(int) $rRow['id']] ?? []);
+					if (isset($rLineInfo[$rRow["id"]])) {
+						$rRow = array_merge($rRow, $rLineInfo[$rRow["id"]]);
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						$rRow["active_connections"] = isset($rConnectionCount[$rRow["id"]]) ? $rConnectionCount[$rRow["id"]] : 0;
+					}
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						// Clean JSON for the Bootstrap 5 mags page (connection/last-activity gathering above unchanged).
+						$rReturn["data"][] = [
+							"mag_id"              => (int) $rRow["mag_id"],
+							"line_id"             => $rRow["id"] ? (int) $rRow["id"] : null,
+							"username"            => $rRow["username"],
+							"mac"                 => $rRow["mac"],
+							"stb_type"            => $rRow["stb_type"],
+							"member_id"           => (int) $rRow["member_id"],
+							"owner_name"          => $rRow["owner_name"] ?? "",
+							"admin_enabled"       => (int) $rRow["admin_enabled"],
+							"enabled"             => (int) $rRow["enabled"],
+							"exp_date"            => $rRow["exp_date"] ? (int) $rRow["exp_date"] : null,
+							"is_trial"            => (1 == (int) $rRow["is_trial"]),
+							"active_connections"  => (int) $rRow["active_connections"],
+							"user_id"             => $rRow["id"] ? (int) $rRow["id"] : 0,
+							"stream_id"           => $rRow["stream_id"] ? (int) $rRow["stream_id"] : null,
+							"stream_display_name" => $rRow["stream_display_name"] ?? null,
+							"last_active"         => $rRow["last_active"] ? (int) $rRow["last_active"] : null,
+							"online_ip" => $rRow['online_ip'] ?? '',
+							"online_isp" => $rRow['online_isp'] ?? '',
+							"online_since" => $rRow['online_since'] ?? 0,
+							"notes"               => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], static fn(string $rNote): bool => $rNote !== '')),
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleEnigmas($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings;
+		if (!Authorization::check("adv", "manage_e2") && !Authorization::check("adv", "mass_edit_enigmas")) {
+			exit;
+		}
+		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
+		$rOrder = [false, false, "`lines`.`id`", "`lines`.`username`", "`enigma2_devices`.`mac`", "`enigma2_devices`.`public_ip`", "`lines`.`member_id`", "`lines`.`enabled`", "`active_connections` > 0", "`lines`.`is_trial`", "`lines`.`exp_date`", "`active_connections` " . $rOrderDirection . ", `last_activity`", false];
+		$rOrderColumn = RequestManager::get("order")[0]["column"] ?? '';
+		$rOrderRow = ((string) $rOrderColumn !== '') ? (int) $rOrderColumn : 0;
+		$rWhere = $rWhereV = [];
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 6) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`lines`.`username` LIKE ? OR `enigma2_devices`.`mac` LIKE ? OR `enigma2_devices`.`public_ip` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`reseller_notes` LIKE ? OR `lines`.`admin_notes` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (RequestManager::get("filter") == 1) {
+				$rWhere[] = "(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))";
+			} elseif (RequestManager::get("filter") == 2) {
+				$rWhere[] = "`lines`.`enabled` = 0";
+			} elseif (RequestManager::get("filter") == 3) {
+				$rWhere[] = "`lines`.`admin_enabled` = 0";
+			} elseif (RequestManager::get("filter") == 4) {
+				$rWhere[] = "(`lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` <= UNIX_TIMESTAMP())";
+			} elseif (RequestManager::get("filter") == 5) {
+				$rWhere[] = "`lines`.`is_trial` = 1";
+			}
+		}
+		if ((string) (RequestManager::get("reseller") ?? '') !== '') {
+			$rWhere[] = "`lines`.`member_id` = ?";
+			$rWhereV[] = RequestManager::get("reseller");
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `lines` RIGHT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines`.`id` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `lines`.`id`, `lines`.`username`, `lines`.`member_id`, `lines`.`last_activity`, `lines`.`last_activity_array`, `enigma2_devices`.`mac`, `enigma2_devices`.`public_ip`, `enigma2_devices`.`device_id`, `lines`.`exp_date`, `lines`.`admin_enabled`, `lines`.`enabled`, `lines`.`admin_notes`, `lines`.`reseller_notes`, `lines`.`max_connections`, `lines`.`is_trial`, (SELECT count(*) FROM `lines_live` WHERE `lines`.`id` = `lines_live`.`user_id` AND `hls_end` = 0) AS `active_connections` FROM `lines` RIGHT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines`.`id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rActivityIDs = $rLineInfo = $rLineIDs = [];
+				foreach ($rRows as $rRow) {
+					if ($rRow["id"]) {
+						$rLineIDs[] = (int) $rRow["id"];
+						$rLineInfo[(int) $rRow["id"]] = ["owner_name" => null, "stream_display_name" => null, "stream_id" => null, "last_active" => null];
+					}
+					$rLastInfo = [];
+
+					if (!empty($rRow['last_activity_array'])) {
+						$decoded = json_decode($rRow['last_activity_array'], true);
+						if (is_array($decoded)) {
+							$rLastInfo = $decoded;
+						}
+					}
+
+					if ($rLastInfo !== []) {
+						$rLineInfo[(int) $rRow["id"]]["stream_id"] = $rLastInfo["stream_id"];
+						$rLineInfo[(int) $rRow["id"]]["last_active"] = $rLastInfo["date_end"];
+					} elseif ($rRow["last_activity"]) {
+						$rActivityIDs[] = (int) $rRow["last_activity"];
+					}
+				}
+				if (0 < count($rLineIDs)) {
+					$db->query("SELECT `users`.`username`, `lines`.`id` FROM `users` LEFT JOIN `lines` ON `lines`.`member_id` = `users`.`id` WHERE `lines`.`id` IN (" . implode(",", $rLineIDs) . ");");
+					foreach ($db->get_rows() as $rRow) {
+						$rLineInfo[$rRow["id"]]["owner_name"] = $rRow["username"];
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						$rConnectionCount = ConnectionTracker::getUserConnections($rLineIDs, true);
+						$rConnectionMap = ConnectionTracker::getFirstConnection($rLineIDs);
+						$rStreamIDs = [];
+						foreach ($rConnectionMap as $rUserID => $rConnection) {
+							if (!in_array($rConnection["stream_id"], $rStreamIDs)) {
+								$rStreamIDs[] = (int) $rConnection["stream_id"];
+							}
+						}
+						$rStreamMap = [];
+						if (0 < count($rStreamIDs)) {
+							$db->query("SELECT `id`, `stream_display_name` FROM `streams` WHERE `id` IN (" . implode(",", $rStreamIDs) . ");");
+							foreach ($db->get_rows() as $rRow) {
+								$rStreamMap[$rRow["id"]] = $rRow["stream_display_name"];
+							}
+						}
+						foreach ($rConnectionMap as $rUserID => $rConnection) {
+							$rLineInfo[$rUserID]["stream_display_name"] = $rStreamMap[$rConnection["stream_id"]];
+							$rLineInfo[$rUserID]["stream_id"] = $rConnection["stream_id"];
+							$rLineInfo[$rUserID]["last_active"] = $rConnection["date_start"];
+						}
+						unset($rConnectionMap);
+					} else {
+						$db->query("SELECT `lines_live`.`user_id`, `lines_live`.`stream_id`, `lines_live`.`date_start` AS `last_active`, `streams`.`stream_display_name` FROM `lines_live` LEFT JOIN `streams` ON `streams`.`id` = `lines_live`.`stream_id` INNER JOIN (SELECT `user_id`, MAX(`date_start`) AS `ts` FROM `lines_live` GROUP BY `user_id`) `maxt` ON (`lines_live`.`user_id` = `maxt`.`user_id` AND `lines_live`.`date_start` = `maxt`.`ts`) WHERE `lines_live`.`user_id` IN (" . implode(",", $rLineIDs) . ");");
+						foreach ($db->get_rows() as $rRow) {
+							$rLineInfo[$rRow["user_id"]]["stream_display_name"] = $rRow["stream_display_name"];
+							$rLineInfo[$rRow["user_id"]]["stream_id"] = $rRow["stream_id"];
+							$rLineInfo[$rRow["user_id"]]["last_active"] = $rRow["last_active"];
+						}
+					}
+				}
+				if (0 < count($rActivityIDs)) {
+					$db->query("SELECT `user_id`, `stream_id`, `date_end` AS `last_active` FROM `lines_activity` WHERE `activity_id` IN (" . implode(",", $rActivityIDs) . ");");
+					foreach ($db->get_rows() as $rRow) {
+						if (!isset($rLineInfo[$rRow["user_id"]]["stream_id"])) {
+							$rLineInfo[$rRow["user_id"]]["stream_id"] = $rRow["stream_id"];
+							$rLineInfo[$rRow["user_id"]]["last_active"] = $rRow["last_active"];
+						}
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if (isset($rLineInfo[$rRow["id"]])) {
+						$rRow = array_merge($rRow, $rLineInfo[$rRow["id"]]);
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						$rRow["active_connections"] = isset($rConnectionCount[$rRow["id"]]) ? $rConnectionCount[$rRow["id"]] : 0;
+					}
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rReturn["data"][] = [
+							"device_id"           => (int) $rRow["device_id"],
+							"line_id"             => $rRow["id"] ? (int) $rRow["id"] : null,
+							"username"            => $rRow["username"],
+							"mac"                 => $rRow["mac"],
+							"public_ip"           => $rRow["public_ip"],
+							"member_id"           => (int) $rRow["member_id"],
+							"owner_name"          => $rRow["owner_name"] ?? "",
+							"admin_enabled"       => (int) $rRow["admin_enabled"],
+							"enabled"             => (int) $rRow["enabled"],
+							"exp_date"            => $rRow["exp_date"] ? (int) $rRow["exp_date"] : null,
+							"is_trial"            => (1 == (int) $rRow["is_trial"]),
+							"active_connections"  => (int) $rRow["active_connections"],
+							"user_id"             => $rRow["id"] ? (int) $rRow["id"] : 0,
+							"stream_id"           => $rRow["stream_id"] ? (int) $rRow["stream_id"] : null,
+							"stream_display_name" => $rRow["stream_display_name"] ?? null,
+							"last_active"         => $rRow["last_active"] ? (int) $rRow["last_active"] : null,
+							"notes"               => array_values(array_filter([(string) ($rRow['admin_notes'] ?? ''), (string) ($rRow['reseller_notes'] ?? '')], static fn(string $rNote): bool => $rNote !== '')),
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleStreams($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings, $rServers;
+		if (!Authorization::check("adv", "streams") && !Authorization::check("adv", "mass_edit_streams")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("live");
+		// One entry per column of the streams table (admin/streams.php), in order:
+		// control, select, id, icon, title, server, connections, status, player,
+		// EPG, stream info, usage, actions. false = not sortable in SQL.
+		$rOrder = [false, false, "`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`streams_servers`.`current_source`", "`clients`", "`streams_servers`.`stream_started`", false, false, false, false, "`streams_servers`.`bitrate`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rCreated = RequestManager::has("created");
+		$rWhere = $rWhereV = [];
+		if ($rCreated) {
+			$rWhere[] = "`streams`.`type` = 3";
+		} else {
+			$rWhere[] = "`streams`.`type` = 1";
+		}
+		if (RequestManager::has("stream_id")) {
+			$rWhere[] = "`streams`.`id` = ?";
+			$rWhereV[] = RequestManager::get("stream_id");
+			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
+		} else {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+				foreach (range(1, 4) as $rInt) {
+					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+				}
+				$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
+			}
+			if (0 < (int) (RequestManager::get("category") ?? 0)) {
+				$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+				$rWhereV[] = RequestManager::get("category");
+			} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
+				$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
+			}
+			if (RequestManager::has("refresh")) {
+				$rWhere = ["`streams`.`id` IN (" . implode(",", array_map("intval", explode(",", RequestManager::get("refresh")))) . ")"];
+				$rWhereV = [];
+				$rStart = 0;
+				$rLimit = 1000;
+			}
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
+				if (!$rCreated) {
+					if (RequestManager::get("filter") == 1) {
+						$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`stream_status` = 0)";
+					} elseif (RequestManager::get("filter") == 2) {
+						$rWhere[] = "((`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0) AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` = 1))";
+					} elseif (RequestManager::get("filter") == 3) {
+						$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NULL OR `streams_servers`.`monitor_pid` <= 0) AND `streams_servers`.`on_demand` = 0)";
+					} elseif (RequestManager::get("filter") == 4) {
+						$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0) AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` = 2)";
+					} elseif (RequestManager::get("filter") == 5) {
+						$rWhere[] = "`streams_servers`.`on_demand` = 1";
+					} elseif (RequestManager::get("filter") == 6) {
+						$rWhere[] = "`streams`.`direct_source` = 1";
+					} elseif (RequestManager::get("filter") == 7) {
+						$rWhere[] = "`streams`.`tv_archive_server_id` > 0 AND `streams`.`tv_archive_duration` > 0";
+					} elseif (RequestManager::get("filter") == 8) {
+						if ($rSettings["streams_grouped"] == 1) {
+							$rWhere[] = "(SELECT COUNT(*) AS `count` FROM `streams_logs` WHERE `streams_logs`.`action` = 'STREAM_FAILED' AND `streams_logs`.`date` >= UNIX_TIMESTAMP()-86400 AND `streams_logs`.`stream_id` = `streams`.`id`) > 144";
+						} else {
+							$rWhere[] = "(SELECT COUNT(*) AS `count` FROM `streams_logs` WHERE `streams_logs`.`action` = 'STREAM_FAILED' AND `streams_logs`.`date` >= UNIX_TIMESTAMP()-86400 AND `streams_logs`.`stream_id` = `streams`.`id` AND `streams_logs`.`server_id` = `streams_servers`.`server_id`) > 144";
+						}
+					} elseif (RequestManager::get("filter") == 9) {
+						$rWhere[] = "LENGTH(`streams`.`channel_id`) > 0";
+					} elseif (RequestManager::get("filter") == 10) {
+						$rWhere[] = "(`streams`.`channel_id` IS NULL OR LENGTH(`streams`.`channel_id`) = 0)";
+					} elseif (RequestManager::get("filter") == 11) {
+						$rWhere[] = "`streams`.`adaptive_link` IS NOT NULL";
+					} elseif (RequestManager::get("filter") == 12) {
+						$rWhere[] = "`streams`.`title_sync` IS NOT NULL";
+					} elseif (RequestManager::get("filter") == 13) {
+						$rWhere[] = "`streams`.`transcode_profile_id` > 0";
+					}
+				} elseif (RequestManager::get("filter") == 1) {
+					$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0)";
+				} elseif (RequestManager::get("filter") == 2) {
+					$rWhere[] = "(`streams_servers`.`monitor_pid` IS NULL OR `streams_servers`.`monitor_pid` <= 0) AND (REPLACE(`streams_servers`.`cchannel_rsources`, '\\\\/', '/') = REPLACE(`streams`.`stream_source`, '\\\\/', '/'))";
+				} elseif (RequestManager::get("filter") == 3) {
+					$rWhere[] = "(REPLACE(`streams_servers`.`cchannel_rsources`, '\\\\/', '/') <> REPLACE(`streams`.`stream_source`, '\\\\/', '/'))";
+				} elseif (RequestManager::get("filter") == 4) {
+					$rWhere[] = "`streams`.`transcode_profile_id` > 0";
+				}
+			}
+			if ((string) (RequestManager::get("audio") ?? '') !== '') {
+				if (RequestManager::get("audio") == -1) {
+					$rWhere[] = "`streams_servers`.`audio_codec` IS NULL";
+				} else {
+					$rWhere[] = "`streams_servers`.`audio_codec` = ?";
+					$rWhereV[] = RequestManager::get("audio");
+				}
+			}
+			if ((string) (RequestManager::get("video") ?? '') !== '') {
+				if (RequestManager::get("video") == -1) {
+					$rWhere[] = "`streams_servers`.`video_codec` IS NULL";
+				} else {
+					$rWhere[] = "`streams_servers`.`video_codec` = ?";
+					$rWhereV[] = RequestManager::get("video");
+				}
+			}
+			if ((string) (RequestManager::get("resolution") ?? '') !== '') {
+				$rWhere[] = "`streams_servers`.`resolution` = ?";
+				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
+			}
+			if (0 < (int) (RequestManager::get("server") ?? 0)) {
+				$rWhere[] = "`streams_servers`.`server_id` = ?";
+				$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+			} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
+				$rWhere[] = "`streams_servers`.`server_id` IS NULL";
+			}
+			$rOrderBy = "";
+			if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+				$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+				$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+			}
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		if (RequestManager::has("single")) {
+			$rSettings["streams_grouped"] = 0;
+		}
+		if ($rSettings["streams_grouped"] == 1) {
+			$rCountQuery = "SELECT COUNT(*) AS `count` FROM (SELECT `id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL " . $rWhereString . " GROUP BY `streams`.`id`) t1;";
+		} else {
+			$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . ";";
+		}
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		if ($rIsAPI) {
+			$rReturn["recordsFiltered"] = min($rReturn["recordsTotal"], $rLimit);
+		} else {
+			$rReturn["recordsFiltered"] = $rReturn["recordsTotal"];
+		}
+		if ($rReturn["recordsTotal"] > 0) {
+			if ($rSettings["streams_grouped"] == 1) {
+				$rQuery = "SELECT `streams`.`id`, `streams_servers`.`stream_id`, `streams`.`type`, `streams`.`stream_icon`, `streams`.`adaptive_link`, `streams`.`title_sync`, `streams_servers`.`cchannel_rsources`, `streams`.`stream_source`, `streams`.`stream_display_name`, `streams`.`tv_archive_duration`, `streams`.`tv_archive_server_id`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`cc_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, `streams`.`epg_id`, `streams`.`channel_id`, `streams_servers`.`parent_id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL " . $rWhereString . " GROUP BY `streams`.`id` " . $rOrderBy . ", -`stream_started` DESC LIMIT " . $rStart . ", " . $rLimit . ";";
+			} else {
+				$rQuery = "SELECT `streams`.`id`, `streams`.`type`, `streams`.`stream_icon`, `streams`.`adaptive_link`, `streams`.`title_sync`, `streams_servers`.`cchannel_rsources`, `streams`.`stream_source`, `streams`.`stream_display_name`, `streams`.`tv_archive_duration`, `streams`.`tv_archive_server_id`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`cc_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, `streams`.`epg_id`, `streams`.`channel_id`, `streams_servers`.`parent_id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			}
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rEPGIDs = $rFails = $rFailsPS = $rServerCount = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = $rRow["id"];
+					if ($rRow["channel_id"] && !in_array("'" . $rRow["epg_id"] . "_" . $rRow["channel_id"] . "'", $rEPGIDs)) {
+						$rEPGIDs[] = "'" . $rRow["epg_id"] . "_" . str_replace("'", "\\'", $rRow["channel_id"]) . "'";
+					}
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, COUNT(`server_stream_id`) AS `count` FROM `streams_servers` WHERE `stream_id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ") GROUP BY `stream_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rServerCount[$rRow["stream_id"]] = $rRow["count"];
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						if ($rSettings["streams_grouped"]) {
+							$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, true, true);
+						} else {
+							$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, false, false);
+						}
+					}
+				}
+				if (!$rCreated) {
+					$rTime = time();
+
+					if (count($rStreamIDs) > 0) {
+						$rQuery = "SELECT `stream_id`, `server_id`, COUNT(*) AS `fails`, MAX(`date`) AS `last` FROM `streams_logs` WHERE `action` IN ('STREAM_FAILED', 'STREAM_START_FAIL') AND `date` >= (UNIX_TIMESTAMP()-" . intval(($rSettings['fails_per_time'] ?: 86400)) . ') AND `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ') GROUP BY `stream_id`, `server_id`;';
+						$db->query($rQuery);
+
+						if ($db->num_rows() > 0) {
+							foreach ($db->get_rows() as $rRow) {
+								$streamId = $rRow["stream_id"];
+								$serverId = intval($rRow["server_id"]);
+								$fails = intval($rRow["fails"]);
+								$lastDelta = $rTime - intval($rRow["last"]);
+
+								// Init arrays if not set
+								if (!isset($rFailsPS[$streamId])) {
+									$rFailsPS[$streamId] = [];
+								}
+								$rFailsPS[$streamId][$serverId] = [$fails, $lastDelta];
+
+								if (!isset($rFails[$streamId])) {
+									$rFails[$streamId] = [0, 0]; // [totalFails, maxLastDelta]
+								}
+
+								$rFails[$streamId][0] += $fails; // sum up fails
+
+								if ($rFails[$streamId][1] < $lastDelta) {
+									$rFails[$streamId][1] = $lastDelta; // save max lastDelta
+								}
+							}
+						}
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if (SettingsManager::getAll()["redis_handler"]) {
+						if ($rSettings["streams_grouped"] == 1) {
+							$rRow["clients"] = $rConnectionCount[$rRow["id"]] ?? 0;
+						} else {
+							$rRow["clients"] = count($rConnectionCount[$rRow["id"]][$rRow["server_id"]] ?? []);
+						}
+					}
+					if ($rIsAPI) {
+						unset($rRow["stream_source"]);
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						// Category label (primary + "(+N others)").
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+
+						// Name badges + adaptive links.
+						$rHasArchive = (0 < $rRow['tv_archive_duration'] && 0 < $rRow['tv_archive_server_id']);
+						$rAdaptiveLinks = json_decode($rRow['adaptive_link'] ?? '', true) ?: [];
+						$rHasAdaptive = (is_array($rAdaptiveLinks) && count($rAdaptiveLinks) > 0);
+
+						// Server column (real id used for server_view; source host / loop label).
+						$rRealServerId = (int) $rRow["server_id"];
+						$rServerCnt = $rServerCount[$rRow["id"]] ?? 0;
+						if (isset($rRow['parent_id']) && (int) $rRow['parent_id'] > 0) {
+							$rSourceHost = "loop: " . strtolower((string) (ServerRepository::getAll()[$rRow["parent_id"]]["server_name"] ?? ""));
+						} else {
+							$rSourceHost = strtolower((string) (parse_url($rRow['current_source'] ?? '')['host'] ?? ''));
+						}
+						$rServerOffline = (($rServers[$rRealServerId]["last_status"] ?? null) != 1);
+
+						// Uptime seconds.
+						$rSeconds = 0 < (int) $rRow["stream_started"] ? time() - (int) $rRow["stream_started"] : 0;
+
+						// Stream status ($rActualStatus, -1..7) — computed from pid/monitor/on_demand/direct.
+						$rActualStatus = 0;
+						if ($rRow["server_id"]) {
+							if (!$rCreated) {
+								if ((int) $rRow["direct_source"] == 1) {
+									if ((int) $rRow["direct_proxy"] == 1) {
+										if ($rRow["pid"] && 0 < $rRow["pid"]) {
+											$rActualStatus = 1;
+										} elseif (FanoutMode::enabled()) {
+											// The daemon owns a proxy's pull, from its first
+											// viewer on, and its row never gets a producer pid:
+											// ready on demand, not down (ADR 0003).
+											$rActualStatus = 4;
+										} else {
+											$rActualStatus = 7;
+										}
+									} else {
+										$rActualStatus = 5;
+									}
+								} elseif ($rRow["monitor_pid"]) {
+									if ($rRow["pid"] && 0 < $rRow["pid"]) {
+										if ((int) $rRow["stream_status"] == 2) {
+											$rActualStatus = 2;
+										} else {
+											$rActualStatus = 1;
+										}
+									} elseif ($rRow["stream_status"] == 0) {
+										$rActualStatus = 2;
+									} else {
+										$rActualStatus = 3;
+									}
+								} elseif ((int) $rRow["on_demand"] == 1) {
+									$rGoOD = json_decode($rRow["progress_info"] ?? "", true); // QC-GO-OD-STATS: open on-demand channel served by the Go relay = running
+									$rActualStatus = (is_array($rGoOD) && ($rGoOD["producer"] ?? "") === "go" && intval($rGoOD["go_at"] ?? 0) > time() - 150) ? 1 : 4;
+								} else {
+									$rActualStatus = 0;
+								}
+							} else {
+								if ($rRow["monitor_pid"]) {
+									if ($rRow["pid"] && 0 < $rRow["pid"]) {
+										if ((int) $rRow["stream_status"] == 2) {
+											$rActualStatus = 2;
+										} else {
+											$rActualStatus = 1;
+										}
+									} elseif ($rRow["stream_status"] == 0) {
+										$rActualStatus = 2;
+									} else {
+										$rActualStatus = 3;
+									}
+								} else {
+									$rActualStatus = 0;
+								}
+								if (count(json_decode((string) $rRow["cchannel_rsources"], true) ?: []) != count(json_decode((string) $rRow["stream_source"], true) ?: []) && !$rRow["parent_id"]) {
+									$rActualStatus = 6;
+								}
+							}
+						} elseif ((int) $rRow["direct_source"] == 1) {
+							$rActualStatus = 5;
+						} else {
+							$rActualStatus = -1;
+						}
+
+						// Server id used by row actions / live link: -1 (all) in grouped mode, else real or 0.
+						$rServerColId = $rSettings["streams_grouped"] == 1 ? -1 : ($rRealServerId);
+
+						// Convert-to-channel encode progress (status 6).
+						$rEncodePct = null;
+						if ($rActualStatus == 6) {
+							$rSources = json_decode($rRow["stream_source"], true);
+							$rLeft = count(array_diff($rSources, json_decode($rRow["cchannel_rsources"], true)));
+							$rPercent = (count($rSources) - $rLeft) / count($rSources) * 100;
+							$rEncodeInfo = json_decode($rRow["progress_info"] ?? '', true);
+							if (0 < $rLeft && isset($rEncodeInfo["cc_encode"]["pct"])) {
+								$rPercent += floatval($rEncodeInfo["cc_encode"]["pct"]) / count($rSources);
+							}
+							$rEncodePct = (int) $rPercent;
+						}
+
+						// Restart-fails indicator [count, secondsSinceLast] for running/starting/down live.
+						$rFailRow = null;
+						if (!$rCreated && in_array($rActualStatus, [1, 2, 3]) && !SettingsManager::getAll()["hide_failures"]) {
+							if ($rSettings["streams_grouped"] == 1) {
+								$rFailRow = $rFails[$rRow['id']] ?? [0, 0];
+							} else {
+								$rFailRow = $rFailsPS[$rRow["id"]][$rRow["server_id"]] ?? [0, 0];
+							}
+						}
+
+						// Live stream-info (codecs / bitrate / speed / fps) for a running stream.
+						$rInfo = null;
+						$rPlayerVideo = "";
+						if ($rActualStatus == 1) {
+							$rStreamInfo = json_decode($rRow['stream_info'] ?? '', true);
+							if (!is_array($rStreamInfo)) {
+								$rStreamInfo = [];
+							}
+							$rProgressInfo = json_decode($rRow['progress_info'] ?? '', true) ?: [];
+							$rVideo = (is_array($rStreamInfo["codecs"]["video"] ?? null)) ? $rStreamInfo["codecs"]["video"] : [];
+							$rAudio = (is_array($rStreamInfo["codecs"]["audio"] ?? null)) ? $rStreamInfo["codecs"]["audio"] : [];
+							$rSpeed = "1x";
+							if (isset($rProgressInfo["speed"])) {
+								$rSpeedValue = null;
+								if (is_numeric($rProgressInfo["speed"])) {
+									$rSpeedValue = (float) $rProgressInfo["speed"];
+								} elseif (is_string($rProgressInfo["speed"]) && preg_match('/([0-9]+(?:\.[0-9]+)?)/', $rProgressInfo["speed"], $rSpeedMatch)) {
+									$rSpeedValue = (float) $rSpeedMatch[1];
+								}
+								if ($rSpeedValue !== null) {
+									$rSpeed = round($rSpeedValue, 2) . "x";
+								}
+							}
+							$rFPS = null;
+							if (isset($rProgressInfo["fps"])) {
+								$rFPS = (int) $rProgressInfo["fps"];
+							} elseif (isset($rVideo["r_frame_rate"])) {
+								$rFPS = (int) $rVideo["r_frame_rate"];
+							}
+							if ($rFPS) {
+								if (1000 <= $rFPS) {
+									$rFPS = (int) ($rFPS / 1000);
+								}
+								$rFPS .= " FPS";
+							} else {
+								$rFPS = "--";
+							}
+							$rInfo = [
+								"bitrate" => (is_numeric($rRow["bitrate"]) && $rRow["bitrate"] > 0) ? number_format((float) $rRow["bitrate"], 0) : "?",
+								"resolution" => ($rVideo["width"] ?? "?") . " x " . ($rVideo["height"] ?? "?"),
+								"video" => $rVideo["codec_name"] ?? "N/A",
+								"audio" => $rAudio["codec_name"] ?? "N/A",
+								"speed" => $rSpeed,
+								"fps" => $rFPS,
+							];
+							$rPlayerVideo = strtoupper((string) ($rVideo["codec_name"] ?? ""));
+						}
+
+						// What the producer costs this node, and which producer it is
+						// (ffmpeg, or the fanout daemon's native remuxer). Sampled
+						// from /proc by cron:streams ON the server that runs the
+						// stream — only it can read its own processes — and carried
+						// here in the progress report it writes anyway. Running
+						// streams only: stopping a stream leaves progress_info as it
+						// was, so a stopped one would show its last reading.
+						$rUsage = null;
+						if ($rActualStatus == 1) {
+							$rUsageInfo = json_decode($rRow["progress_info"] ?? '', true);
+							if (is_array($rUsageInfo) && (isset($rUsageInfo["mem"]) || isset($rUsageInfo["producer"]))) {
+								$rUsage = [
+									"cpu" => isset($rUsageInfo["cpu"]) ? (float) $rUsageInfo["cpu"] : null,
+									"mem" => isset($rUsageInfo["mem"]) ? (int) $rUsageInfo["mem"] : null,
+									"producer" => $rUsageInfo["producer"] ?? null,
+								];
+							}
+						}
+
+						// EPG availability + player codec compatibility.
+						$rEPG = file_exists(EPG_PATH . "stream_" . $rRow["id"]) ? "available" : ($rRow["channel_id"] ? "pending" : "none");
+						$rPlayerOk = false;
+						if (((int) $rActualStatus == 1 || $rActualStatus == 4) && !$rRow["direct_proxy"]) {
+							$rPlayerOk = ($rPlayerVideo === "" || in_array($rPlayerVideo, ["H264", "N/A", "HEVC", "H265"], true));
+						}
+
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"display_id" => (!$rSettings["streams_grouped"] && 1 < $rServerCnt) ? ($rRow["id"] . "-" . $rRealServerId) : (string) $rRow["id"],
+							"server_col_id" => $rServerColId,
+							"type" => (int) $rRow["type"],
+							"icon" => ((string) $rRow["stream_icon"] !== '' && SettingsManager::getAll()["show_images"]) ? $rRow["stream_icon"] : null,
+							"title" => $rRow["stream_display_name"],
+							"category" => $rCategory,
+							"archive" => $rHasArchive,
+							"adaptive" => $rHasAdaptive,
+							"title_sync" => (bool) $rRow["title_sync"],
+							"source_host" => $rSourceHost ?: null,
+							"server_id" => $rRealServerId,
+							"server_name" => $rRow["server_name"] ?: null,
+							"server_url" => ($rRow["server_name"] && Authorization::check("adv", "servers")) ? "server_view?id=" . $rRealServerId : null,
+							"server_count" => $rServerCnt,
+							"server_offline" => $rServerOffline,
+							"clients" => (int) $rRow["clients"],
+							"status" => $rActualStatus,
+							"uptime" => $rActualStatus == 1 ? $rSeconds : null,
+							"encode_pct" => $rEncodePct,
+							"fails" => $rFailRow,
+							"on_demand" => (int) $rRow["on_demand"],
+							"epg" => $rEPG,
+							"notes" => !empty($rRow["notes"]) ? $rRow["notes"] : null,
+							"player_ok" => $rPlayerOk,
+							"info" => $rInfo,
+							"usage" => $rUsage,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleRadios($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings, $rServers;
+		if (!Authorization::check("adv", "radio") && !Authorization::check("adv", "mass_edit_radio")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("radio");
+		// Leading false, false = the Bootstrap 5 Responsive control + bulk-select columns.
+		$rOrder = [false, false, "`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`server_name`", "`clients`", "`streams_servers`.`stream_started`", false, "`streams_servers`.`bitrate`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`streams`.`type` = 4";
+		if (RequestManager::has("stream_id")) {
+			$rWhere[] = "`streams`.`id` = ?";
+			$rWhereV[] = RequestManager::get("stream_id");
+			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
+		} else {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+				foreach (range(1, 4) as $rInt) {
+					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+				}
+				$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
+			}
+			if (0 < (int) (RequestManager::get("category") ?? 0)) {
+				$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+				$rWhereV[] = RequestManager::get("category");
+			} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
+				$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
+			}
+			if (RequestManager::has("refresh")) {
+				$rWhere = ["`streams`.`id` IN (" . implode(",", array_map("intval", explode(",", RequestManager::get("refresh")))) . ")"];
+				$rWhereV = [];
+				$rStart = 0;
+				$rLimit = 1000;
+			}
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
+				if (RequestManager::get("filter") == 1) {
+					$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`stream_status` = 0)";
+				} elseif (RequestManager::get("filter") == 2) {
+					$rWhere[] = "((`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0) AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` = 1))";
+				} elseif (RequestManager::get("filter") == 3) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NULL OR `streams_servers`.`monitor_pid` <= 0) AND `streams_servers`.`on_demand` = 0)";
+				} elseif (RequestManager::get("filter") == 4) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0) AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` = 2)";
+				} elseif (RequestManager::get("filter") == 5) {
+					$rWhere[] = "`streams_servers`.`on_demand` = 1";
+				} elseif (RequestManager::get("filter") == 6) {
+					$rWhere[] = "`streams`.`direct_source` = 1";
+				}
+			}
+			if (0 < (int) (RequestManager::get("server") ?? 0)) {
+				$rWhere[] = "`streams_servers`.`server_id` = ?";
+				$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+			} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
+				$rWhere[] = "`streams_servers`.`server_id` IS NULL";
+			}
+			$rOrderBy = "";
+			if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+				$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+				$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+			}
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		if (RequestManager::has("single")) {
+			$rSettings["streams_grouped"] = 0;
+		}
+		if ($rSettings["streams_grouped"] == 1) {
+			$rCountQuery = "SELECT COUNT(DISTINCT(`streams`.`id`)) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . ";";
+		} else {
+			$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . ";";
+		}
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			if ($rSettings["streams_grouped"] == 1) {
+				$rQuery = "SELECT `streams`.`id`, `streams`.`stream_icon`, `streams`.`movie_properties`, `streams_servers`.`to_analyze`, `streams`.`target_container`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL " . $rWhereString . " GROUP BY `streams`.`id` " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			} else {
+				$rQuery = "SELECT `streams`.`id`, `streams`.`stream_icon`, `streams`.`type`, `streams_servers`.`cchannel_rsources`, `streams`.`stream_source`, `streams`.`stream_display_name`, `streams`.`tv_archive_duration`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, `streams_servers`.`parent_id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			}
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rServerCount = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = $rRow["id"];
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, COUNT(`server_stream_id`) AS `count` FROM `streams_servers` WHERE `stream_id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ") GROUP BY `stream_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rServerCount[$rRow["stream_id"]] = $rRow["count"];
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						if ($rSettings["streams_grouped"]) {
+							$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, true, true);
+						} else {
+							$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, false, false);
+						}
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if (SettingsManager::getAll()["redis_handler"]) {
+						if ($rSettings["streams_grouped"] == 1) {
+							$rRow["clients"] = $rConnectionCount[$rRow["id"]] ?? 0;
+						} else {
+							$rRow["clients"] = count($rConnectionCount[$rRow["id"]][$rRow["server_id"]] ?? []);
+						}
+					}
+					if ($rIsAPI) {
+						unset($rRow["stream_source"]);
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true) ?: [];
+						if ((string) (RequestManager::get("category") ?? "") !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]["category_name"] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rUptime = (0 < (int) $rRow["stream_started"]) ? (time() - (int) $rRow["stream_started"]) : 0;
+						if ($rRow["server_id"]) {
+							if ((int) $rRow["direct_source"] == 1) {
+								$rActualStatus = 5;
+							} elseif ($rRow["monitor_pid"]) {
+								if ($rRow["pid"] && 0 < $rRow["pid"]) {
+									$rActualStatus = ((int) $rRow["stream_status"] == 2) ? 2 : 1;
+								} elseif ($rRow["stream_status"] == 0) {
+									$rActualStatus = 2;
+								} else {
+									$rActualStatus = 3;
+								}
+							} elseif ((int) $rRow["on_demand"] == 1) {
+								$rGoOD = json_decode($rRow["progress_info"] ?? "", true); // QC-GO-OD-STATS: open on-demand channel served by the Go relay = running
+								$rActualStatus = (is_array($rGoOD) && ($rGoOD["producer"] ?? "") === "go" && intval($rGoOD["go_at"] ?? 0) > time() - 150) ? 1 : 4;
+							} else {
+								$rActualStatus = 0;
+							}
+						} else {
+							$rActualStatus = -1;
+						}
+						$rServerId  = (int) ($rRow["server_id"] ?: 0);
+						// This table's own grouping: a per-server view (`single`) switched it off above.
+						$rGrouped   = ($rSettings["streams_grouped"] == 1);
+						$rServerCnt = (int) ($rServerCount[$rRow["id"]] ?? 1);
+						$rSourceLabel = null;
+						if (!$rGrouped) {
+							if (isset($rRow["parent_id"]) && (int) $rRow["parent_id"] > 0) {
+								$rSourceLabel = "loop: " . strtolower(ServerRepository::getAll()[$rRow["parent_id"]]["server_name"] ?? "");
+							} else {
+								$rSourceLabel = strtolower(parse_url($rRow["current_source"] ?? "")["host"] ?? "");
+							}
+						}
+						$rStreamInfo = json_decode($rRow["stream_info"] ?? "", true);
+						if (!is_array($rStreamInfo)) {
+							$rStreamInfo = [];
+						}
+						$rProgressInfo = json_decode($rRow["progress_info"] ?? "", true) ?: [];
+						$rInfo = null;
+						if ($rActualStatus == 1) {
+							$rSpeed = (isset($rProgressInfo["speed"]) && preg_match("/([0-9]+(?:\\.[0-9]+)?)/", (string) $rProgressInfo["speed"], $rSpeedMatch)) ? (round((float) $rSpeedMatch[1], 2) . "x") : "1x";
+							$rInfo = [
+								"bitrate"     => ($rRow["bitrate"] == 0) ? "?" : (int) $rRow["bitrate"],
+								"audio_codec" => $rStreamInfo["codecs"]["audio"]["codec_name"] ?? "N/A",
+								"speed"       => $rSpeed,
+							];
+						}
+						$rReturn["data"][] = [
+							"id"             => (int) $rRow["id"],
+							"display_id"     => (!$rGrouped && 1 < $rServerCnt) ? ($rRow["id"] . "-" . $rServerId) : (string) $rRow["id"],
+							"server_col_id"  => $rGrouped ? -1 : $rServerId,
+							"icon"           => ((string) $rRow["stream_icon"] !== '' && SettingsManager::getAll()["show_images"]) ? $rRow["stream_icon"] : null,
+							"title"          => $rRow["stream_display_name"],
+							"category"       => $rCategory,
+							"source_label"   => $rSourceLabel,
+							"server_id"      => $rServerId,
+							"server_name"    => $rRow["server_name"] ?: null,
+							"server_url"     => ($rRow["server_name"] && Authorization::check("adv", "servers")) ? "server_view?id=" . $rServerId : null,
+							"server_count"   => $rServerCnt,
+							"server_offline" => (($rServers[$rRow["server_id"]]["last_status"] ?? null) != 1),
+							"clients"        => (int) $rRow["clients"],
+							"status"         => $rActualStatus,
+							"uptime"         => $rUptime,
+							"on_demand"      => (1 == (int) $rRow["on_demand"]),
+							"notes"          => !empty($rRow["notes"]) ? $rRow["notes"] : null,
+							"info"           => $rInfo,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleMovies($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings, $rServers;
+		if (!Authorization::check("adv", "movies") && !Authorization::check("adv", "mass_sedits_vod")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("movie");
+		// Leading false, false = the Bootstrap 5 Responsive control + bulk-select columns.
+		$rOrder = [false, false, "`streams`.`id`", false, "`streams`.`stream_display_name`", "`server_name`", "`clients`", "`streams_servers`.`stream_started`", false, false, false, "`streams_servers`.`bitrate`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`streams`.`type` = 2";
+		$rDuplicates = false;
+		if (RequestManager::has("stream_id")) {
+			$rWhere[] = "`streams`.`id` = ?";
+			$rWhereV[] = RequestManager::get("stream_id");
+			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
+		} elseif (RequestManager::has("source_id")) {
+			$rWhere[] = "MD5(`streams`.`stream_source`) = ?";
+			$rWhereV[] = RequestManager::get("source_id");
+			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
+		} else {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+				foreach (range(1, 4) as $rInt) {
+					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+				}
+				$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
+			}
+			if (0 < (int) (RequestManager::get("category") ?? 0)) {
+				$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+				$rWhereV[] = RequestManager::get("category");
+			} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
+				$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
+			}
+			if (RequestManager::has("refresh")) {
+				$rWhere = ["`streams`.`id` IN (" . implode(",", array_map("intval", explode(",", RequestManager::get("refresh")))) . ")"];
+				$rWhereV = [];
+				$rStart = 0;
+				$rLimit = 1000;
+			}
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
+				if (RequestManager::get("filter") == 1) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` <> 1)";
+				} elseif (RequestManager::get("filter") == 2) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 1 AND `streams_servers`.`stream_status` <> 1)";
+				} elseif (RequestManager::get("filter") == 3) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` = 1)";
+				} elseif (RequestManager::get("filter") == 4) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` <> 1)";
+				} elseif (RequestManager::get("filter") == 5) {
+					$rWhere[] = "`streams`.`direct_source` = 1";
+				} elseif (RequestManager::get("filter") == 6) {
+					$rWhere[] = "(`streams`.`movie_properties` IS NULL OR `streams`.`movie_properties` = '' OR `streams`.`movie_properties` = '[]' OR `streams`.`movie_properties` = '{}' OR `streams`.`movie_properties` LIKE '%tmdb_id\":\"\"%')";
+				} elseif (RequestManager::get("filter") == 7) {
+					$rWhere[] = "`streams`.`id` IN (SELECT MIN(`id`) FROM `streams` WHERE `type` = 2 GROUP BY `stream_source` HAVING COUNT(`stream_source`) > 1)";
+					$rDuplicates = true;
+				} elseif (RequestManager::get("filter") == 8) {
+					$rWhere[] = "`streams`.`transcode_profile_id` > 0";
+				}
+			}
+			if ((string) (RequestManager::get("audio") ?? '') !== '') {
+				if (RequestManager::get("audio") == -1) {
+					$rWhere[] = "`streams_servers`.`audio_codec` IS NULL";
+				} else {
+					$rWhere[] = "`streams_servers`.`audio_codec` = ?";
+					$rWhereV[] = RequestManager::get("audio");
+				}
+			}
+			if ((string) (RequestManager::get("video") ?? '') !== '') {
+				if (RequestManager::get("video") == -1) {
+					$rWhere[] = "`streams_servers`.`video_codec` IS NULL";
+				} else {
+					$rWhere[] = "`streams_servers`.`video_codec` = ?";
+					$rWhereV[] = RequestManager::get("video");
+				}
+			}
+			if ((string) (RequestManager::get("resolution") ?? '') !== '') {
+				$rWhere[] = "`streams_servers`.`resolution` = ?";
+				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
+			}
+			if (0 < (int) (RequestManager::get("server") ?? 0)) {
+				$rWhere[] = "`streams_servers`.`server_id` = ?";
+				$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+			} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
+				$rWhere[] = "`streams_servers`.`server_id` IS NULL";
+			}
+			$rOrderBy = "";
+			if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+				$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+				$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+			}
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		if (RequestManager::has("single")) {
+			$rSettings["streams_grouped"] = 0;
+		} elseif (RequestManager::has("grouped")) {
+			$rSettings["streams_grouped"] = 1;
+		}
+		if ($rSettings["streams_grouped"] == 1) {
+			$rCountQuery = "SELECT COUNT(DISTINCT(`streams`.`id`)) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . ";";
+		} else {
+			$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . ";";
+		}
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			if ($rSettings["streams_grouped"] == 1) {
+				$rQuery = "SELECT `streams`.`id`, MD5(`streams`.`stream_source`) AS `source`, `streams`.`movie_properties`, `streams`.`year`, `streams_servers`.`to_analyze`, `streams`.`target_container`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL " . $rWhereString . " GROUP BY `streams`.`id` " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			} else {
+				$rQuery = "SELECT `streams`.`id`, MD5(`streams`.`stream_source`) AS `source`, `streams`.`movie_properties`, `streams`.`year`, `streams_servers`.`to_analyze`, `streams`.`target_container`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			}
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rServerCount = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = $rRow["id"];
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, COUNT(`server_stream_id`) AS `count` FROM `streams_servers` WHERE `stream_id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ") GROUP BY `stream_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rServerCount[$rRow["stream_id"]] = $rRow["count"];
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						if ($rSettings["streams_grouped"]) {
+							$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, true, true);
+						} else {
+							$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, false, false);
+						}
+					}
+					if ($rDuplicates) {
+						$rDuplicateCount = [];
+						$db->query("SELECT MD5(`stream_source`) AS `source`, COUNT(`stream_source`) AS `count` FROM `streams` WHERE `stream_source` IN (SELECT `stream_source` FROM `streams` WHERE `id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ")) GROUP BY `stream_source` HAVING COUNT(`stream_source`) > 1;");
+						foreach ($db->get_rows() as $rRow) {
+							$rDuplicateCount[$rRow["source"]] = $rRow["count"];
+						}
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if (SettingsManager::getAll()["redis_handler"]) {
+						if ($rSettings["streams_grouped"] == 1) {
+							$rRow["clients"] = $rConnectionCount[$rRow["id"]] ?? 0;
+						} else {
+							$rRow["clients"] = count($rConnectionCount[$rRow["id"]][$rRow["server_id"]] ?? []);
+						}
+					}
+					if ($rIsAPI) {
+						unset($rReturn["source"]);
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode((string) $rRow["category_id"], true) ?: [];
+						$rProperties  = json_decode((string) $rRow["movie_properties"], true);
+						if (!is_array($rProperties)) {
+							$rProperties = [];
+						}
+						if ((string) (RequestManager::get("category") ?? "") !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]["category_name"] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						if ($rRow["server_id"]) {
+							if ((int) $rRow["direct_source"] == 1) {
+								$rActualStatus = ((int) $rRow["direct_proxy"] == 1) ? 5 : 3;
+							} elseif (!is_null($rRow["pid"]) && 0 < $rRow["pid"]) {
+								$rActualStatus = ($rRow["to_analyze"] == 1) ? 2 : (($rRow["stream_status"] == 1) ? 4 : 1);
+							} else {
+								$rActualStatus = 0;
+							}
+						} else {
+							$rActualStatus = -1;
+						}
+						$rServerId  = (int) ($rRow["server_id"] ?: 0);
+						// This table's own grouping: a per-server view (`single`) switched it off above.
+						$rGrouped   = ($rSettings["streams_grouped"] == 1);
+						$rServerCnt = (int) ($rServerCount[$rRow["id"]] ?? 1);
+						$rStreamInfo = json_decode($rRow["stream_info"] ?? "", true);
+						if (!is_array($rStreamInfo)) {
+							$rStreamInfo = [];
+						}
+						$rInfo = null;
+						if ($rActualStatus == 1) {
+							$rInfo = [
+								"bitrate"     => (int) $rRow["bitrate"],
+								"width"       => $rStreamInfo["codecs"]["video"]["width"] ?? "?",
+								"height"      => $rStreamInfo["codecs"]["video"]["height"] ?? "?",
+								"video_codec" => $rStreamInfo["codecs"]["video"]["codec_name"] ?? "N/A",
+								"audio_codec" => $rStreamInfo["codecs"]["audio"]["codec_name"] ?? "N/A",
+								"duration"    => $rStreamInfo["duration"] ?? "--",
+							];
+						}
+						$rReturn["data"][] = [
+							"id"             => (int) $rRow["id"],
+							"display_id"     => (!$rGrouped && 1 < $rServerCnt) ? ($rRow["id"] . "-" . $rServerId) : (string) $rRow["id"],
+							"server_col_id"  => $rGrouped ? -1 : $rServerId,
+							"title"          => $rRow["stream_display_name"],
+							"year"           => $rRow["year"] ?: null,
+							"rating"         => !empty($rProperties["rating"]) ? (float) $rProperties["rating"] : null,
+							"category"       => $rCategory,
+							"image"          => ((string) ($rProperties["movie_image"] ?? "") !== '' && SettingsManager::getAll()["show_images"]) ? $rProperties["movie_image"] : null,
+							"server_id"      => $rServerId,
+							"server_name"    => $rRow["server_name"] ?: null,
+							"server_url"     => ($rRow["server_name"] && Authorization::check("adv", "servers")) ? "server_view?id=" . $rServerId : null,
+							"server_count"   => $rServerCnt,
+							"server_offline" => (($rServers[$rRow["server_id"]]["last_status"] ?? null) != 1),
+							"clients"        => (int) $rRow["clients"],
+							"status"         => $rActualStatus,
+							"tmdb"           => (isset($rProperties["kinopoisk_url"]) && (string) $rProperties["kinopoisk_url"] !== ''),
+							"notes"          => !empty($rRow["notes"]) ? $rRow["notes"] : null,
+							"target_container" => $rRow["target_container"] ?? null,
+							"info"           => $rInfo,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleEpisodeList($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "import_episodes") && !Authorization::check("adv", "mass_delete")) {
+			exit;
+		}
+		$rOrder = ["`streams`.`id`", false, "`streams`.`stream_display_name`", "`streams_servers`.`server_id`", "`streams_servers`.`stream_status`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`streams`.`type` = 5";
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
+			$rWhere[] = "`streams_servers`.`server_id` = ?";
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
+			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
+		}
+		if ((string) (RequestManager::get("series") ?? '') !== '') {
+			$rWhere[] = "`streams_episodes`.`series_id` = ?";
+			$rWhereV[] = RequestManager::get("series");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 5) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams_series`.`title` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (RequestManager::get("filter") == 1) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` <> 1)";
+			} elseif (RequestManager::get("filter") == 2) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 1 AND `streams_servers`.`stream_status` <> 1)";
+			} elseif (RequestManager::get("filter") == 3) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`stream_status` = 1)";
+			} elseif (RequestManager::get("filter") == 4) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` <> 1)";
+			} elseif (RequestManager::get("filter") == 5) {
+				$rWhere[] = "`streams`.`direct_source` = 1";
+			} elseif (RequestManager::get("filter") == 7) {
+				$rWhere[] = "`streams`.`transcode_profile_id` > 0";
+			}
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(DISTINCT(`streams`.`id`)) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if (0 < $db->num_rows()) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, MD5(`streams`.`stream_source`) AS `source`, `streams_servers`.`to_analyze`, `streams`.`movie_properties`, `streams`.`target_container`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, `streams_series`.`title`, `streams_series`.`seasons`, `streams_series`.`id` AS `sid`, `streams_episodes`.`season_num` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` " . $rWhereString . " GROUP BY `streams`.`id` " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rServerCount = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = $rRow["id"];
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, COUNT(`server_stream_id`) AS `count` FROM `streams_servers` WHERE `stream_id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ") GROUP BY `stream_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rServerCount[$rRow["stream_id"]] = $rRow["count"];
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rActualStatus = 0;
+						if ((int) $rRow["direct_source"] == 1) {
+							if ((int) $rRow["direct_proxy"] == 1) {
+								$rActualStatus = 5;
+							} else {
+								$rActualStatus = 3;
+							}
+						} elseif (!is_null($rRow["pid"]) && 0 < $rRow["pid"]) {
+							if ($rRow["to_analyze"] == 1) {
+								$rActualStatus = 2;
+							} elseif ($rRow["stream_status"] == 1) {
+								$rActualStatus = 4;
+							} else {
+								$rActualStatus = 1;
+							}
+						} else {
+							$rActualStatus = 0;
+						}
+						$rProperties = json_decode((string) $rRow["movie_properties"], true);
+						if (!is_array($rProperties)) {
+							$rProperties = [];
+						}
+						$rImage = SettingsManager::getAll()["show_images"] ? (string) ($rProperties["movie_image"] ?? '') : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"movie_image" => $rImage,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"series_title" => (string) ($rRow["title"] ?? ''),
+							"season_num" => $rRow["season_num"],
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleLineActivity($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rProxyServers;
+		if (!Authorization::check("adv", "connection_logs")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable).
+		$rOrderBy = $this->dtOrderBy([false, "`username`", "`streams`.`stream_display_name`", "`server_name`", "`lines_activity`.`user_agent`", "`lines_activity`.`isp`", "`lines_activity`.`user_ip`", "`lines_activity`.`date_start`", "`lines_activity`.`activity_id`", "`lines_activity`.`date_end` - `lines_activity`.`date_start`", "`lines_activity`.`container`", "`lines`.`is_restreamer`"]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 7) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			// A user agent is stored entity-encoded and the player column shows
+			// it decoded: the name as shown is matched as well.
+			$rWhereV[] = "%" . htmlentities($rSearch) . "%";
+			$rWhere[] = "(`lines_activity`.`hmac_identifier` LIKE ? OR `lines_activity`.`user_agent` LIKE ? OR `lines_activity`.`user_ip` LIKE ? OR `lines_activity`.`container` LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_start`) LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_end`) LIKE ? OR `lines_activity`.`geoip_country_code` LIKE ? OR `lines_activity`.`user_agent` LIKE ?)";
+		}
+		$rRange = (string) (RequestManager::get("range") ?? '');
+		if ($rRange !== '') {
+			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
+			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
+			if ($rStartTime && $rEndTime) {
+				$rWhere[]  = "(`lines_activity`.`date_start` >= ? AND `lines_activity`.`date_end` <= ?)";
+				$rWhereV[] = $rStartTime;
+				$rWhereV[] = $rEndTime;
+			}
+		}
+		if ((string) (RequestManager::get("stream_id", RequestManager::get("stream")) ?? '') !== '') {
+			$rWhere[]  = "`lines_activity`.`stream_id` = ?";
+			$rWhereV[] = RequestManager::get("stream_id", RequestManager::get("stream"));
+		}
+		if ((string) (RequestManager::get("user_id", RequestManager::get("user")) ?? '') !== '') {
+			$rWhere[]  = "`lines_activity`.`user_id` = ?";
+			$rWhereV[] = RequestManager::get("user_id", RequestManager::get("user"));
+		}
+		if (0 < (int) (RequestManager::get("server_id", RequestManager::get("server")) ?? 0)) {
+			$rWhere[]  = "(`lines_activity`.`server_id` = ? OR `lines_activity`.`proxy_id` = ?)";
+			$rWhereV[] = (int) (RequestManager::get("server_id", RequestManager::get("server")) ?? 0);
+			$rWhereV[] = (int) (RequestManager::get("server_id", RequestManager::get("server")) ?? 0);
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `lines_activity` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rCanHmac    = Authorization::check("adv", "add_hmac");
+			$rCanMag     = Authorization::check("adv", "edit_mag");
+			$rCanE2      = Authorization::check("adv", "edit_e2");
+			$rCanUsers   = Authorization::check("adv", "users");
+			$rCanServers = Authorization::check("adv", "servers");
+			$rStreamPerm = ["1" => "streams", "2" => "movies", "3" => "streams", "4" => "radio", "5" => "series"];
+			$rStreamPermOk = [];
+			foreach (array_unique($rStreamPerm) as $rPerm) {
+				$rStreamPermOk[$rPerm] = Authorization::check("adv", $rPerm);
+			}
+			$rQuery = "SELECT `lines`.`username`, `lines`.`is_e2`, `lines`.`is_mag`, `lines_activity`.`activity_id`, `lines_activity`.`hmac_identifier`, `lines_activity`.`hmac_id`, `lines_activity`.`proxy_id`, `lines_activity`.`container`, `lines_activity`.`isp`, `lines_activity`.`user_id`, `lines_activity`.`stream_id`, `streams`.`series_no`, `lines_activity`.`server_id`, `lines_activity`.`user_agent`, `lines_activity`.`user_ip`, `lines_activity`.`date_start`, `lines_activity`.`date_end`, `lines_activity`.`geoip_country_code`, `streams`.`stream_display_name`, `streams`.`type`, (SELECT `server_name` FROM `servers` WHERE `id` = `lines_activity`.`server_id`) AS `server_name`, `lines`.`is_restreamer` FROM `lines_activity` LEFT JOIN `lines` ON `lines_activity`.`user_id` = `lines`.`id` LEFT JOIN `streams` ON `lines_activity`.`stream_id` = `streams`.`id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			$rRows = $db->get_rows();
+			$rDeviceInfo = $rMagIDs = $rEnigmaIDs = [];
+			foreach ($rRows as $rRow) {
+				if ($rRow["is_mag"]) {
+					$rMagIDs[] = (int) $rRow["user_id"];
+				}
+				if ($rRow["is_e2"]) {
+					$rEnigmaIDs[] = (int) $rRow["user_id"];
+				}
+			}
+			if (0 < count($rMagIDs)) {
+				$db->query("SELECT `user_id`, `mag_id`, `mac` FROM `mag_devices` WHERE `user_id` IN (" . implode(",", $rMagIDs) . ");");
+				foreach ($db->get_rows() as $rRow) {
+					$rDeviceInfo[(int) $rRow["user_id"]] = ["device_id" => $rRow["mag_id"], "device_name" => $rRow["mac"]];
+				}
+			}
+			if (0 < count($rEnigmaIDs)) {
+				$db->query("SELECT `user_id`, `device_id`, `mac` FROM `enigma2_devices` WHERE `user_id` IN (" . implode(",", $rEnigmaIDs) . ");");
+				foreach ($db->get_rows() as $rRow) {
+					$rDeviceInfo[(int) $rRow["user_id"]] = ["device_id" => $rRow["device_id"], "device_name" => $rRow["mac"]];
+				}
+			}
+			foreach ($rRows as $rRow) {
+				$rDevId   = $rDeviceInfo[$rRow["user_id"]]["device_id"] ?? null;
+				$rDevName = $rDeviceInfo[$rRow["user_id"]]["device_name"] ?? null;
+				$rUserSub = null;
+				$rUserUrl = null;
+				$rIsHmac  = !empty($rRow["hmac_id"]);
+				if ($rIsHmac) {
+					$rUserLabel = "HMAC - " . $rRow["hmac_identifier"];
+					if ($rCanHmac) {
+						$rUserUrl = "hmac?id=" . (int) $rRow["hmac_id"];
+					}
+				} elseif ($rRow["is_mag"]) {
+					$rUserLabel = $rRow["username"];
+					$rUserSub   = $rDevName;
+					if ($rCanMag && $rDevId !== null) {
+						$rUserUrl = "mag?id=" . (int) $rDevId;
+					}
+				} elseif ($rRow["is_e2"]) {
+					$rUserLabel = $rRow["username"];
+					$rUserSub   = $rDevName;
+					if ($rCanE2 && $rDevId !== null) {
+						$rUserUrl = "enigma?id=" . (int) $rDevId;
+					}
+				} else {
+					$rUserLabel = $rRow["username"];
+					if ($rCanUsers) {
+						$rUserUrl = "line?id=" . (int) $rRow["user_id"];
+					}
+				}
+				$rType = strval($rRow["type"] ?? '');
+				$rStreamUrl = null;
+				if (isset($rStreamPerm[$rType]) && ($rStreamPermOk[$rStreamPerm[$rType]] ?? false)) {
+					$rStreamUrl = ($rType == "5")
+						? "serie?id=" . (int) $rRow["series_no"]
+						: "stream_view?id=" . (int) $rRow["stream_id"];
+				}
+				$rProxyVia = (0 < (int) $rRow["proxy_id"] && isset($rProxyServers[$rRow["proxy_id"]]))
+					? $rProxyServers[$rRow["proxy_id"]]["server_name"]
+					: null;
+				$rItem = [
+					"activity_id"   => (int) $rRow["activity_id"],
+					"user_label"    => $rUserLabel,
+					"user_sub"      => $rUserSub,
+					"user_url"      => $rUserUrl,
+					"stream_name"   => $rRow["stream_display_name"],
+					"stream_url"    => $rStreamUrl,
+					"server_name"   => $rRow["server_name"],
+					"server_url"    => ($rCanServers && $rRow["server_name"] !== null) ? "server_view?id=" . (int) $rRow["server_id"] : null,
+					"proxy_via"     => $rProxyVia,
+					// A user agent is stored entity-encoded: the page gets the name the
+					// device gave and writes it as text. The API's rows keep it as stored.
+					"player"        => trim(explode("(", $rIsAPI ? (string) $rRow["user_agent"] : html_entity_decode((string) $rRow["user_agent"]))[0]),
+					"isp"           => $rRow["isp"],
+					"user_ip"       => $rRow["user_ip"],
+					"country"       => ((string) $rRow["geoip_country_code"] !== '') ? strtolower($rRow["geoip_country_code"]) : null,
+					"date_start"    => (int) $rRow["date_start"],
+					"date_end"      => (int) $rRow["date_end"],
+					"duration"      => (int) $rRow["date_end"] - (int) $rRow["date_start"],
+					"container"     => strtoupper((string) $rRow["container"]),
+					"is_restreamer" => (1 == (int) $rRow["is_restreamer"]),
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleLiveConnections($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rProxyServers;
+		if (!Authorization::check("adv", "live_connections")) {
+			exit;
+		}
+		$rRows = [];
+		if (SettingsManager::getAll()["redis_handler"]) {
+			$rRedis = RedisManager::instance();
+			if (!$rRedis instanceof \Redis) {
+				echo json_encode(["draw" => intval(RequestManager::get("draw") ?? 0), "recordsTotal" => 0, "recordsFiltered" => 0, "data" => []]);
+				exit;
+			}
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') !== "desc";
+			$rFilterBefore = true;
+			$rServerID = $rStreamID = $rUserID = null;
+			$rKeyCount = 0;
+			if (RequestManager::has("refresh")) {
+				$rStart = 0;
+				$rLimit = 1000;
+				$rKeys = explode(",", RequestManager::get("refresh"));
+				$rKeyCount = count($rKeys);
+			} else {
+				$rServerID = 0 < (int) (RequestManager::get("server_id") ?? 0) ? (int) (RequestManager::get("server_id") ?? 0) : null;
+				$rStreamID = 0 < (int) (RequestManager::get("stream_id") ?? 0) ? (int) (RequestManager::get("stream_id") ?? 0) : null;
+				$rUserID = 0 < (int) (RequestManager::get("user_id") ?? 0) ? (int) (RequestManager::get("user_id") ?? 0) : null;
+				if ($rUserID) {
+					if ($rServerID || $rStreamID) {
+						$rKeys = $rRedis->zRevRangeByScore("LINE#" . $rUserID, "+inf", "-inf");
+						$rFilterBefore = false;
+					} else {
+						if ($rOrderDirection) {
+							$rKeys = $rRedis->zRangeByScore("LINE#" . $rUserID, "-inf", "+inf", ["limit" => [$rStart, $rLimit]]);
+						} else {
+							$rKeys = $rRedis->zRevRangeByScore("LINE#" . $rUserID, "+inf", "-inf", ["limit" => [$rStart, $rLimit]]);
+						}
+						$rKeyCount = $rRedis->zCard("LINE#" . $rUserID);
+					}
+				} elseif ($rStreamID) {
+					if ($rUserID || $rServerID) {
+						$rKeys = $rRedis->zRevRangeByScore("STREAM#" . $rStreamID, "+inf", "-inf");
+						$rFilterBefore = false;
+					} else {
+						if ($rOrderDirection) {
+							$rKeys = $rRedis->zRangeByScore("STREAM#" . $rStreamID, "-inf", "+inf", ["limit" => [$rStart, $rLimit]]);
+						} else {
+							$rKeys = $rRedis->zRevRangeByScore("STREAM#" . $rStreamID, "+inf", "-inf", ["limit" => [$rStart, $rLimit]]);
+						}
+						$rKeyCount = $rRedis->zCard("STREAM#" . $rStreamID);
+					}
+				} elseif ($rServerID) {
+					if ($rUserID || $rStreamID) {
+						$rKeys = $rRedis->zRevRangeByScore("SERVER#" . $rServerID, "+inf", "-inf");
+						$rFilterBefore = false;
+					} else {
+						if ($rOrderDirection) {
+							$rKeys = $rRedis->zRangeByScore("SERVER#" . $rServerID, "-inf", "+inf", ["limit" => [$rStart, $rLimit]]);
+						} else {
+							$rKeys = $rRedis->zRevRangeByScore("SERVER#" . $rServerID, "+inf", "-inf", ["limit" => [$rStart, $rLimit]]);
+						}
+						$rKeyCount = $rRedis->zCard("SERVER#" . $rServerID);
+					}
+				} else {
+					if ($rOrderDirection) {
+						$rKeys = $rRedis->zRangeByScore("LIVE", "-inf", "+inf", ["limit" => [$rStart, $rLimit]]);
+					} else {
+						$rKeys = $rRedis->zRevRangeByScore("LIVE", "+inf", "-inf", ["limit" => [$rStart, $rLimit]]);
+					}
+					$rKeyCount = $rRedis->zCard("LIVE");
+				}
+			}
+			if ($rOrderDirection && !$rFilterBefore) {
+				$rKeys = array_reverse($rKeys);
+			}
+			if (!$rFilterBefore) {
+				$rKeyCount = count($rKeys);
+			}
+			$rMGetResult = !empty($rKeys) ? $rRedis->mGet($rKeys) : [];
+			foreach (($rMGetResult ?: []) as $rRow) {
+				$rRow = igbinary_unserialize($rRow);
+				if (!is_array($rRow)) {
+					$rKeyCount--;
+				} else {
+					if (!$rFilterBefore) {
+						// Counted out and left out: it was counted out only, and still listed.
+						if ($rServerID && $rServerID != $rRow["server_id"] || $rStreamID && $rStreamID != $rRow["stream_id"] || $rUserID && $rUserID != $rRow["user_id"]) {
+							$rKeyCount--;
+							continue;
+						}
+					}
+					$rRow["activity_id"] = $rRow["uuid"];
+					$rRow["identifier"] = $rRow["user_id"] ?: $rRow["hmac_id"] . "_" . $rRow["hmac_identifier"];
+					$rRow["active_time"] = time() - $rRow["date_start"];
+					$rRow["server_name"] = ServerRepository::getAll()[$rRow["server_id"]]["server_name"] ?: "";
+					$rRows[] = $rRow;
+				}
+			}
+			if (!$rFilterBefore) {
+				$rRows = array_slice($rRows, $rStart, $rLimit);
+			}
+			$rUUIDs = $rStreamIDs = $rUserIDs = [];
+			foreach ($rRows as $rRow) {
+				if ($rRow["stream_id"]) {
+					$rStreamIDs[] = (int) $rRow["stream_id"];
+				}
+				if ($rRow["user_id"]) {
+					$rUserIDs[] = (int) $rRow["user_id"];
+				}
+				if ($rRow["uuid"]) {
+					$rUUIDs[] = $rRow["uuid"];
+				}
+			}
+			$rStreamNames = $rDivergenceMap = $rSeriesMap = $rUserMap = [];
+			if (0 < count($rUserIDs)) {
+				$db->query("SELECT `lines`.`id`, `lines`.`is_mag`, `lines`.`is_e2`, `lines`.`is_restreamer`, `lines`.`username`, `mag_devices`.`mag_id`,`mag_devices`.`mac`, `enigma2_devices`.`device_id` FROM `lines` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines`.`id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines`.`id` WHERE `lines`.`id` IN (" . implode(",", $rUserIDs) . ");");
+				foreach ($db->get_rows() as $rRow) {
+					$rUserID = $rRow["id"];
+					unset($rRow["id"]);
+					$rUserMap[$rUserID] = $rRow;
+				}
+			}
+			if (0 < count($rStreamIDs)) {
+				$db->query("SELECT `stream_id`, `series_id` FROM `streams_episodes` WHERE `stream_id` IN (" . implode(",", $rStreamIDs) . ");");
+				foreach ($db->get_rows() as $rRow) {
+					$rSeriesMap[$rRow["stream_id"]] = $rRow["series_id"];
+				}
+				$db->query("SELECT `id`, `type`, `stream_display_name` FROM `streams` WHERE `id` IN (" . implode(",", $rStreamIDs) . ");");
+				foreach ($db->get_rows() as $rRow) {
+					$rStreamNames[$rRow["id"]] = [$rRow["stream_display_name"], $rRow["type"]];
+				}
+			}
+			if (0 < count($rUUIDs)) {
+				$db->query("SELECT `uuid`, `divergence` FROM `lines_divergence` WHERE `uuid` IN ('" . implode("','", $rUUIDs) . "');");
+				foreach ($db->get_rows() as $rRow) {
+					$rDivergenceMap[$rRow["uuid"]] = $rRow["divergence"];
+				}
+			}
+			$counter = count($rRows);
+			for ($i = 0; $i < $counter; $i++) {
+				$rRows[$i]["divergence"] = $rDivergenceMap[$rRows[$i]["uuid"]] ?? 0;
+				$rRows[$i]["series_no"] = $rSeriesMap[$rRows[$i]["stream_id"]] ?? null;
+				$rRows[$i]["stream_display_name"] = $rStreamNames[$rRows[$i]["stream_id"]][0] ?? "";
+				$rRows[$i]["type"] = $rStreamNames[$rRows[$i]["stream_id"]][1] ?? 1;
+				$rRows[$i] = array_merge($rRows[$i], $rUserMap[$rRows[$i]["user_id"]] ?? []);
+			}
+			$rReturn["recordsTotal"] = $rKeyCount;
+			$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		} else {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			// Leading false = the Bootstrap 5 Responsive control column (client index 0);
+			// index 1 is the hidden activity_id column, so the visible columns line up.
+			$rOrder = [false, "`lines_live`.`activity_id`", "`lines_live`.`divergence`", "`username` " . $rOrderDirection . ", `lines_live`.`hmac_identifier`", "`streams`.`stream_display_name`", "`server_name`", "`lines_live`.`user_agent`", "`lines_live`.`isp`", "`lines_live`.`user_ip`", "UNIX_TIMESTAMP() - `lines_live`.`date_start`", "`lines_live`.`container`", "`lines`.`is_restreamer`", false];
+			if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+				$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+			} else {
+				$rOrderRow = 0;
+			}
+			$rWhere = $rWhereV = [];
+			$rWhere[] = "`hls_end` = 0";
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+				foreach (range(1, 10) as $rInt) {
+					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+				}
+				// A user agent is stored entity-encoded and the player column shows
+				// it decoded: the name as shown is matched as well.
+				$rWhereV[] = "%" . htmlentities((string) RequestManager::get("search")["value"]) . "%";
+				$rWhere[] = "(`lines_live`.`hmac_identifier` LIKE ? OR `lines_live`.`user_agent` LIKE ? OR `lines_live`.`user_ip` LIKE ? OR `lines_live`.`container` LIKE ? OR FROM_UNIXTIME(`lines_live`.`date_start`) LIKE ? OR `lines_live`.`geoip_country_code` LIKE ? OR `lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `enigma2_devices`.`mac` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `lines_live`.`user_agent` LIKE ?)";
+			}
+			if (0 < (int) (RequestManager::get("server_id") ?? 0)) {
+				$rWhere[] = "(`lines_live`.`server_id` = ? OR `lines_live`.`proxy_id` = ?)";
+				$rWhereV[] = RequestManager::get("server_id");
+				$rWhereV[] = RequestManager::get("server_id");
+			}
+			if (0 < (int) (RequestManager::get("stream_id") ?? 0)) {
+				$rWhere[] = "`lines_live`.`stream_id` = ?";
+				$rWhereV[] = RequestManager::get("stream_id");
+			}
+			if (0 < (int) (RequestManager::get("user_id") ?? 0)) {
+				$rWhere[] = "`lines_live`.`user_id` = ?";
+				$rWhereV[] = RequestManager::get("user_id");
+			}
+			if (RequestManager::has("refresh")) {
+				$rWhere = ["`lines_live`.`activity_id` IN (" . implode(",", array_map("intval", explode(",", RequestManager::get("refresh")))) . ") AND `hls_end` = 0"];
+				$rWhereV = [];
+				$rStart = 0;
+				$rLimit = 1000;
+			}
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
+				if (RequestManager::get("filter") == 1) {
+					$rWhere[] = "(`lines`.`is_mag` = 0 AND `lines`.`is_e2` = 0 AND `lines`.`is_restreamer` = 0 AND `lines`.`is_stalker` = 0)";
+				} elseif (RequestManager::get("filter") == 2) {
+					$rWhere[] = "`lines`.`is_mag` = 1";
+				} elseif (RequestManager::get("filter") == 3) {
+					$rWhere[] = "`lines`.`is_e2` = 1";
+				} elseif (RequestManager::get("filter") == 4) {
+					$rWhere[] = "`lines`.`is_trial` = 1";
+				} elseif (RequestManager::get("filter") == 5) {
+					$rWhere[] = "`lines`.`is_restreamer` = 1";
+				} elseif (RequestManager::get("filter") == 6) {
+					$rWhere[] = "`lines`.`is_stalker` = 1";
+				}
+			}
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+			$rOrderBy = "";
+			if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+				$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+			}
+			$rCountQuery = "SELECT COUNT(*) AS `count` FROM `lines_live` LEFT JOIN `lines` ON `lines_live`.`user_id` = `lines`.`id` LEFT JOIN `streams` ON `lines_live`.`stream_id` = `streams`.`id` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines_live`.`user_id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines_live`.`user_id` " . $rWhereString . ";";
+			$db->query($rCountQuery, ...$rWhereV);
+			if ($db->num_rows() == 1) {
+				$rReturn["recordsTotal"] = $db->get_row()["count"];
+			} else {
+				$rReturn["recordsTotal"] = 0;
+			}
+			$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+			if (0 < $rReturn["recordsTotal"]) {
+				$rQuery = "SELECT `mag_devices`.`mag_id`, `mag_devices`.`mac`,`enigma2_devices`.`device_id`, `lines`.`is_e2`, `lines`.`is_mag`, `lines_live`.`activity_id`, `lines_live`.`hmac_id`, `lines_live`.`hmac_identifier`, `lines_live`.`proxy_id`, `lines_live`.`divergence`, `lines_live`.`user_id`, `lines_live`.`stream_id`, `streams`.`series_no`, `lines`.`is_restreamer`, `lines_live`.`isp`, `lines_live`.`server_id`, `lines_live`.`user_agent`, `lines_live`.`user_ip`, `lines_live`.`container`, `lines_live`.`pid`, `lines_live`.`uuid`, `lines_live`.`date_start`, `lines_live`.`geoip_country_code`, IF(`lines`.`is_mag`, `mag_devices`.`mac`, IF(`lines`.`is_e2`, `enigma2_devices`.`mac`, `lines`.`username`)) AS `username`, `streams`.`stream_display_name`, `streams`.`type`, (SELECT `server_name` FROM `servers` WHERE `id` = `lines_live`.`server_id`) AS `server_name` FROM `lines_live` LEFT JOIN `lines` ON `lines_live`.`user_id` = `lines`.`id` LEFT JOIN `streams` ON `lines_live`.`stream_id` = `streams`.`id` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines_live`.`user_id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines_live`.`user_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+				$db->query($rQuery, ...$rWhereV);
+				if (0 < $db->num_rows()) {
+					$rRows = $db->get_rows();
+				}
+			}
+		}
+		if (0 < count($rRows)) {
+			foreach ($rRows as $rRow) {
+				if ($rIsAPI) {
+					$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+				} else {
+					// Clean JSON for the Bootstrap 5 live_connections page (data gathering above is unchanged).
+					$rIsHmac = !empty($rRow["hmac_id"]);
+					$rUserUrl = null;
+					if ($rIsHmac) {
+						$rUserLabel = "HMAC - " . $rRow["hmac_identifier"];
+						if (Authorization::check("adv", "add_hmac")) {
+							$rUserUrl = "hmac?id=" . (int) $rRow["hmac_id"];
+						}
+					} elseif (!empty($rRow["is_mag"])) {
+						$rUserLabel = $rRow["mac"] ?? $rRow["username"];
+						if (Authorization::check("adv", "edit_mag") && isset($rRow["mag_id"])) {
+							$rUserUrl = "mag?id=" . (int) $rRow["mag_id"];
+						}
+					} elseif (!empty($rRow["is_e2"])) {
+						$rUserLabel = $rRow["username"];
+						if (Authorization::check("adv", "edit_e2") && isset($rRow["device_id"])) {
+							$rUserUrl = "enigma?id=" . (int) $rRow["device_id"];
+						}
+					} else {
+						$rUserLabel = $rRow["username"];
+						if (Authorization::check("adv", "users")) {
+							$rUserUrl = "line?id=" . (int) $rRow["user_id"];
+						}
+					}
+					$rType = strval($rRow["type"] ?? "");
+					$rStreamPerm = ["1" => "streams", "2" => "movies", "3" => "streams", "4" => "radio", "5" => "series"];
+					$rStreamUrl = null;
+					if (isset($rStreamPerm[$rType]) && Authorization::check("adv", $rStreamPerm[$rType])) {
+						$rStreamUrl = ($rType == "5") ? "serie?id=" . (int) $rRow["series_no"] : "stream_view?id=" . (int) $rRow["stream_id"];
+					}
+					$rProxyVia = (0 < (int) ($rRow["proxy_id"] ?? 0) && isset($rProxyServers[$rRow["proxy_id"]])) ? $rProxyServers[$rRow["proxy_id"]]["server_name"] : null;
+					$rReturn["data"][] = [
+						"activity_id"     => $rRow["activity_id"],
+						"uuid"            => $rRow["uuid"] ?? null,
+						"user_id"         => (int) $rRow["user_id"],
+						"type"            => (int) ($rRow["type"] ?? 1),
+						"divergence"      => (int) $rRow["divergence"],
+						"user_label"      => $rUserLabel,
+						"user_url"        => $rUserUrl,
+						"stream_name"     => $rRow["stream_display_name"],
+						"stream_url"      => $rStreamUrl,
+						"server_name"     => $rRow["server_name"],
+						"server_url"      => Authorization::check("adv", "servers") ? "server_view?id=" . (int) $rRow["server_id"] : null,
+						"proxy_via"       => $rProxyVia,
+						// A user agent is stored entity-encoded: the page gets the
+						// name the device gave and writes it as text.
+						"player"          => trim(explode("(", html_entity_decode((string) $rRow["user_agent"]))[0]),
+						"isp"             => $rRow["isp"],
+						"user_ip"         => $rRow["user_ip"],
+						"country"         => ((string) $rRow["geoip_country_code"] !== '') ? strtolower($rRow["geoip_country_code"]) : null,
+						"date_start"      => (int) $rRow["date_start"],
+						"container"       => strtoupper((string) $rRow["container"]),
+						"is_restreamer"   => (1 == (int) ($rRow["is_restreamer"] ?? 0)),
+						"can_fingerprint" => (Authorization::check("adv", "fingerprint") && 0 < (int) $rRow["user_id"] && $rType == "1"),
+					];
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleStreamList($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings;
+		if (!Authorization::check("adv", "import_streams") && !Authorization::check("adv", "mass_delete")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("live");
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`streams`.`category_id`", "`streams_servers`.`server_id`", "`streams_servers`.`stream_status`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		if (RequestManager::has("include_channels")) {
+			$rWhere[] = "`streams`.`type` IN (1,3)";
+		} elseif (RequestManager::has("only_channels")) {
+			$rWhere[] = "`streams`.`type` = 3";
+		} else {
+			$rWhere[] = "`streams`.`type` = 1";
+		}
+		if (0 < (int) (RequestManager::get("category") ?? 0)) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category");
+		} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
+			$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
+		}
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
+			$rWhere[] = "`streams_servers`.`server_id` = ?";
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
+			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (!RequestManager::has("only_channels")) {
+				if (RequestManager::get("filter") == 1) {
+					$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`stream_status` = 0)";
+				} elseif (RequestManager::get("filter") == 2) {
+					$rWhere[] = "((`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0) AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` = 1))";
+				} elseif (RequestManager::get("filter") == 3) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NULL OR `streams_servers`.`monitor_pid` <= 0) AND `streams_servers`.`on_demand` = 0)";
+				} elseif (RequestManager::get("filter") == 4) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0) AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` = 2)";
+				} elseif (RequestManager::get("filter") == 5) {
+					$rWhere[] = "`streams_servers`.`on_demand` = 1";
+				} elseif (RequestManager::get("filter") == 6) {
+					$rWhere[] = "`streams`.`direct_source` = 1";
+				} elseif (RequestManager::get("filter") == 7) {
+					$rWhere[] = "`streams`.`tv_archive_server_id` > 0 AND `streams`.`tv_archive_duration` > 0";
+				} elseif (RequestManager::get("filter") == 8) {
+					if ($rSettings["streams_grouped"] == 1) {
+						$rWhere[] = "(SELECT COUNT(*) AS `count` FROM `streams_logs` WHERE `streams_logs`.`action` = 'STREAM_FAILED' AND `streams_logs`.`date` >= UNIX_TIMESTAMP()-86400 AND `streams_logs`.`stream_id` = `streams`.`id`) > 144";
+					} else {
+						$rWhere[] = "(SELECT COUNT(*) AS `count` FROM `streams_logs` WHERE `streams_logs`.`action` = 'STREAM_FAILED' AND `streams_logs`.`date` >= UNIX_TIMESTAMP()-86400 AND `streams_logs`.`stream_id` = `streams`.`id` AND `streams_logs`.`server_id` = `streams_servers`.`server_id`) > 144";
+					}
+				} elseif (RequestManager::get("filter") == 9) {
+					$rWhere[] = "LENGTH(`streams`.`channel_id`) > 0";
+				} elseif (RequestManager::get("filter") == 10) {
+					$rWhere[] = "(`streams`.`channel_id` IS NULL OR LENGTH(`streams`.`channel_id`) = 0)";
+				} elseif (RequestManager::get("filter") == 11) {
+					$rWhere[] = "`streams`.`adaptive_link` IS NOT NULL";
+				} elseif (RequestManager::get("filter") == 12) {
+					$rWhere[] = "`streams`.`title_sync` IS NOT NULL";
+				} elseif (RequestManager::get("filter") == 13) {
+					$rWhere[] = "`streams`.`transcode_profile_id` > 0";
+				}
+			} elseif (RequestManager::get("filter") == 1) {
+				$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0)";
+			} elseif (RequestManager::get("filter") == 2) {
+				$rWhere[] = "(`streams_servers`.`monitor_pid` IS NULL OR `streams_servers`.`monitor_pid` <= 0) AND (REPLACE(`streams_servers`.`cchannel_rsources`, '\\\\/', '/') = REPLACE(`streams`.`stream_source`, '\\\\/', '/'))";
+			} elseif (RequestManager::get("filter") == 3) {
+				$rWhere[] = "(REPLACE(`streams_servers`.`cchannel_rsources`, '\\\\/', '/') <> REPLACE(`streams`.`stream_source`, '\\\\/', '/'))";
+			}
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 4) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM (SELECT `id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL " . $rWhereString . " GROUP BY `streams`.`id`) t1;";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams_servers`.`stream_id`, `streams`.`type`, `streams`.`stream_icon`, `streams`.`adaptive_link`, `streams`.`title_sync`, `streams_servers`.`cchannel_rsources`, `streams`.`stream_source`, `streams`.`stream_display_name`, `streams`.`tv_archive_duration`, `streams`.`tv_archive_server_id`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`cc_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, `streams`.`epg_id`, `streams`.`channel_id`, `streams_servers`.`parent_id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL " . $rWhereString . " GROUP BY `streams`.`id` " . $rOrderBy . ", -`stream_started` DESC LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rServerCount = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = $rRow["id"];
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, COUNT(`server_stream_id`) AS `count` FROM `streams_servers` WHERE `stream_id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ") GROUP BY `stream_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rServerCount[$rRow["stream_id"]] = $rRow["count"];
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if ($rIsAPI) {
+						unset($rRow["stream_source"]);
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
+							$rRequestedCategoryID = (int) (RequestManager::get("category") ?? 0);
+							$rCategory = $rCategories[$rRequestedCategoryID]["category_name"] ?? "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rActualStatus = 0;
+						if ($rRow["server_id"]) {
+							if ((int) $rRow["direct_source"] == 1) {
+								$rActualStatus = (int) $rRow["direct_proxy"] == 1 ? 7 : 5;
+							} elseif ($rRow["monitor_pid"]) {
+								if ($rRow["pid"] && 0 < $rRow["pid"]) {
+									$rActualStatus = (int) $rRow["stream_status"] == 2 ? 2 : 1;
+								} else {
+									$rActualStatus = 3;
+								}
+							} elseif ((int) $rRow["on_demand"] == 1) {
+								$rGoOD = json_decode($rRow["progress_info"] ?? "", true); // QC-GO-OD-STATS: open on-demand channel served by the Go relay = running
+								$rActualStatus = (is_array($rGoOD) && ($rGoOD["producer"] ?? "") === "go" && intval($rGoOD["go_at"] ?? 0) > time() - 150) ? 1 : 4;
+							}
+						} else {
+							$rActualStatus = -1;
+						}
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"stream_icon" => (string) $rRow["stream_icon"],
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleMovieList($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "import_movies") && !Authorization::check("adv", "mass_delete")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("movie");
+		$rOrder = ["`streams`.`id`", false, "`streams`.`stream_display_name`", "`streams`.`category_id`", "`streams_servers`.`server_id`", "`streams_servers`.`stream_status`", false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`streams`.`type` = 2";
+		if (0 < (int) (RequestManager::get("category") ?? 0)) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category");
+		} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
+			$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
+		}
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
+			$rWhere[] = "`streams_servers`.`server_id` = ?";
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
+			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 4) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (RequestManager::get("filter") == 1) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` <> 1)";
+			} elseif (RequestManager::get("filter") == 2) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 1 AND `streams_servers`.`stream_status` <> 1)";
+			} elseif (RequestManager::get("filter") == 3) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` = 1)";
+			} elseif (RequestManager::get("filter") == 4) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` <> 1)";
+			} elseif (RequestManager::get("filter") == 5) {
+				$rWhere[] = "`streams`.`direct_source` = 1";
+			} elseif (RequestManager::get("filter") == 6) {
+				$rWhere[] = "(`streams`.`movie_properties` IS NULL OR `streams`.`movie_properties` = '' OR `streams`.`movie_properties` = '[]' OR `streams`.`movie_properties` = '{}' OR `streams`.`movie_properties` LIKE '%tmdb_id\":\"\"%')";
+			} elseif (RequestManager::get("filter") == 7) {
+				$rWhere[] = "`streams`.`id` IN (SELECT MIN(`id`) FROM `streams` WHERE `type` = 2 GROUP BY `stream_source` HAVING COUNT(`stream_source`) > 1)";
+				$rDuplicates = true;
+			} elseif (RequestManager::get("filter") == 8) {
+				$rWhere[] = "`streams`.`transcode_profile_id` > 0";
+			}
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(DISTINCT(`streams`.`id`)) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, MD5(`streams`.`stream_source`) AS `source`, `streams`.`movie_properties`, `streams`.`year`, `streams_servers`.`to_analyze`, `streams`.`target_container`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL " . $rWhereString . " GROUP BY `streams`.`id` " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rServerCount = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = $rRow["id"];
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, COUNT(`server_stream_id`) AS `count` FROM `streams_servers` WHERE `stream_id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ") GROUP BY `stream_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rServerCount[$rRow["stream_id"]] = $rRow["count"];
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rActualStatus = 0;
+						if ((int) $rRow["direct_source"] == 1) {
+							$rActualStatus = (int) $rRow["direct_proxy"] == 1 ? 5 : 3;
+						} elseif (!is_null($rRow["pid"]) && 0 < $rRow["pid"]) {
+							if ($rRow["to_analyze"] == 1) {
+								$rActualStatus = 2;
+							} elseif ($rRow["stream_status"] == 1) {
+								$rActualStatus = 4;
+							} else {
+								$rActualStatus = 1;
+							}
+						}
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rProperties = json_decode((string) $rRow["movie_properties"], true);
+						if (!is_array($rProperties)) {
+							$rProperties = [];
+						}
+						$rImage = SettingsManager::getAll()["show_images"] ? (string) ($rProperties["movie_image"] ?? '') : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"movie_image" => $rImage,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"year" => (string) ($rRow["year"] ?? ''),
+							"rating" => (float) ($rProperties["rating"] ?? 0),
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+							"has_tmdb" => isset($rProperties["kinopoisk_url"]) && (string) $rProperties["kinopoisk_url"] !== '',
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleRadioList($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "mass_delete")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("radio");
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`streams`.`category_id`", "`streams_servers`.`server_id`", "`streams_servers`.`stream_status`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`streams`.`type` = 4";
+		if (0 < (int) (RequestManager::get("category") ?? 0)) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category");
+		} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
+			$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
+		}
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
+			$rWhere[] = "`streams_servers`.`server_id` = ?";
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
+			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (RequestManager::get("filter") == 1) {
+				$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`stream_status` = 0)";
+			} elseif (RequestManager::get("filter") == 2) {
+				$rWhere[] = "((`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0) AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` = 1))";
+			} elseif (RequestManager::get("filter") == 3) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NULL OR `streams_servers`.`monitor_pid` <= 0) AND `streams_servers`.`on_demand` = 0)";
+			} elseif (RequestManager::get("filter") == 4) {
+				$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`monitor_pid` IS NOT NULL AND `streams_servers`.`monitor_pid` > 0) AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` = 2)";
+			} elseif (RequestManager::get("filter") == 5) {
+				$rWhere[] = "`streams_servers`.`on_demand` = 1";
+			} elseif (RequestManager::get("filter") == 6) {
+				$rWhere[] = "`streams`.`direct_source` = 1";
+			}
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 4) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(DISTINCT(`streams`.`id`)) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_icon`, `streams`.`movie_properties`, `streams_servers`.`to_analyze`, `streams`.`target_container`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL " . $rWhereString . " GROUP BY `streams`.`id` " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rServerCount = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = $rRow["id"];
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, COUNT(`server_stream_id`) AS `count` FROM `streams_servers` WHERE `stream_id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ") GROUP BY `stream_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rServerCount[$rRow["stream_id"]] = $rRow["count"];
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rActualStatus = 0;
+						if ($rRow["server_id"]) {
+							if ((int) $rRow["direct_source"] == 1) {
+								$rActualStatus = 5;
+							} elseif ($rRow["monitor_pid"]) {
+								if ($rRow["pid"] && 0 < $rRow["pid"]) {
+									$rActualStatus = (int) $rRow["stream_status"] == 2 ? 2 : 1;
+								} else {
+									$rActualStatus = 3;
+								}
+							} elseif ((int) $rRow["on_demand"] == 1) {
+								$rGoOD = json_decode($rRow["progress_info"] ?? "", true); // QC-GO-OD-STATS: open on-demand channel served by the Go relay = running
+								$rActualStatus = (is_array($rGoOD) && ($rGoOD["producer"] ?? "") === "go" && intval($rGoOD["go_at"] ?? 0) > time() - 150) ? 1 : 4;
+							}
+						} else {
+							$rActualStatus = -1;
+						}
+						$rIcon = SettingsManager::getAll()["show_images"] ? (string) $rRow["stream_icon"] : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"stream_icon" => $rIcon,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleSeriesList($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings;
+		if (!Authorization::check("adv", "mass_delete")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("series");
+		$rOrder = ["`streams_series`.`id`", "`streams_series`.`cover`", "`streams_series`.`title`", "`streams_series`.`category_id`", "`latest_season`", "`episode_count`", false, "`streams_series`.`release_date`", "`streams_series`.`last_modified`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		if ((string) (RequestManager::get("category") ?? '') !== '') {
+			if (RequestManager::get("category") == -1) {
+				$rWhere[] = "(`streams_series`.`tmdb_id` = 0 OR `streams_series`.`tmdb_id` IS NULL)";
+			} elseif (RequestManager::get("category") == -2) {
+				$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
+			} else {
+				$rWhere[] = "JSON_CONTAINS(`streams_series`.`category_id`, ?, '\$')";
+				$rWhereV[] = RequestManager::get("category");
+			}
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams_series`.`id` LIKE ? OR `streams_series`.`title` LIKE ? OR `streams_series`.`release_date` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams_series` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams_series`.`id`, `streams_series`.`year`, `streams_series`.`rating`, `streams_series`.`cover`, `streams_series`.`title`, `streams_series`.`category_id`, `streams_series`.`tmdb_id`, `streams_series`.`release_date`, `streams_series`.`last_modified`, (SELECT MAX(`season_num`) FROM `streams_episodes` WHERE `series_id` = `streams_series`.`id`) AS `latest_season`, (SELECT COUNT(*) FROM `streams_episodes` WHERE `series_id` = `streams_series`.`id`) AS `episode_count` FROM `streams_series` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						if ($rRow["last_modified"] == 0) {
+							$rLastModified = "Never";
+						} else {
+							$rLastModified = date($rSettings["datetime_format"], $rRow["last_modified"]);
+						}
+						$rReleaseDate = $rRow["release_date"] ? date($rSettings["date_format"], strtotime($rRow["release_date"])) : "";
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"cover" => (string) ($rRow["cover"] ?? ''),
+							"title" => (string) $rRow["title"],
+							"year" => (string) ($rRow["year"] ?? ''),
+							"rating" => (float) ($rRow["rating"] ?? 0),
+							"category" => $rCategory,
+							"latest_season" => (int) $rRow["latest_season"],
+							"episode_count" => (int) $rRow["episode_count"],
+							"has_tmdb" => 0 < (int) $rRow["tmdb_id"],
+							"release_date" => $rReleaseDate,
+							"last_modified" => $rLastModified,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleCreditsLog($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "credits_log")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable).
+		$rOrderBy = $this->dtOrderBy([false, "`users_credits_logs`.`id`", "`owner_username`", "`target_username`", "`users_credits_logs`.`amount`", "`users_credits_logs`.`reason`", "`date`"]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 5) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`target`.`username` LIKE ? OR `owner`.`username` LIKE ? OR FROM_UNIXTIME(`date`) LIKE ? OR `users_credits_logs`.`amount` LIKE ? OR `users_credits_logs`.`reason` LIKE ?)";
+		}
+		$rRange = (string) (RequestManager::get("range") ?? '');
+		if ($rRange !== '') {
+			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
+			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
+			if ($rStartTime && $rEndTime) {
+				$rWhere[]  = "(`users_credits_logs`.`date` >= ? AND `users_credits_logs`.`date` <= ?)";
+				$rWhereV[] = $rStartTime;
+				$rWhereV[] = $rEndTime;
+			}
+		}
+		$rReseller = (string) (RequestManager::get("reseller") ?? '');
+		if ($rReseller !== '') {
+			$rWhere[]  = "(`users_credits_logs`.`target_id` = ? OR `users_credits_logs`.`admin_id` = ?)";
+			$rWhereV[] = $rReseller;
+			$rWhereV[] = $rReseller;
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `users_credits_logs` LEFT JOIN `users` AS `target` ON `target`.`id` = `users_credits_logs`.`target_id` LEFT JOIN `users` AS `owner` ON `owner`.`id` = `users_credits_logs`.`admin_id` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rCanEdit = Authorization::check("adv", "edit_reguser");
+			$rQuery = "SELECT `users_credits_logs`.`id`, `users_credits_logs`.`target_id`, `users_credits_logs`.`admin_id`, `target`.`username` AS `target_username`, `owner`.`username` AS `owner_username`, `amount`, `users_credits_logs`.`date`, `users_credits_logs`.`reason` FROM `users_credits_logs` LEFT JOIN `users` AS `target` ON `target`.`id` = `users_credits_logs`.`target_id` LEFT JOIN `users` AS `owner` ON `owner`.`id` = `users_credits_logs`.`admin_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rItem = [
+					"id"              => (int) $rRow["id"],
+					"admin_id"        => (int) $rRow["admin_id"],
+					"owner_username"  => $rRow["owner_username"],
+					"owner_url"       => ($rCanEdit && $rRow["owner_username"] !== null) ? "user?id=" . (int) $rRow["admin_id"] : null,
+					"target_id"       => (int) $rRow["target_id"],
+					"target_username" => $rRow["target_username"],
+					"target_url"      => ($rCanEdit && $rRow["target_username"] !== null) ? "user?id=" . (int) $rRow["target_id"] : null,
+					"amount"          => ResellerAPI::amount($rRow["amount"]),
+					"reason"          => $rRow["reason"],
+					"date"            => (int) $rRow["date"],
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleClientLogs($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "client_request_log")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable).
+		$rOrderBy = $this->dtOrderBy([false, "`lines_logs`.`id`", "`lines`.`username`", "`streams`.`stream_display_name`", "`lines_logs`.`client_status`", "`lines_logs`.`user_agent`", "`lines_logs`.`ip`", "`lines_logs`.`date`"]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 8) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`lines_logs`.`client_status` LIKE ? OR `lines_logs`.`query_string` LIKE ? OR FROM_UNIXTIME(`date`) LIKE ? OR `lines_logs`.`user_agent` LIKE ? OR `lines_logs`.`ip` LIKE ? OR `lines_logs`.`extra_data` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `lines`.`username` LIKE ?)";
+		}
+		$rRange = (string) (RequestManager::get("range") ?? '');
+		if ($rRange !== '') {
+			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
+			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
+			if ($rStartTime && $rEndTime) {
+				$rWhere[]  = "(`lines_logs`.`date` >= ? AND `lines_logs`.`date` <= ?)";
+				$rWhereV[] = $rStartTime;
+				$rWhereV[] = $rEndTime;
+			}
+		}
+		$rFilter = (string) (RequestManager::get("filter") ?? '');
+		if ($rFilter !== '') {
+			$rWhere[]  = "`lines_logs`.`client_status` = ?";
+			$rWhereV[] = $rFilter;
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `lines_logs` LEFT JOIN `streams` ON `streams`.`id` = `lines_logs`.`stream_id` LEFT JOIN `lines` ON `lines`.`id` = `lines_logs`.`user_id` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rCanEditUser = Authorization::check("adv", "edit_user");
+			$rStreamPerm  = ["1" => "streams", "2" => "movies", "3" => "streams", "4" => "radio", "5" => "series"];
+			$rQuery = "SELECT `lines_logs`.`id`, `lines_logs`.`user_id`, `lines_logs`.`stream_id`, `streams`.`stream_display_name`, `streams`.`type`, `lines`.`username`, `lines_logs`.`client_status`, `lines_logs`.`user_agent`, `lines_logs`.`ip`, `lines_logs`.`extra_data`, `lines_logs`.`date` FROM `lines_logs` LEFT JOIN `streams` ON `streams`.`id` = `lines_logs`.`stream_id` LEFT JOIN `lines` ON `lines`.`id` = `lines_logs`.`user_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rType = strval($rRow["type"] ?? '');
+				$rStreamUrl = null;
+				if (isset($rStreamPerm[$rType]) && Authorization::check("adv", $rStreamPerm[$rType])) {
+					$rStreamUrl = ($rType == "5")
+						? "serie?id=" . (int) $rRow["stream_id"]
+						: "stream_view?id=" . (int) $rRow["stream_id"];
+				}
+				$rExtra = trim(strval($rRow["extra_data"] ?? ""));
+				$rItem = [
+					"id"          => (int) $rRow["id"],
+					"user_id"     => (int) $rRow["user_id"],
+					"username"    => $rRow["username"],
+					"user_url"    => ($rCanEditUser && $rRow["username"] !== null) ? "line?id=" . (int) $rRow["user_id"] : null,
+					"stream_id"   => (int) $rRow["stream_id"],
+					"stream_name" => $rRow["stream_display_name"],
+					"stream_url"  => $rStreamUrl,
+					"reason"      => ClientFilter::labelFor((string) ($rRow["client_status"] ?? "")),
+					"extra"       => ($rExtra !== "") ? mb_substr($rExtra, 0, 500) : null,
+					"user_agent"  => $rRow["user_agent"],
+					"ip"          => $rRow["ip"],
+					"date"        => (int) $rRow["date"],
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleRegUserLogs($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!Authorization::check("adv", "reg_userlog")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable).
+		$rOrderBy = $this->dtOrderBy([false, "`users`.`username`", "`users_logs`.`log_id`", "`users_logs`.`type`, `users_logs`.`action`", "`users_logs`.`cost`", "`users_logs`.`credits_after`", "`users_logs`.`date`"]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`users`.`username` LIKE ? OR `users_logs`.`deleted_info` LIKE ? OR `users_logs`.`action` LIKE ?)";
+		}
+		$rRange = (string) (RequestManager::get("range") ?? '');
+		if ($rRange !== '') {
+			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
+			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
+			if ($rStartTime && $rEndTime) {
+				$rWhere[]  = "(`users_logs`.`date` >= ? AND `users_logs`.`date` <= ?)";
+				$rWhereV[] = $rStartTime;
+				$rWhereV[] = $rEndTime;
+			}
+		}
+		$rReseller = (string) (RequestManager::get("reseller") ?? '');
+		if ($rReseller !== '') {
+			$rWhere[]  = "`users_logs`.`owner` = ?";
+			$rWhereV[] = $rReseller;
+		}
+		$rFilter = (string) (RequestManager::get("filter") ?? '');
+		if ($rFilter !== '') {
+			$rWhere[]  = "`users_logs`.`action` = ?";
+			$rWhereV[] = $rFilter;
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `users_logs` LEFT JOIN `users` ON `users`.`id` = `users_logs`.`owner` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rPackages = PackageService::getAll();
+			$rCanEdit  = Authorization::check("adv", "edit_reguser");
+			$rQuery = "SELECT `users`.`username`, `users_logs`.`id`, `users_logs`.`owner`, `users_logs`.`type`, `users_logs`.`action`, `users_logs`.`log_id`, `users_logs`.`package_id`, `users_logs`.`cost`, `users_logs`.`credits_after`, `users_logs`.`date`, `users_logs`.`deleted_info` FROM `users_logs` LEFT JOIN `users` ON `users`.`id` = `users_logs`.`owner` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rText = UserService::logText($rRow, $rPackages);
+				$rLineLabel = null;
+				$rLineUrl   = null;
+				switch ($rRow["type"]) {
+					case "line":
+						$rEntity = UserRepository::getLineById($rRow["log_id"]);
+						if ($rEntity) {
+							$rLineLabel = $rEntity["username"];
+							$rLineUrl = "line?id=" . (int) $rRow["log_id"];
+						}
+						break;
+					case "user":
+						$rEntity = UserRepository::getRegisteredUserById($rRow["log_id"]);
+						if ($rEntity) {
+							$rLineLabel = $rEntity["username"];
+							$rLineUrl = "user?id=" . (int) $rRow["log_id"];
+						}
+						break;
+					case "mag":
+						$rEntity = MagService::getById($rRow["log_id"]);
+						if ($rEntity) {
+							$rLineLabel = $rEntity["mac"];
+							$rLineUrl = "mag?id=" . (int) $rRow["log_id"];
+						}
+						break;
+					case "enigma":
+						$rEntity = EnigmaService::getById($rRow["log_id"]);
+						if ($rEntity) {
+							$rLineLabel = $rEntity["mac"];
+							$rLineUrl = "enigma?id=" . (int) $rRow["log_id"];
+						}
+						break;
+				}
+				if ($rLineLabel === null) {
+					$rDeletedInfo = json_decode($rRow["deleted_info"], true);
+					$rLineLabel = is_array($rDeletedInfo) ? ($rDeletedInfo["mac"] ?? $rDeletedInfo["username"] ?? "DELETED") : "DELETED";
+				}
+				$rItem = [
+					"id"            => (int) $rRow["id"],
+					"owner"         => $rRow["username"],
+					"owner_url"     => ($rCanEdit && $rRow["username"] !== null) ? "user?id=" . (int) $rRow["owner"] : null,
+					"line_label"    => $rLineLabel,
+					"line_url"      => $rLineUrl,
+					"text"          => $rText,
+					"cost"          => ResellerAPI::amount($rRow["cost"]),
+					"credits_after" => ResellerAPI::amount($rRow["credits_after"]),
+					"date"          => (int) $rRow["date"],
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleStreamErrors($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "stream_errors")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable).
+		$rOrderBy = $this->dtOrderBy([false, "`streams`.`stream_display_name`", "`servers`.`server_name`", "`streams_errors`.`error`", "`streams_errors`.`date`"]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 4) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`streams`.`stream_display_name` LIKE ? OR `servers`.`server_name` LIKE ? OR FROM_UNIXTIME(`date`) LIKE ? OR `streams_errors`.`error` LIKE ?)";
+		}
+		$rRange = (string) (RequestManager::get("range") ?? '');
+		if ($rRange !== '') {
+			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
+			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
+			if ($rStartTime && $rEndTime) {
+				$rWhere[]  = "(`streams_errors`.`date` >= ? AND `streams_errors`.`date` <= ?)";
+				$rWhereV[] = $rStartTime;
+				$rWhereV[] = $rEndTime;
+			}
+		}
+		$rServer = (int) (RequestManager::get("server") ?? 0);
+		if (0 < $rServer) {
+			$rWhere[]  = "`streams_errors`.`server_id` = ?";
+			$rWhereV[] = $rServer;
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `streams_errors` LEFT JOIN `streams` ON `streams`.`id` = `streams_errors`.`stream_id` LEFT JOIN `servers` ON `servers`.`id` = `streams_errors`.`server_id` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rStreamPerm = ["1" => "streams", "2" => "movies", "3" => "streams", "4" => "radio", "5" => "series"];
+			$rQuery = "SELECT `streams_errors`.`id`, `streams_errors`.`stream_id`, `streams`.`type`, `streams_errors`.`server_id`, `streams`.`stream_display_name`, `servers`.`server_name`, `streams_errors`.`error`, `streams_errors`.`date` FROM `streams_errors` LEFT JOIN `streams` ON `streams`.`id` = `streams_errors`.`stream_id` LEFT JOIN `servers` ON `servers`.`id` = `streams_errors`.`server_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rType = strval($rRow["type"] ?? '');
+				$rStreamUrl = null;
+				if (isset($rStreamPerm[$rType]) && Authorization::check("adv", $rStreamPerm[$rType])) {
+					$rStreamUrl = ($rType == "5")
+						? "serie?id=" . (int) $rRow["stream_id"]
+						: "stream_view?id=" . (int) $rRow["stream_id"];
+				}
+				$rItem = [
+					"id"          => (int) $rRow["id"],
+					"stream_id"   => (int) $rRow["stream_id"],
+					"stream_name" => $rRow["stream_display_name"],
+					"stream_url"  => $rStreamUrl,
+					"server_id"   => (int) $rRow["server_id"],
+					"server_name" => $rRow["server_name"],
+					"error"       => $rRow["error"],
+					"date"        => (int) $rRow["date"],
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleStreamUnique($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "fingerprint")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("live");
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, "`active_count`", null];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`streams`.`type` = 1";
+		if (!SettingsManager::getAll()["redis_handler"]) {
+			$rWhere[] = "(SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `lines_live`.`hls_end` = 0) > 0";
+		}
+		if ((string) (RequestManager::get("category") ?? '') !== '') {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_display_name`, `streams`.`category_id`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `lines_live`.`hls_end` = 0) AS `active_count` FROM `streams` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				if (SettingsManager::getAll()["redis_handler"]) {
+					$rStreamIDs = [];
+					foreach ($rRows as $rRow) {
+						$rStreamIDs[] = $rRow["id"];
+					}
+					if (0 < count($rStreamIDs)) {
+						$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, true, true);
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if (SettingsManager::getAll()["redis_handler"]) {
+						$rRow["active_count"] = $rConnectionCount[$rRow["id"]] ?? 0;
+					}
+					if ($rRow["active_count"] == 0) {
+						$rReturn["recordsTotal"]--;
+					} elseif ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rCategory, $rRow["active_count"]];
+					}
+				}
+			}
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleRegUsers($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "mng_regusers") && !Authorization::check("adv", "mass_edit_users")) {
+			exit;
+		}
+		// Leading false = the Bootstrap 5 Responsive control column (client index 0).
+		$rOrder = [false, "`users`.`id`", "`users`.`username`", "`users`.`owner_id`", "`users`.`ip`", "`users`.`status`", "`users`.`member_group_id`", "`users`.`credits`", false, false, false, false, "`users`.`last_login`", false];
+		$rOrderColumn = RequestManager::get("order")[0]["column"] ?? '';
+		$rOrderRow = ((string) $rOrderColumn !== '') ? (int) $rOrderColumn : 0;
+		$rWhere = $rWhereV = [];
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 7) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`users`.`id` LIKE ? OR `users`.`username` LIKE ? OR `users`.`notes` LIKE ? OR FROM_UNIXTIME(`users`.`date_registered`) LIKE ? OR FROM_UNIXTIME(`users`.`last_login`) LIKE ? OR `users`.`email` LIKE ? OR `users`.`ip` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (RequestManager::get("filter") == -1) {
+				$rWhere[] = "`users`.`status` = 1";
+			} elseif (RequestManager::get("filter") == -2) {
+				$rWhere[] = "`users`.`status` = 0";
+			} else {
+				$rWhere[] = "`users`.`member_group_id` = ?";
+				$rWhereV[] = RequestManager::get("filter");
+			}
+		}
+		if ((string) (RequestManager::get("reseller") ?? '') !== '') {
+			$rWhere[] = "`users`.`owner_id` = ?";
+			$rWhereV[] = RequestManager::get("reseller");
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `users` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `users`.`member_group_id`, `users`.`id`, `users`.`status`, `users`.`notes`, `users`.`owner_id`, `users`.`credits`, `users`.`username`, `users`.`email`, `users`.`ip`, `users`.`date_registered`, `users`.`last_login`, `users`.`status` FROM `users` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rUserInfo = $rOwnerInfo = $rUserIDs = $rOwnerIDs = [];
+				$rRows = array_map([UserCredits::class, 'amounts'], $db->get_rows());
+				foreach ($rRows as $rRow) {
+					$rUserIDs[] = $rRow["id"];
+					if ($rRow["owner_id"]) {
+						$rOwnerIDs[] = $rRow["owner_id"];
+					}
+					$rUserInfo[$rRow["id"]] = ["is_reseller" => 0, "user_lines" => 0, "mag_lines" => 0, "e2_lines" => 0, "user_count" => 0, "group_name" => null];
+				}
+				if (0 < count($rUserIDs)) {
+					$db->query("SELECT `users`.`id`, `users_groups`.`is_reseller`, `users_groups`.`group_name` FROM `users_groups` LEFT JOIN `users` ON `users_groups`.`group_id` = `users`.`member_group_id` WHERE `users`.`id` IN (" . implode(",", $rUserIDs) . ");");
+					foreach ($db->get_rows() as $rRow) {
+						$rUserInfo[$rRow["id"]]["is_reseller"] = $rRow["is_reseller"];
+						$rUserInfo[$rRow["id"]]["group_name"] = $rRow["group_name"];
+					}
+					$db->query("SELECT `member_id`, COUNT(`id`) AS `user_lines` FROM `lines` WHERE `member_id` IN (" . implode(",", $rUserIDs) . ") AND `lines`.`is_mag` = 0 AND `lines`.`is_e2` = 0 GROUP BY `member_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rUserInfo[$rRow["member_id"]]["user_lines"] = $rRow["user_lines"];
+					}
+					$db->query("SELECT `member_id`, COUNT(`id`) AS `mag_lines` FROM `lines` WHERE `member_id` IN (" . implode(",", $rUserIDs) . ") AND `lines`.`is_mag` = 1 AND `lines`.`is_e2` = 0 GROUP BY `member_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rUserInfo[$rRow["member_id"]]["mag_lines"] = $rRow["mag_lines"];
+					}
+					$db->query("SELECT `member_id`, COUNT(`id`) AS `e2_lines` FROM `lines` WHERE `member_id` IN (" . implode(",", $rUserIDs) . ") AND `lines`.`is_mag` = 0 AND `lines`.`is_e2` = 1 GROUP BY `member_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rUserInfo[$rRow["member_id"]]["e2_lines"] = $rRow["e2_lines"];
+					}
+				}
+				if (0 < count($rOwnerIDs)) {
+					$db->query("SELECT `id`, `username` FROM `users` WHERE `id` IN (" . implode(",", $rOwnerIDs) . ");");
+					foreach ($db->get_rows() as $rRow) {
+						$rOwnerInfo[$rRow["id"]] = $rRow["username"];
+					}
+				}
+				foreach ($rRows as $rRow) {
+					// Format in PHP, not FROM_UNIXTIME(): the DB session runs in UTC, PHP in the panel/user timezone.
+					foreach (["date_registered", "last_login"] as $rKey) {
+						$rRow[$rKey] = $rRow[$rKey] ? date("Y-m-d H:i:s", (int) $rRow[$rKey]) : null;
+					}
+					if (isset($rOwnerInfo[$rRow["owner_id"]])) {
+						$rRow["owner_username"] = $rOwnerInfo[$rRow["owner_id"]];
+					} else {
+						$rRow["owner_username"] = "";
+					}
+					$rRow = array_merge($rRow, $rUserInfo[$rRow["id"]]);
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						// Clean JSON for the Bootstrap 5 users page (batch count queries above unchanged).
+						$rReturn["data"][] = [
+							"id"              => (int) $rRow["id"],
+							"username"        => $rRow["username"],
+							"owner_id"        => (int) $rRow["owner_id"],
+							"owner_username"  => $rRow["owner_username"],
+							"ip"              => $rRow["ip"],
+							"status"          => (int) $rRow["status"],
+							"member_group_id" => (int) $rRow["member_group_id"],
+							"group_name"      => $rRow["group_name"],
+							"is_reseller"     => (1 == (int) $rRow["is_reseller"]),
+							"credits"         => ResellerAPI::amount($rRow["credits"]),
+							"user_count"      => (int) $rRow["user_count"],
+							"user_lines"      => (int) $rRow["user_lines"],
+							"mag_lines"       => (int) $rRow["mag_lines"],
+							"e2_lines"        => (int) $rRow["e2_lines"],
+							"last_login"      => $rRow["last_login"] ?: "NEVER",
+							"notes"           => ($rRow["notes"] ?? "") !== "" ? $rRow["notes"] : null,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleAsns($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (!Authorization::check("adv", "block_isps")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable);
+		// the trailing actions column is non-orderable too.
+		$rOrderBy = $this->dtOrderBy([false, "`blocked_asns`.`asn`", "`blocked_asns`.`isp`", "`blocked_asns`.`domain`", "`blocked_asns`.`country`", "`blocked_asns`.`num_ips`", "`blocked_asns`.`type`", "`blocked_asns`.`blocked`", false]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 5) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`blocked_asns`.`asn` LIKE ? OR `blocked_asns`.`isp` LIKE ? OR `blocked_asns`.`domain` LIKE ? OR `blocked_asns`.`country` LIKE ? OR `blocked_asns`.`type` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			$rWhere[]  = "`blocked_asns`.`blocked` = ?";
+			$rWhereV[] = RequestManager::get("filter");
+		}
+		if ((string) (RequestManager::get("type") ?? '') !== '') {
+			$rWhere[]  = "`blocked_asns`.`type` = ?";
+			$rWhereV[] = RequestManager::get("type");
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `blocked_asns` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `blocked_asns`.`id`, `blocked_asns`.`asn`, `blocked_asns`.`isp`, `blocked_asns`.`domain`, `blocked_asns`.`country`, `blocked_asns`.`num_ips`, `blocked_asns`.`type`, `blocked_asns`.`blocked` FROM `blocked_asns` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rItem = [
+					"id"      => (int) $rRow["id"],
+					"asn"     => $rRow["asn"],
+					"isp"     => $rRow["isp"],
+					"domain"  => $rRow["domain"],
+					"country" => ((string) $rRow["country"] !== '') ? strtolower($rRow["country"]) : null,
+					"num_ips" => (int) $rRow["num_ips"],
+					"type"    => strtoupper((string) $rRow["type"]),
+					"blocked" => (1 == (int) $rRow["blocked"]),
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleSeries($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings;
+		if (!Authorization::check("adv", "series") && !Authorization::check("adv", "mass_sedits")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("series");
+		// Leading false, false = the Bootstrap 5 Responsive control + bulk-select columns.
+		$rOrder = [false, false, "`streams_series`.`id`", "`streams_series`.`cover`", "`streams_series`.`title`", "`streams_series`.`category_id`", "`latest_season`", "`episode_count`", false, "`streams_series`.`release_date`", "`streams_series`.`last_modified`", false];
+		$rOrderColumn = RequestManager::get("order")[0]["column"] ?? '';
+		$rOrderRow = ((string) $rOrderColumn !== '') ? (int) $rOrderColumn : 0;
+		$rWhere = $rWhereV = [];
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams_series`.`id` LIKE ? OR `streams_series`.`title` LIKE ? OR `streams_series`.`release_date` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("category") ?? '') !== '') {
+			if (RequestManager::get("category") == -1) {
+				$rWhere[] = "(`streams_series`.`tmdb_id` = 0 OR `streams_series`.`tmdb_id` IS NULL)";
+			} elseif (RequestManager::get("category") == -2) {
+				$rWhere[] = "(`streams_series`.`category_id` = '[]' OR `streams_series`.`category_id` IS NULL)";
+			} else {
+				$rWhere[] = "JSON_CONTAINS(`streams_series`.`category_id`, ?, '\$')";
+				$rWhereV[] = RequestManager::get("category");
+			}
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection . ", `streams_series`.`id` ASC";
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams_series` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams_series`.`id`, `streams_series`.`year`, `streams_series`.`rating`, `streams_series`.`cover`, `streams_series`.`title`, `streams_series`.`category_id`, `streams_series`.`tmdb_id`, `streams_series`.`release_date`, `streams_series`.`last_modified`, (SELECT MAX(`season_num`) FROM `streams_episodes` WHERE `series_id` = `streams_series`.`id`) AS `latest_season`, (SELECT COUNT(*) FROM `streams_episodes` WHERE `series_id` = `streams_series`.`id`) AS `episode_count` FROM `streams_series` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if ((string) (RequestManager::get("category") ?? "") !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]["category_name"] ?? "No Category";
+						}
+						if (is_array($rCategoryIDs) && 1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rReturn["data"][] = [
+							"id"            => (int) $rRow["id"],
+							"cover"         => ((string) $rRow["cover"] !== '' && SettingsManager::getAll()["show_images"]) ? $rRow["cover"] : null,
+							"title"         => $rRow["title"],
+							"year"          => $rRow["year"] ?: null,
+							"rating"        => $rRow["rating"] ? (float) $rRow["rating"] : null,
+							"category"      => $rCategory,
+							"latest_season" => (int) $rRow["latest_season"],
+							"episode_count" => (int) $rRow["episode_count"],
+							"tmdb"          => (0 < (int) $rRow["tmdb_id"]),
+							"release_date"  => $rRow["release_date"] ? date($rSettings["date_format"], strtotime($rRow["release_date"])) : null,
+							"last_modified" => (int) $rRow["last_modified"],
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleEpisodes($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings, $rServers;
+		if (!Authorization::check("adv", "episodes") && !Authorization::check("adv", "mass_sedits")) {
+			exit;
+		}
+		// The episodes table has the same 12-column layout as movies (the Bootstrap
+		// Responsive control + bulk-select lead the row), so its order map must too,
+		// or DataTables column 2 (id) sorts streams.stream_display_name and the
+		// default order [[2,'desc']] lands on the wrong column.
+		$rOrder = [false, false, "`streams`.`id`", false, "`streams`.`stream_display_name`", "`server_name`", "`clients`", "`streams_servers`.`stream_started`", false, false, false, "`streams_servers`.`bitrate`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`streams`.`type` = 5";
+		$rDuplicates = false;
+		if (RequestManager::has("stream_id")) {
+			$rWhere[] = "`streams`.`id` = ?";
+			$rWhereV[] = RequestManager::get("stream_id");
+			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
+		} elseif (RequestManager::has("source_id")) {
+			$rWhere[] = "MD5(`streams`.`stream_source`) = ?";
+			$rWhereV[] = RequestManager::get("source_id");
+			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
+		} else {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+				foreach (range(1, 5) as $rInt) {
+					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+				}
+				$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams_series`.`title` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
+			}
+			if ((string) (RequestManager::get("series") ?? '') !== '') {
+				$rWhere[] = "`streams_series`.`id` = ?";
+				$rWhereV[] = RequestManager::get("series");
+			}
+			if (RequestManager::has("refresh")) {
+				$rWhere = ["`streams`.`id` IN (" . implode(",", array_map("intval", explode(",", RequestManager::get("refresh")))) . ")"];
+				$rWhereV = [];
+				$rStart = 0;
+				$rLimit = 1000;
+			}
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
+				if (RequestManager::get("filter") == 1) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` <> 1)";
+				} elseif (RequestManager::get("filter") == 2) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 1 AND `streams_servers`.`stream_status` <> 1)";
+				} elseif (RequestManager::get("filter") == 3) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`stream_status` = 1)";
+				} elseif (RequestManager::get("filter") == 4) {
+					$rWhere[] = "(`streams`.`direct_source` = 0 AND (`streams_servers`.`pid` IS NULL OR `streams_servers`.`pid` <= 0) AND `streams_servers`.`stream_status` <> 1)";
+				} elseif (RequestManager::get("filter") == 5) {
+					$rWhere[] = "`streams`.`direct_source` = 1";
+				} elseif (RequestManager::get("filter") == 6) {
+					$rWhere[] = "`streams`.`id` IN (SELECT MIN(`id`) FROM `streams` WHERE `type` = 5 GROUP BY `stream_source` HAVING COUNT(`stream_source`) > 1)";
+					$rDuplicates = true;
+				} elseif (RequestManager::get("filter") == 7) {
+					$rWhere[] = "`streams`.`transcode_profile_id` > 0";
+				}
+			}
+			if ((string) (RequestManager::get("audio") ?? '') !== '') {
+				if (RequestManager::get("audio") == -1) {
+					$rWhere[] = "`streams_servers`.`audio_codec` IS NULL";
+				} else {
+					$rWhere[] = "`streams_servers`.`audio_codec` = ?";
+					$rWhereV[] = RequestManager::get("audio");
+				}
+			}
+			if ((string) (RequestManager::get("video") ?? '') !== '') {
+				if (RequestManager::get("video") == -1) {
+					$rWhere[] = "`streams_servers`.`video_codec` IS NULL";
+				} else {
+					$rWhere[] = "`streams_servers`.`video_codec` = ?";
+					$rWhereV[] = RequestManager::get("video");
+				}
+			}
+			if ((string) (RequestManager::get("resolution") ?? '') !== '') {
+				$rWhere[] = "`streams_servers`.`resolution` = ?";
+				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
+			}
+			if (0 < (int) (RequestManager::get("server") ?? 0)) {
+				$rWhere[] = "`streams_servers`.`server_id` = ?";
+				$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+			} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
+				$rWhere[] = "`streams_servers`.`server_id` IS NULL";
+			}
+			$rOrderBy = "";
+			if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+				$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+				$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+			}
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		if (RequestManager::has("single")) {
+			$rSettings["streams_grouped"] = 0;
+		} elseif (RequestManager::has("grouped")) {
+			$rSettings["streams_grouped"] = 1;
+		}
+		$rReturn["recordsTotal"] = 0;
+		if ($rSettings["streams_grouped"] == 1) {
+			$rCountQuery = "SELECT COUNT(DISTINCT(`streams`.`id`)) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` " . $rWhereString . ";";
+		} else {
+			$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` " . $rWhereString . ";";
+		}
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			if ($rSettings["streams_grouped"] == 1) {
+				$rQuery = "SELECT `streams`.`id`, MD5(`streams`.`stream_source`) AS `source`, `streams_servers`.`to_analyze`, `streams`.`movie_properties`,  `streams`.`updated`, `streams`.`target_container`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, `streams_series`.`title`, `streams_series`.`seasons`, `streams_series`.`id` AS `sid`, `streams_episodes`.`season_num` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` " . $rWhereString . " GROUP BY `streams`.`id` " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			} else {
+				$rQuery = "SELECT `streams`.`id`, MD5(`streams`.`stream_source`) AS `source`, `streams_servers`.`to_analyze`, `streams`.`movie_properties`,  `streams`.`updated`, `streams`.`target_container`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`notes`, `streams`.`direct_source`, `streams`.`direct_proxy`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`stream_status`, `streams_servers`.`stream_started`, `streams_servers`.`stream_info`, `streams_servers`.`current_source`, `streams_servers`.`bitrate`, `streams_servers`.`progress_info`, `streams_servers`.`on_demand`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name`, (SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`server_id` = `streams_servers`.`server_id` AND `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0) AS `clients`, `streams_series`.`title`, `streams_series`.`seasons`, `streams_series`.`id` AS `sid`, `streams_episodes`.`season_num` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			}
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rServerCount = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = $rRow["id"];
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, COUNT(`server_stream_id`) AS `count` FROM `streams_servers` WHERE `stream_id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ") GROUP BY `stream_id`;");
+					foreach ($db->get_rows() as $rRow) {
+						$rServerCount[$rRow["stream_id"]] = $rRow["count"];
+					}
+					if (SettingsManager::getAll()["redis_handler"]) {
+						if ($rSettings["streams_grouped"]) {
+							$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, true, true);
+						} else {
+							$rConnectionCount = ConnectionTracker::getStreamConnections($rStreamIDs, false, false);
+						}
+					}
+					if ($rDuplicates) {
+						$rDuplicateCount = [];
+						$db->query("SELECT MD5(`stream_source`) AS `source`, COUNT(`stream_source`) AS `count` FROM `streams` WHERE `stream_source` IN (SELECT `stream_source` FROM `streams` WHERE `id` IN (" . implode(",", array_map("intval", $rStreamIDs)) . ")) GROUP BY `stream_source` HAVING COUNT(`stream_source`) > 1;");
+						foreach ($db->get_rows() as $rRow) {
+							$rDuplicateCount[$rRow["source"]] = $rRow["count"];
+						}
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if (SettingsManager::getAll()["redis_handler"]) {
+						if ($rSettings["streams_grouped"] == 1) {
+							$rRow["clients"] = $rConnectionCount[$rRow["id"]] ?? 0;
+						} else {
+							$rRow["clients"] = count($rConnectionCount[$rRow["id"]][$rRow["server_id"]] ?? []);
+						}
+					}
+					if ($rIsAPI) {
+						unset($rReturn["source"]);
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rProperties = json_decode((string) $rRow["movie_properties"], true);
+						if (!is_array($rProperties)) {
+							$rProperties = [];
+						}
+						if ((int) $rRow["direct_source"] == 1) {
+							$rActualStatus = ((int) $rRow["direct_proxy"] == 1) ? 5 : 3;
+						} elseif (!is_null($rRow["pid"]) && 0 < $rRow["pid"]) {
+							$rActualStatus = ($rRow["to_analyze"] == 1) ? 2 : (($rRow["stream_status"] == 1) ? 4 : 1);
+						} else {
+							$rActualStatus = 0;
+						}
+						$rServerId  = (int) ($rRow["server_id"] ?: 0);
+						$rGrouped   = ($rSettings["streams_grouped"] == 1);
+						$rServerCnt = (int) ($rServerCount[$rRow["id"]] ?? 1);
+						$rStreamInfo = json_decode($rRow["stream_info"] ?? "", true);
+						if (!is_array($rStreamInfo)) {
+							$rStreamInfo = [];
+						}
+						$rInfo = null;
+						if ($rActualStatus == 1) {
+							$rInfo = [
+								"bitrate"     => (int) $rRow["bitrate"],
+								"width"       => $rStreamInfo["codecs"]["video"]["width"] ?? "?",
+								"height"      => $rStreamInfo["codecs"]["video"]["height"] ?? "?",
+								"video_codec" => $rStreamInfo["codecs"]["video"]["codec_name"] ?? "N/A",
+								"audio_codec" => $rStreamInfo["codecs"]["audio"]["codec_name"] ?? "N/A",
+								"duration"    => $rStreamInfo["duration"] ?? "--",
+							];
+						}
+						// Episode video duration (from movie_properties: duration / duration_secs).
+						$rDurationText = null;
+						if (!empty($rProperties["duration"]) && preg_match('/^\d{1,3}:\d{2}:\d{2}$/', $rProperties["duration"])) {
+							$rDurationText = $rProperties["duration"];
+						} elseif (!empty($rProperties["duration_secs"]) && (int) $rProperties["duration_secs"] > 0) {
+							$rDurationSecs = (int) $rProperties["duration_secs"];
+							$rDurationText = sprintf("%02d:%02d:%02d", intdiv($rDurationSecs, 3600), intdiv($rDurationSecs % 3600, 60), $rDurationSecs % 60);
+						}
+						$rDupeCount = null;
+						if ($rDuplicates) {
+							$rDupeCount = ($rDuplicateCount[$rRow["source"]] ?? 1) - 1;
+						}
+						$rDisplayId = (!$rGrouped && 1 < $rServerCnt) ? ($rRow["id"] . "-" . $rServerId) : (string) $rRow["id"];
+						$rReturn["data"][] = [
+							"id"               => (int) $rRow["id"],
+							"display_id"       => $rDisplayId,
+							"server_col_id"    => $rGrouped ? -1 : $rServerId,
+							"title"            => $rRow["stream_display_name"],
+							"series"           => $rRow["title"] ?: null,
+							"season"           => $rRow["season_num"],
+							"sid"              => (int) $rRow["sid"],
+							"image"            => ((string) ($rProperties["movie_image"] ?? "") !== '' && SettingsManager::getAll()["show_images"]) ? $rProperties["movie_image"] : null,
+							"server_id"        => $rServerId,
+							"server_name"      => $rRow["server_name"] ?: null,
+							"server_url"       => ($rRow["server_name"] && Authorization::check("adv", "servers")) ? "server_view?id=" . $rServerId : null,
+							"server_count"     => $rServerCnt,
+							"server_offline"   => (($rServers[$rRow["server_id"]]["last_status"] ?? null) != 1),
+							"clients"          => (int) $rRow["clients"],
+							"status"           => $rActualStatus,
+							"notes"            => !empty($rRow["notes"]) ? $rRow["notes"] : null,
+							"target_container" => $rRow["target_container"] ?? null,
+							"duration"         => $rDurationText,
+							"modified"         => $rRow["updated"] ?? null,
+							"source"           => $rRow["source"],
+							"duplicates"       => $rDupeCount,
+							"info"             => $rInfo,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleBackups($rReturn) {
+		global $rSettings;
+		if (!Authorization::check("adv", "database")) {
+			exit;
+		}
+		$rBackups = array_reverse(BackupService::getLocal());
+		$rRemoteBackups = [];
+		if ((string) $rSettings["dropbox_token"] !== '') {
+			foreach (array_reverse(BackupService::getRemote()) as $rBackup) {
+				$rRemoteBackups[$rBackup["name"]] = $rBackup;
+			}
+		}
+		$rReturn = ["draw" => (int) RequestManager::get("draw"), "recordsTotal" => count($rBackups), "recordsFiltered" => count($rBackups), "data" => []];
+		$rLocalFiles = [];
+		foreach ($rBackups as $rBackup) {
+			// Remote (Dropbox) upload state: present / error / in-progress / absent.
+			$rRemote = "no";
+			$rRemoteMsg = null;
+			if (isset($rRemoteBackups[$rBackup["filename"]])) {
+				$rRemote = "yes";
+				unset($rRemoteBackups[$rBackup["filename"]]);
+			} elseif (file_exists(MAIN_HOME . "backups/" . $rBackup["filename"] . ".error")) {
+				$rRemote = "error";
+				$rRemoteMsg = (string) file_get_contents(MAIN_HOME . "backups/" . $rBackup["filename"] . ".error");
+			} elseif (file_exists(MAIN_HOME . "backups/" . $rBackup["filename"] . ".uploading") && time() - filemtime(MAIN_HOME . "backups/" . $rBackup["filename"] . ".uploading") < 600) {
+				$rRemote = "uploading";
+			}
+			$rLocalFiles[] = $rBackup["filename"];
+			$rReturn["data"][] = [
+				"date" => date($rSettings["datetime_format"], strtotime($rBackup["date"])),
+				"filename" => $rBackup["filename"],
+				"size" => ceil($rBackup["filesize"] / 1024 / 1024) . " MB",
+				"local" => true,
+				"remote" => $rRemote,
+				"remote_msg" => $rRemoteMsg,
+			];
+		}
+		foreach ($rRemoteBackups as $rBackup) {
+			$rReturn["data"][] = [
+				"date" => date($rSettings["datetime_format"], $rBackup["time"]),
+				"filename" => $rBackup["name"],
+				"size" => ceil($rBackup["size"] / 1024 / 1024) . " MB",
+				"local" => in_array($rBackup["name"], $rLocalFiles),
+				"remote" => "yes",
+				"remote_msg" => null,
+			];
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleMysqlSyslog($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "panel_logs")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable);
+		// the trailing actions column is non-orderable too.
+		$rOrderBy = $this->dtOrderBy([false, "`mysql_syslog`.`date`", "`servers`.`server_name`", "`mysql_syslog`.`type`", "`mysql_syslog`.`error`", "`mysql_syslog`.`ip`", false]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`mysql_syslog`.`ip` LIKE ? OR `mysql_syslog`.`type` LIKE ? OR `mysql_syslog`.`error` LIKE ?)";
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `mysql_syslog` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rBlocked = [];
+			$db->query("SELECT `ip` FROM `blocked_ips`;");
+			foreach ($db->get_rows() as $rRow) {
+				$rBlocked[$rRow["ip"]] = true;
+			}
+			$rQuery = "SELECT `mysql_syslog`.`id`, `mysql_syslog`.`server_id`, `servers`.`server_name`, `mysql_syslog`.`type`, `mysql_syslog`.`error`, `mysql_syslog`.`ip`, `mysql_syslog`.`date` FROM `mysql_syslog` LEFT JOIN `servers` ON `servers`.`id` = `mysql_syslog`.`server_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rIp = (string) $rRow["ip"];
+				$rItem = [
+					"id"          => (int) $rRow["id"],
+					"date"        => (int) $rRow["date"],
+					"server_id"   => (int) $rRow["server_id"],
+					"server_name" => $rRow["server_name"],
+					"type"        => $rRow["type"],
+					"error"       => $rRow["error"],
+					"ip"          => $rIp,
+					"blocked"     => isset($rBlocked[$rIp]),
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handlePanelLogs($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "panel_logs")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable); the
+		// data columns start at index 1, matching the client-side column order.
+		$rOrderBy = $this->dtOrderBy([false, "`panel_logs`.`date`", "`servers`.`server_name`", "`panel_logs`.`type`", "`panel_logs`.`log_message`"]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`panel_logs`.`log_message` LIKE ? OR `panel_logs`.`log_extra` LIKE ? OR `panel_logs`.`type` LIKE ?)";
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `panel_logs` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `panel_logs`.`id`, `panel_logs`.`date`, `panel_logs`.`server_id`, `servers`.`server_name`, `panel_logs`.`type`, `panel_logs`.`log_message`, `panel_logs`.`log_extra`, `panel_logs`.`line` FROM `panel_logs` LEFT JOIN `servers` ON `servers`.`id` = `panel_logs`.`server_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rItem = [
+					"id"          => (int) $rRow["id"],
+					"date"        => (int) $rRow["date"],
+					"server_id"   => (int) $rRow["server_id"],
+					"server_name" => $rRow["server_name"],
+					"type"        => $rRow["type"],
+					"message"     => $rRow["log_message"],
+					"extra"       => ($rRow["log_extra"] !== "" && $rRow["log_extra"] !== null) ? $rRow["log_extra"] : null,
+					"line"        => $rRow["line"],
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleLoginLogs($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "login_logs")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable);
+		// the trailing actions column is non-orderable too.
+		$rOrderBy = $this->dtOrderBy([false, "`login_logs`.`date`", "`login_logs`.`type`", "`login_logs`.`status`", "`users`.`username`", "`access_codes`.`code`", "`login_logs`.`login_ip`", false]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 4) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`login_logs`.`login_ip` LIKE ? OR `login_logs`.`status` LIKE ? OR `users`.`username` LIKE ? OR `access_codes`.`code` LIKE ?)";
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `login_logs` LEFT JOIN `users` ON `users`.`id` = `login_logs`.`user_id` LEFT JOIN `access_codes` ON `access_codes`.`id` = `login_logs`.`access_code` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+		if (0 < $rReturn["recordsTotal"]) {
+			$rBlocked = [];
+			$db->query("SELECT `ip` FROM `blocked_ips`;");
+			foreach ($db->get_rows() as $rRow) {
+				$rBlocked[$rRow["ip"]] = true;
+			}
+			$rQuery = "SELECT `login_logs`.`id`, `login_logs`.`type`, `login_logs`.`access_code`, `access_codes`.`code`, `login_logs`.`user_id`, `users`.`username`, `login_logs`.`status`, `login_logs`.`login_ip`, `login_logs`.`date` FROM `login_logs` LEFT JOIN `users` ON `users`.`id` = `login_logs`.`user_id` LEFT JOIN `access_codes` ON `access_codes`.`id` = `login_logs`.`access_code` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rIp = (string) $rRow["login_ip"];
+				$rItem = [
+					"id"       => (int) $rRow["id"],
+					"date"     => (int) $rRow["date"],
+					"type"     => $rRow["type"],
+					"status"   => $rRow["status"],
+					"user_id"  => (int) $rRow["user_id"],
+					"username" => $rRow["username"],
+					"code"     => $rRow["code"],
+					"login_ip" => $rIp,
+					"blocked"  => isset($rBlocked[$rIp]),
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	/** The admin action trail (Core\Audit\AdminAudit), newest first; the search box matches the account, action, address and detail. */
+	private function handleAdminActions($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "admin_audit")) {
+			exit;
+		}
+		$rOrderBy = $this->dtOrderBy([false, "`date`", "`username`", "`ip`", "`source`", "`action`", "`result`", false]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 4) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`username` LIKE ? OR `action` LIKE ? OR `ip` LIKE ? OR `detail` LIKE ?)";
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `admin_audit` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+		if (0 < $rReturn["recordsTotal"]) {
+			$db->query("SELECT `id`, `date`, `user_id`, `username`, `ip`, `source`, `action`, `result`, `detail` FROM `admin_audit` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";", ...$rWhereV);
+			foreach ($db->get_raw_rows() as $rRow) {
+				$rItem = [
+					"id"       => (int) $rRow["id"],
+					"date"     => (int) $rRow["date"],
+					"user_id"  => (int) $rRow["user_id"],
+					"username" => $rRow["username"],
+					"ip"       => $rRow["ip"],
+					"source"   => $rRow["source"],
+					"action"   => $rRow["action"],
+					"result"   => $rRow["result"] === null ? null : (int) $rRow["result"],
+					"detail"   => json_decode((string) $rRow["detail"], true) ?: new \stdClass(),
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleQueue($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "movies") && !Authorization::check("adv", "episodes") && !Authorization::check("adv", "series")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable);
+		// the trailing actions column is non-orderable too.
+		$rOrderBy = $this->dtOrderBy([false, "`queue`.`id`", "`streams`.`stream_display_name`", "`servers`.`server_name`", "`queue`.`pid`", "`queue`.`added`", false]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`streams`.`stream_display_name` LIKE ? OR `servers`.`server_name` LIKE ? OR `streams`.`id` LIKE ?)";
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `queue` LEFT JOIN `servers` ON `servers`.`id` = `queue`.`server_id` LEFT JOIN `streams` ON `streams`.`id` = `queue`.`stream_id` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rCanServers = Authorization::check("adv", "servers");
+			$rStreamPerm = ["2" => "movies", "5" => "series"];
+			$rQuery = "SELECT `queue`.*, `servers`.`server_name`, `streams`.`type`, `streams`.`stream_display_name` FROM `queue` LEFT JOIN `servers` ON `servers`.`id` = `queue`.`server_id` LEFT JOIN `streams` ON `streams`.`id` = `queue`.`stream_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			$rPosition = $rStart + 1;
+			foreach ($db->get_rows() as $rRow) {
+				$rType = strval($rRow["type"] ?? '');
+				$rStreamUrl = (isset($rStreamPerm[$rType]) && Authorization::check("adv", $rStreamPerm[$rType]))
+					? "stream_view?id=" . (int) $rRow["stream_id"]
+					: null;
+				$rItem = [
+					"id"          => (int) $rRow["id"],
+					"position"    => $rPosition,
+					"stream_id"   => (int) $rRow["stream_id"],
+					"stream_name" => $rRow["stream_display_name"],
+					"stream_url"  => $rStreamUrl,
+					"server_id"   => (int) $rRow["server_id"],
+					"server_name" => $rRow["server_name"],
+					"server_url"  => ($rCanServers && $rRow["server_name"] !== null) ? "server_view?id=" . (int) $rRow["server_id"] : null,
+					"in_progress" => (0 < (int) $rRow["pid"]),
+					"added"       => (int) $rRow["added"],
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+				$rPosition++;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleRestreamLogs($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "restream_logs")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable);
+		// the trailing actions column is non-orderable too.
+		$rOrderBy = $this->dtOrderBy([false, "`lines`.`username`", "`streams`.`stream_display_name`", "`detect_restream_logs`.`ip`", "`detect_restream_logs`.`time`", false]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`detect_restream_logs`.`ip` LIKE ? OR `lines`.`username` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `detect_restream_logs` LEFT JOIN `lines` ON `lines`.`id` = `detect_restream_logs`.`user_id` LEFT JOIN `streams` ON `streams`.`id` = `detect_restream_logs`.`stream_id` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rBlocked = [];
+			$db->query("SELECT `ip` FROM `blocked_ips`;");
+			foreach ($db->get_rows() as $rRow) {
+				$rBlocked[$rRow["ip"]] = true;
+			}
+			$rCanEditUser = Authorization::check("adv", "edit_user");
+			$rStreamPerm  = ["1" => "streams", "2" => "movies", "3" => "streams", "4" => "radio", "5" => "series"];
+			$rQuery = "SELECT `detect_restream_logs`.`id`, `detect_restream_logs`.`user_id`, `detect_restream_logs`.`stream_id`, `detect_restream_logs`.`ip`, `detect_restream_logs`.`time`, `lines`.`username`, `streams`.`stream_display_name`, `streams`.`type` FROM `detect_restream_logs` LEFT JOIN `lines` ON `lines`.`id` = `detect_restream_logs`.`user_id` LEFT JOIN `streams` ON `streams`.`id` = `detect_restream_logs`.`stream_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rType = strval($rRow["type"] ?? '');
+				$rStreamUrl = null;
+				if (isset($rStreamPerm[$rType]) && Authorization::check("adv", $rStreamPerm[$rType])) {
+					$rStreamUrl = ($rType == "5")
+						? "serie?id=" . (int) $rRow["stream_id"]
+						: "stream_view?id=" . (int) $rRow["stream_id"];
+				}
+				$rIp = (string) $rRow["ip"];
+				$rItem = [
+					"id"          => (int) $rRow["id"],
+					"user_id"     => (int) $rRow["user_id"],
+					"username"    => $rRow["username"],
+					"user_url"    => ($rCanEditUser && $rRow["username"] !== null) ? "line?id=" . (int) $rRow["user_id"] : null,
+					"stream_id"   => (int) $rRow["stream_id"],
+					"stream_name" => $rRow["stream_display_name"],
+					"stream_url"  => $rStreamUrl,
+					"ip"          => $rIp,
+					"blocked"     => isset($rBlocked[$rIp]),
+					"date"        => (int) $rRow["time"],
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleMagEvents($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "manage_events")) {
+			exit;
+		}
+		// Column 0 is the DataTables Responsive control column (non-orderable);
+		// the trailing actions column is non-orderable too.
+		$rOrderBy = $this->dtOrderBy([false, "`mag_events`.`send_time`", "`mag_devices`.`mac`", "`mag_events`.`event`", "`mag_events`.`msg`", false]);
+		$rWhere = $rWhereV = [];
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . $rSearch . "%";
+			}
+			$rWhere[] = "(`mag_devices`.`mac` LIKE ? OR `mag_events`.`event` LIKE ? OR `mag_events`.`msg` LIKE ?)";
+		}
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
+
+		$db->query("SELECT COUNT(*) AS `count` FROM `mag_events` LEFT JOIN `mag_devices` ON `mag_devices`.`mag_id` = `mag_events`.`mag_device_id` " . $rWhereString . ";", ...$rWhereV);
+		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
+		$rReturn["recordsFiltered"] = $rIsAPI ? min($rReturn["recordsTotal"], $rLimit) : $rReturn["recordsTotal"];
+
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `mag_events`.`id`, `mag_events`.`send_time`, `mag_devices`.`mac`, `mag_events`.`event`, `mag_events`.`msg`, `mag_events`.`mag_device_id` FROM `mag_events` LEFT JOIN `mag_devices` ON `mag_devices`.`mag_id` = `mag_events`.`mag_device_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			foreach ($db->get_rows() as $rRow) {
+				$rItem = [
+					"id"            => (int) $rRow["id"],
+					"date"          => (int) $rRow["send_time"],
+					"mac"           => $rRow["mac"],
+					"mag_device_id" => (int) $rRow["mag_device_id"],
+					"event"         => $rRow["event"],
+					"msg"           => $rRow["msg"],
+				];
+				$rReturn["data"][] = $rIsAPI
+					? self::filterRow($rItem, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '')
+					: $rItem;
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleBouquetsStreams($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "bouquets")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("live");
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "(`type` = 1 OR `type` = 3)";
+		if (RequestManager::has("category_id") && 0 < (int) RequestManager::get("category_id")) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category_id");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_display_name`, `streams`.`category_id` FROM `streams` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
+							$rCategory = $rCategories[(int) RequestManager::get("category_id")]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rCategory];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleBouquetsVod($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "bouquets")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("movie");
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`type` = 2";
+		if (RequestManager::has("category_id") && 0 < (int) RequestManager::get("category_id")) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category_id");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_display_name`, `streams`.`category_id` FROM `streams` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
+							$rCategory = $rCategories[(int) RequestManager::get("category_id")]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rCategory];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleBouquetsSeries($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "bouquets")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("series");
+		$rOrder = ["`streams_series`.`id`", "`streams_series`.`title`", false, false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		if (RequestManager::has("category_id") && 0 < (int) RequestManager::get("category_id")) {
+			$rWhere[] = "JSON_CONTAINS(`streams_series`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category_id");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams_series`.`id` LIKE ? OR `streams_series`.`title` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams_series` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams_series`.`id`, `streams_series`.`title`, `streams_series`.`category_id` FROM `streams_series` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
+							$rCategory = $rCategories[(int) RequestManager::get("category_id")]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rReturn["data"][] = [$rRow["id"], $rRow["title"], $rCategory];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleBouquetsRadios($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "bouquets")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("radio");
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`type` = 4";
+		if (RequestManager::has("category_id") && 0 < (int) RequestManager::get("category_id")) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category_id");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_display_name`, `streams`.`category_id` FROM `streams` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
+							$rCategory = $rCategories[(int) RequestManager::get("category_id")]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+						}
+						if (1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rCategory];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleStreamsShort($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "categories")) {
+			exit;
+		}
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "(`type` = 1 OR `type` = 3)";
+		if (RequestManager::has("category_id") && 0 < (int) RequestManager::get("category_id")) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category_id");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_display_name` FROM `streams` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleMoviesShort($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "categories")) {
+			exit;
+		}
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`type` = 2";
+		if (RequestManager::has("category_id") && 0 < (int) RequestManager::get("category_id")) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category_id");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_display_name` FROM `streams` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleRadiosShort($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "categories")) {
+			exit;
+		}
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`type` = 4";
+		if (RequestManager::has("category_id") && 0 < (int) RequestManager::get("category_id")) {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category_id");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_display_name` FROM `streams` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleSeriesShort($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "categories")) {
+			exit;
+		}
+		$rOrder = ["`streams_series`.`id`", "`streams_series`.`title`", false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		if (RequestManager::has("category_id") && 0 < (int) RequestManager::get("category_id")) {
+			$rWhere[] = "JSON_CONTAINS(`streams_series`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category_id");
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams_series`.`id` LIKE ? OR `streams_series`.`title` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams_series` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams_series`.`id`, `streams_series`.`title` FROM `streams_series` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["title"]];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleVodSelection($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rPermissions;
+		if (!$rPermissions["is_admin"] || !Authorization::check("adv", "create_channel")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("movie");
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", "`streams_series`.`title`", false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		// Only VODs encoded (stream_status = 0) on the chosen server: the channel build skips the rest.
+		$rWhere[] = "EXISTS (SELECT 1 FROM `streams_servers` `ss` WHERE `ss`.`stream_id` = `streams`.`id` AND `ss`.`server_id` = ? AND `ss`.`stream_status` = 0)";
+		$rWhereV[] = (int) (RequestManager::get("server_id") ?? 0);
+		if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
+			$rSplit = explode(":", RequestManager::get("category_id"));
+			if ((int) $rSplit[0] == 0) {
+				$rWhere[] = "(`streams`.`type` = 2 AND JSON_CONTAINS(`streams`.`category_id`, ?, '\$'))";
+				$rWhereV[] = $rSplit[1];
+			} else {
+				$rWhere[] = "(`streams`.`type` = 5 AND `streams`.`series_no` = ?)";
+				$rWhereV[] = $rSplit[1];
+			}
+		} else {
+			$rWhere[] = "(`streams`.`type` = 2 OR `streams`.`type` = 5)";
+		}
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 3) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams_series`.`title` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams`.`series_no` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `streams`.`id`, `streams`.`stream_display_name`, `streams`.`category_id`, `streams_series`.`title` FROM `streams` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams`.`series_no` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						if ((string) $rRow["title"] !== '') {
+							$rCategory = $rRow["title"];
+						} else {
+							$rCategoryIDs = json_decode($rRow["category_id"], true);
+							if (!is_array($rCategoryIDs)) {
+								$rCategoryIDs = [];
+							}
+							if (($rSplit[1] ?? '') !== '') {
+								$rCategory = $rCategories[(int) $rSplit[1]]["category_name"] ?: "No Category";
+							} else {
+								$rCategory = $rCategoryIDs[0] ?? null;
+								$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
+							}
+							if (1 < count($rCategoryIDs)) {
+								$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+							}
+						}
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleProviderStreams($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		// The stream and movie forms show this table; the providers page lists the same rows.
+		if (!Authorization::check("adv", "streams") && !Authorization::check("adv", "add_stream") && !Authorization::check("adv", "edit_stream") && !Authorization::check("adv", "add_movie") && !Authorization::check("adv", "edit_movie")) {
+			exit;
+		}
+		$rOrder = ["`providers`.`name`", "`providers_streams`.`stream_icon`", "`providers_streams`.`stream_display_name`", false];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`providers`.`enabled` = 1 AND `providers`.`status` = 1";
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 4) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`providers`.`name` LIKE ? OR `providers`.`ip` LIKE ? OR `providers_streams`.`stream_display_name` LIKE ? OR `providers_streams`.`stream_id` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("type") ?? '') !== '') {
+			$rWhere[] = "`providers_streams`.`type` = ?";
+			$rWhereV[] = RequestManager::get("type");
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `providers_streams` LEFT JOIN `providers` ON `providers`.`id` = `providers_streams`.`provider_id` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `providers`.`id`,`providers_streams`.`type`,`providers`.`username`, `providers`.`password`, `providers`.`ssl`, `providers`.`legacy`, `providers`.`hls`, `providers`.`ip`, `providers`.`port`, `providers`.`name`, `providers`.`data`, `providers_streams`.`stream_id`, `providers_streams`.`category_array`, `providers_streams`.`stream_display_name`, `providers_streams`.`stream_icon`,`providers_streams`.`channel_id` FROM `providers_streams` LEFT JOIN `providers` ON `providers`.`id` = `providers_streams`.`provider_id` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						// Remote provider API data (untrusted): sent raw and escaped client-side
+						// where it lands (attribute, text). The stream URL was already exposed to
+						// the client via the add button.
+						if ($rRow["type"] == "live") {
+							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/live/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . ($rRow["hls"] ? ".m3u8" : ($rRow["legacy"] ? ".ts" : ""));
+						} else {
+							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/movie/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . "." . $rRow["channel_id"];
+						}
+						$rProviderData = json_decode((string) $rRow["data"], true) ?: [];
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"type" => (string) $rRow["type"],
+							"name" => (string) $rRow["stream_display_name"],
+							"stream_icon" => ($rRow["type"] == "live") ? (string) $rRow["stream_icon"] : "",
+							"stream_url" => $rStreamURL,
+							"provider_name" => (string) $rRow["name"],
+							"provider_expires" => ($rProviderData["exp_date"] ?? null) ? (string) $rProviderData["exp_date"] : "Never",
+							"provider_max" => ($rProviderData["max_connections"] ?? null) ? (string) $rProviderData["max_connections"] : "\u{221E}",
+							"provider_active" => (string) ($rProviderData["active_connections"] ?? ""),
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleParentServers($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rServers;
+		if (!Authorization::check("adv", "servers")) {
+			exit;
+		}
+		$rServers = ServerRepository::getAll();
+		if (!isset($rServers[RequestManager::get("proxy_id")]) || count($rServers[RequestManager::get("proxy_id")]["parent_id"]) == 0) {
+			echo json_encode($rReturn);
+			exit;
+		}
+		$rOrder = ["`id`", "`server_name`", "`server_ip`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`server_type` = 0";
+		$rWhere[] = "`id` IN (" . implode(",", array_map("intval", $rServers[RequestManager::get("proxy_id")]["parent_id"])) . ")";
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 2) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`server_name` LIKE ? OR `server_ip` LIKE ?)";
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `servers` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `id`, `server_name`, `server_ip` FROM `servers` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rReturn["data"][] = ["<a href='server_view?id=" . (int) $rRow["id"] . "'>" . $rRow["id"] . "</a>", "<a href='server_view?id=" . (int) $rRow["id"] . "'>" . $rRow["server_name"] . "</a>", $rRow["server_ip"]];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleFailuresModal($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings;
+		if (!Authorization::check("adv", "streams")) {
+			exit;
+		}
+		$rLimit = 10;
+		$rOrderBy = "ORDER BY `date` DESC";
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`stream_id` = ?";
+		$rWhereV[] = RequestManager::get("stream_id");
+		if (RequestManager::has("server_id") && 0 < (int) (RequestManager::get("server_id") ?? 0)) {
+			$rWhere[] = "`server_id` = ?";
+			$rWhereV[] = RequestManager::get("server_id");
+		}
+		$rWhere[] = "`date` >= UNIX_TIMESTAMP()-" . (int) ($rSettings["fails_per_time"] ?: 86400);
+		$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams_logs` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `server_id`, `action`, `source`, `date` FROM `streams_logs` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rStreamSource = "";
+						if (!empty($rRow["source"])) {
+							$rStreamSource = strtolower(parse_url($rRow["source"])["host"] ?? '');
+						}
+												$rReturn["data"][] = [
+													"server_id" => (int) $rRow["server_id"],
+													"server_name" => (string) (ServerRepository::getAll()[$rRow["server_id"]]["server_name"] ?? ''),
+													"source_host" => $rStreamSource,
+													"action" => (string) $rRow["action"],
+													"date" => date(SettingsManager::getAll()["datetime_format"], $rRow["date"]),
+												];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleEpgModal($rReturn, $rLimit, $rIsAPI) {
+		$rLimit = 10;
+		$rEPG = EpgService::getStreamEpg(RequestManager::get("stream_id"), time(), time() + 604800);
+		if ($rEPG && $rLimit < count($rEPG)) {
+			$rEPG = array_slice($rEPG, 0, $rLimit);
+		}
+		$rReturn["recordsTotal"] = count($rEPG);
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			foreach ($rEPG as $rRow) {
+				if ($rIsAPI) {
+					$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+				} else {
+					$rReturn["data"][] = [date("H:i:s", $rRow["start"]), $rRow["title"], $rRow["description"]];
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleStreamLogs($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db;
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`stream_id` = ?";
+		$rWhereV[] = RequestManager::get("stream_id");
+		$rWhere[] = "`date` >= (UNIX_TIMESTAMP()-86400)";
+		$rOrderBy = "ORDER BY `date` DESC";
+		$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams_logs` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `date`, `action` FROM `streams_logs` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rIsAPI) {
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rReturn["data"][] = [date("H:i:s", $rRow["date"]), StatusBadge::streamLog($rRow["action"])];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	private function handleOndemand($rReturn, $rStart, $rLimit, $rIsAPI) {
+		global $db, $rSettings;
+		if (!Authorization::check("adv", "streams")) {
+			exit;
+		}
+		$rCategories = CategoryService::getAllByType("live");
+		// Leading false = the Bootstrap 5 Responsive control column (client index 0).
+		$rOrder = [false, "`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`streams_servers`.`server_id`", "`ondemand_check`.`status`", "`ondemand_check`.`response`", "`ondemand_check`.`resolution`", "`ondemand_check`.`date`"];
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
+			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
+		} else {
+			$rOrderRow = 0;
+		}
+		$rWhere = $rWhereV = [];
+		$rWhere[] = "`streams`.`type` = 1";
+		$rWhere[] = "`streams`.`direct_source` = 0";
+		$rWhere[] = "`streams_servers`.`on_demand` = 1";
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
+			foreach (range(1, 6) as $rInt) {
+				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
+			}
+			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `ondemand_check`.`fps` LIKE ? OR `ondemand_check`.`resolution` LIKE ? OR `ondemand_check`.`video_codec` LIKE ? OR `ondemand_check`.`audio_codec` LIKE ?)";
+		}
+		if ((string) (RequestManager::get("category") ?? '') !== '') {
+			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
+			$rWhereV[] = RequestManager::get("category");
+		}
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
+			if (RequestManager::get("filter") == 1) {
+				$rWhere[] = "`ondemand_check`.`status` = 1";
+			} elseif (RequestManager::get("filter") == 2) {
+				$rWhere[] = "`ondemand_check`.`status` = 0";
+			} elseif (RequestManager::get("filter") == 3) {
+				$rWhere[] = "`ondemand_check`.`status` IS NULL";
+			}
+		}
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
+			$rWhere[] = "`streams_servers`.`server_id` = ?";
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		}
+		$rOrderBy = "";
+		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+			$rOrderBy = "ORDER BY " . $rOrder[$rOrderRow] . " " . $rOrderDirection;
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = "WHERE " . implode(" AND ", $rWhere);
+		} else {
+			$rWhereString = "";
+		}
+		$rCountQuery = "SELECT COUNT(*) AS `count` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` LEFT JOIN `ondemand_check` ON `ondemand_check`.`id` = `streams_servers`.`ondemand_check` " . $rWhereString . ";";
+		$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn["recordsTotal"] = $db->get_row()["count"];
+		} else {
+			$rReturn["recordsTotal"] = 0;
+		}
+		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
+		if (0 < $rReturn["recordsTotal"]) {
+			$rQuery = "SELECT `ondemand_check`.`status` AS `ondemand_status`, `ondemand_check`.`date` AS `ondemand_date`, `ondemand_check`.`errors`, `ondemand_check`.`response`, `ondemand_check`.`resolution`, `ondemand_check`.`fps`, `ondemand_check`.`video_codec`, `ondemand_check`.`audio_codec`, `streams`.`id`, `streams`.`type`, `streams`.`stream_icon`, `streams`.`stream_source`, `streams`.`stream_display_name`, `streams_servers`.`server_id`, `streams`.`llod`, `streams`.`category_id`, (SELECT `server_name` FROM `servers` WHERE `id` = `streams_servers`.`server_id`) AS `server_name` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` LEFT JOIN `ondemand_check` ON `ondemand_check`.`id` = `streams_servers`.`ondemand_check` " . $rWhereString . " " . $rOrderBy . " LIMIT " . $rStart . ", " . $rLimit . ";";
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				$rRows = $db->get_rows();
+				$rUpChecks = $rDownChecks = $rStreamIDs = [];
+				foreach ($rRows as $rRow) {
+					$rStreamIDs[] = (int) $rRow["id"];
+				}
+				if (0 < count($rStreamIDs)) {
+					$db->query("SELECT `stream_id`, `server_id`, COUNT(*) AS `count` FROM `ondemand_check` WHERE `stream_id` IN (" . implode(",", $rStreamIDs) . ") AND `status` = 1 GROUP BY CONCAT(`stream_id`, '_', `server_id`);");
+					foreach ($db->get_rows() as $rRow) {
+						$rUpChecks[(int) $rRow["server_id"]][$rRow["stream_id"]] = $rRow["count"];
+					}
+					$db->query("SELECT `stream_id`, `server_id`, COUNT(*) AS `count` FROM `ondemand_check` WHERE `stream_id` IN (" . implode(",", $rStreamIDs) . ") AND `status` = 0 GROUP BY CONCAT(`stream_id`, '_', `server_id`);");
+					foreach ($db->get_rows() as $rRow) {
+						$rDownChecks[(int) $rRow["server_id"]][$rRow["stream_id"]] = $rRow["count"];
+					}
+				}
+				foreach ($rRows as $rRow) {
+					if ($rIsAPI) {
+						unset($rRow["stream_source"]);
+						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
+					} else {
+						$rServerID = (int) $rRow["server_id"];
+						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if ((string) (RequestManager::get("category") ?? "") !== '') {
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+						} else {
+							$rCategory = $rCategoryIDs[0] ?? null;
+							$rCategory = $rCategories[$rCategory]["category_name"] ?? "No Category";
+						}
+						if (is_array($rCategoryIDs) && 1 < count($rCategoryIDs)) {
+							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
+						}
+						$rReturn["data"][] = [
+							"id"          => (int) $rRow["id"],
+							"stream_url"  => "stream_view?id=" . (int) $rRow["id"],
+							"stream_name" => $rRow["stream_display_name"],
+							"category"    => $rCategory,
+							"icon"        => !empty($rRow["stream_icon"]) ? $rRow["stream_icon"] : null,
+							"server_name" => $rRow["server_name"] ?: null,
+							"server_url"  => ($rRow["server_name"] && Authorization::check("adv", "servers")) ? "server_view?id=" . (int) $rRow["server_id"] : null,
+							"status"      => is_null($rRow["ondemand_status"]) ? null : (int) $rRow["ondemand_status"],
+							"errors"      => !empty($rRow["errors"]) ? $rRow["errors"] : null,
+							"up_checks"   => (int) ($rUpChecks[$rServerID][$rRow["id"]] ?? 0),
+							"down_checks" => (int) ($rDownChecks[$rServerID][$rRow["id"]] ?? 0),
+							"response"    => (0 < (int) $rRow["response"]) ? (int) $rRow["response"] : null,
+							"resolution"  => $rRow["resolution"] ?: null,
+							"video_codec" => $rRow["video_codec"] ? str_replace("mpeg2video", "mpeg2", $rRow["video_codec"]) : null,
+							"audio_codec" => $rRow["audio_codec"] ?: null,
+							"fps"         => $rRow["fps"] ?: null,
+							"last_check"  => (0 < (int) $rRow["ondemand_date"]) ? (int) $rRow["ondemand_date"] : null,
+						];
+					}
+				}
+			}
+		}
+		echo json_encode($rReturn);
+		exit;
+	}
+
+	/**
+	 * Build the "ORDER BY <col> <dir>" clause from the DataTables order params.
+	 *
+	 * $rOrderColumns maps the table's orderable column index -> SQL column
+	 * expression (a false/'' entry marks a non-orderable column). Returns '' when
+	 * the requested column is not orderable.
+	 *
+	 * @param array<int,string|false> $rOrderColumns
+	 */
+	private function dtOrderBy(array $rOrderColumns): string {
+		$rColumn = RequestManager::get("order")[0]["column"] ?? '';
+		$rRow    = ((string) $rColumn !== '') ? (int) $rColumn : 0;
+		if (empty($rOrderColumns[$rRow])) {
+			return "";
+		}
+		$rDir = strtolower(RequestManager::get("order")[0]["dir"] ?? "") === "desc" ? "desc" : "asc";
+		return "ORDER BY " . $rOrderColumns[$rRow] . " " . $rDir;
+	}
+
+	/** The DataTables global search value (empty string when none). */
+	private function dtSearch(): string {
+		return (string) (RequestManager::get("search")["value"] ?? '');
+	}
+
+	public static function filterRow($rRow, $rShow, $rHide) {
+		if (!$rShow && !$rHide) {
+			return $rRow;
+		}
+		$rReturn = [];
+		foreach (array_keys($rRow) as $rKey) {
+			if ($rShow) {
+				if (in_array($rKey, $rShow)) {
+					$rReturn[$rKey] = $rRow[$rKey];
+				}
+			} elseif ($rHide && !in_array($rKey, $rHide)) {
+				$rReturn[$rKey] = $rRow[$rKey];
+			}
+		}
+		return $rReturn;
+	}
+}

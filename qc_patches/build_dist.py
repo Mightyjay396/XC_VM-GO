@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Builds the fork's release assets: official XC_VM 2.7.4 + QC patches + Go engine, as XC_VM's own installer/updater expect them."""
-import glob, hashlib, json, os, re, shutil, subprocess, zipfile
+import glob, hashlib, json, os, re, shutil, subprocess, sys, zipfile
 
-VERSION, OWNER, REPO = "2.7.4-p1", "Mightyjay396", "XC_VM-GO"
+VERSION, OWNER, REPO = "2.7.4-p2", "Mightyjay396", "XC_VM-GO"
 PKG, OUT, SRC = "/root/qc_xcvm_pkg", "/tmp/qc_dist", {"main": "/tmp/r274_main", "lb": "/tmp/r274_lb"}
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -69,12 +69,20 @@ def md5(p):
 def main():
     os.makedirs(OUT, exist_ok=True)
     assets = {"main": "xc_vm.tar.gz", "lb": "loadbalancer.tar.gz"}
-    for role, name in assets.items():
-        t = build_tree(role)
-        r = subprocess.run(["tar", "czf", f"{OUT}/{name}", "-C", t, "."])
-        assert r.returncode == 0
+    if "--zip-only" not in sys.argv:
+        for role, name in assets.items():
+            t = build_tree(role)
+            r = subprocess.run(["tar", "czf", f"{OUT}/{name}", "-C", t, "."])
+            assert r.returncode == 0
     inst = open("/tmp/xzi/install").read()
-    for a, b in (("https://github.com/Vateron-Media/{repo}/releases/", f"https://github.com/{OWNER}/{REPO}/releases/"),
+    for a, b in (
+                 ('    # Final restart\n    run_command("service xc_vm restart")',
+                  '    # QC: Go delivery engine + FFmpeg 8.1-dash shipped in the archive\n'
+                  '    if os.path.exists("/home/xc_vm/bin/qc/qc_deps.sh"):\n'
+                  '        printc("Installing the Go delivery engine...", col.OKBLUE)\n'
+                  '        run_command("bash /home/xc_vm/bin/qc/qc_deps.sh")\n\n'
+                  '    # Final restart\n    run_command("service xc_vm restart")'),
+                 ("https://github.com/Vateron-Media/XC_VM/releases\",", f"https://github.com/{OWNER}/{REPO}/releases\","),("https://github.com/Vateron-Media/{repo}/releases/", f"https://github.com/{OWNER}/{REPO}/releases/"),
                  ("https://api.github.com/repos/Vateron-Media/XC_VM/releases/latest", f"https://api.github.com/repos/{OWNER}/{REPO}/releases/latest"),
                  ("https://github.com/Vateron-Media/XC_VM/releases/download/", f"https://github.com/{OWNER}/{REPO}/releases/download/"),
                  ("https://github.com/Vateron-Media/XC_VM/releases/latest/download/", f"https://github.com/{OWNER}/{REPO}/releases/latest/download/")):

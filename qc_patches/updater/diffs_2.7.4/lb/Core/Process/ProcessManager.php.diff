@@ -1,0 +1,12 @@
+--- /tmp/r274_lb/Core/Process/ProcessManager.php	2026-11-20 16:29:37.000000000 +0000
++++ files_2.7.4/lb/Core/Process/ProcessManager.php	2026-11-25 22:31:08.752678517 +0000
+@@ -196,6 +196,9 @@
+ 			$cmdline = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
+ 			return strpos($cmdline, "\0remux\0") !== false ? 'fanout' : null;
+ 		}
++		if ($exe === 'ffmpeg-golive') { // QC-GOLIVE-PRODUCER: live channel run by our Go engine (falls back by exec to real ffmpeg, then shows ffmpeg)
++			return 'go';
++		}
+ 		if (preg_match('/^(ffmpeg|php)/', $exe, $m)) {
+ 			return $m[1];
+ 		}

@@ -1902,7 +1902,7 @@ class StreamProcess {
 			}
 			$rFetchOptions = implode(' ', StreamUtils::getArguments($rArguments, $rProtocol, 'fetch'));
 
-			// QC ClearKey (chemin supervisé par le fanout) : clé dans l'URL → options avant -i + build « -dash » pour cette source
+			// QCIPTV ClearKey (chemin supervisé par le fanout) : clé dans l'URL → options avant -i + build « -dash » pour cette source
 			$rDrmOptions = StreamUtils::drmOptions($rStreamSource);
 			$rEntryFfmpegCpu = $rFFMPEGCpu;
 			$rEntryFfmpegGpu = $rFFMPEGGpu;
@@ -1955,7 +1955,7 @@ class StreamProcess {
 			]);
 
 			$rEntry = ['label' => $rLabels[$i], 'cmd' => $rFFMPEG];
-			// QC ClearKey : le remuxeur Go ne déchiffre pas → toujours ffmpeg (build -dash) pour une source avec clé
+			// QCIPTV ClearKey : le remuxeur Go ne déchiffre pas → toujours ffmpeg (build -dash) pour une source avec clé
 			if ($rNativeStream && $rDrmOptions === '' && self::isNativeSource($rStreamSource)) {
 				$rNative = [
 					'streamID' => $rStreamID, 'source' => $rStreamSource, 'arguments' => array_column($rArguments, null, 'argument_key'),
@@ -2065,7 +2065,7 @@ class StreamProcess {
 	 * and probing each one on the hand-over path would cost seconds per source,
 	 * so a source with nothing cached gets the minimum buildLive() needs.
 	 */
-	/** QC ClearKey : -map par défaut d'une source DASH multi-représentations = meilleure vidéo + toutes les pistes audio (sonde ffprobe, cache 6 h). */
+	/** QCIPTV ClearKey : -map par défaut d'une source DASH multi-représentations = meilleure vidéo + toutes les pistes audio (sonde ffprobe, cache 6 h). */
 	private static function drmDefaultMap(string $rStreamSource, string $rDrmOptions, string $rProbeBin): string {
 		$rCache = CACHE_TMP_PATH . md5($rStreamSource) . '_drmmap';
 		if (file_exists($rCache) && filemtime($rCache) > time() - 21600) {
@@ -3004,7 +3004,7 @@ class StreamProcess {
 					$rProbeOptions = implode(' ', StreamUtils::getArguments($rProbeArguments, $rProtocol, 'fetch'));
 					$rFetchOptions = implode(' ', StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'fetch'));
 
-					// QC ClearKey : clé dans l'URL → options de déchiffrement avant -i et build ffmpeg « -dash » (démuxeur DASH)
+					// QCIPTV ClearKey : clé dans l'URL → options de déchiffrement avant -i et build ffmpeg « -dash » (démuxeur DASH)
 					$rDrmOptions = StreamUtils::drmOptions($rStreamSource);
 					if ($rDrmOptions !== '') {
 						$rStaticSource = StreamUtils::dashStaticSource($rStreamSource, (string) ($rArgsByKey['proxy']['value'] ?? ''));

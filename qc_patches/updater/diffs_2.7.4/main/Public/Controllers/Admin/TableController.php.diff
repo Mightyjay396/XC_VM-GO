@@ -1,0 +1,42 @@
+--- /tmp/r274_main/Public/Controllers/Admin/TableController.php	2026-11-20 16:30:11.000000000 +0000
++++ files_2.7.4/main/Public/Controllers/Admin/TableController.php	2026-11-25 22:31:08.872678516 +0000
+@@ -1207,7 +1207,8 @@
+ 										$rActualStatus = 3;
+ 									}
+ 								} elseif ((int) $rRow["on_demand"] == 1) {
+-									$rActualStatus = 4;
++									$rGoOD = json_decode($rRow["progress_info"] ?? "", true); // QC-GO-OD-STATS: open on-demand channel served by the Go relay = running
++									$rActualStatus = (is_array($rGoOD) && ($rGoOD["producer"] ?? "") === "go" && intval($rGoOD["go_at"] ?? 0) > time() - 150) ? 1 : 4;
+ 								} else {
+ 									$rActualStatus = 0;
+ 								}
+@@ -1520,7 +1521,8 @@
+ 									$rActualStatus = 3;
+ 								}
+ 							} elseif ((int) $rRow["on_demand"] == 1) {
+-								$rActualStatus = 4;
++								$rGoOD = json_decode($rRow["progress_info"] ?? "", true); // QC-GO-OD-STATS: open on-demand channel served by the Go relay = running
++								$rActualStatus = (is_array($rGoOD) && ($rGoOD["producer"] ?? "") === "go" && intval($rGoOD["go_at"] ?? 0) > time() - 150) ? 1 : 4;
+ 							} else {
+ 								$rActualStatus = 0;
+ 							}
+@@ -2521,7 +2523,8 @@
+ 									$rActualStatus = 3;
+ 								}
+ 							} elseif ((int) $rRow["on_demand"] == 1) {
+-								$rActualStatus = 4;
++								$rGoOD = json_decode($rRow["progress_info"] ?? "", true); // QC-GO-OD-STATS: open on-demand channel served by the Go relay = running
++								$rActualStatus = (is_array($rGoOD) && ($rGoOD["producer"] ?? "") === "go" && intval($rGoOD["go_at"] ?? 0) > time() - 150) ? 1 : 4;
+ 							}
+ 						} else {
+ 							$rActualStatus = -1;
+@@ -2790,7 +2793,8 @@
+ 									$rActualStatus = 3;
+ 								}
+ 							} elseif ((int) $rRow["on_demand"] == 1) {
+-								$rActualStatus = 4;
++								$rGoOD = json_decode($rRow["progress_info"] ?? "", true); // QC-GO-OD-STATS: open on-demand channel served by the Go relay = running
++								$rActualStatus = (is_array($rGoOD) && ($rGoOD["producer"] ?? "") === "go" && intval($rGoOD["go_at"] ?? 0) > time() - 150) ? 1 : 4;
+ 							}
+ 						} else {
+ 							$rActualStatus = -1;

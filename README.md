@@ -63,10 +63,13 @@ Everything else (live & VOD streaming, load balancing, users/resellers, transcod
 
 ## 🆕 What This Fork Changes
 
-| Area | Upstream XC_VM 2.7.4 | XC_VM-GO 2.7.4-p1 |
+| Area | Upstream XC_VM 2.7.4 | XC_VM-GO 2.7.4-p2 |
 | --- | --- | --- |
 | Stream delivery on load balancers | PHP / fanout | + Go engine: **odrelay**, **livehold**, **ckts**, **mpdproxy** (started automatically, survive reboots) |
-| On-demand channels | Viewer waits for FFmpeg to start | Video starts instantly while FFmpeg starts |
+| On-demand channels | PHP starts FFmpeg per channel; viewer waits for the probe + first segment (4–9 s measured) | **Go replaces FFmpeg**: one shared source connection per channel, first byte in ~1.1–1.3 s, TS and HLS sources (incl. HLS with a separate audio rendition), per-stream proxy |
+| Live channels (copy) | One FFmpeg process per channel | **Opt-in Go engine** (`ffmpeg-golive`) instead of FFmpeg for plain copy-to-HLS channels; FFmpeg is kept automatically for transcoding, filters/logos, encrypted HLS / fMP4 and DASH |
+| Panel | Shows `ffmpeg` / stats only for FFmpeg-run streams | `go` badge on channels run by Go; on-demand channels served by Go show codecs, resolution, FPS, bitrate, CPU/RAM |
+| Panel settings | Used by FFmpeg | Also drive the Go engine (segment time/list/delete threshold, prebuffers, wait/scan/fail-sleep, instant-off), applied without restart |
 | Source drops / FFmpeg restarts | Viewers disconnected | Viewers stay connected (offline slate) |
 | ClearKey DASH sources | — | ClearKey DASH → MPEG-TS, DASH proxy with cache, FFmpeg 8.1-dash |
 | Active TS/VOD viewers | Cut every 10–20 min (check-in bug) | Fixed |
@@ -83,7 +86,7 @@ Not included on purpose: no server data, credentials, streams, customers or EPG 
 ## ⚠️ Status
 
 > **BETA SOFTWARE** — XC_VM itself is in beta, and this fork follows XC_VM releases with a delay.
-> Current fork release: **2.7.4-p1**, based on XC_VM 2.7.4.
+> Current fork release: **2.7.4-p2**, based on XC_VM 2.7.4.
 
 ---
 
@@ -167,7 +170,7 @@ For new installations:
 
 ## 📥 Quick Install
 
-> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM-GO 2.7.4-p1** (unofficial fork): upstream XC_VM 2.7.4 + this fork's fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
+> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM-GO 2.7.4-p2** (unofficial fork): upstream XC_VM 2.7.4 + this fork's fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
 
 ```bash
 # 1. Update system
@@ -336,17 +339,30 @@ Added by this fork: see below and [What This Fork Changes](#-what-this-fork-chan
 
 Installed and started automatically on every load balancer (not XC_VM's fanout, which stays as is):
 
-- **odrelay** (8147) — on-demand channels start instantly: the viewer gets video while FFmpeg starts (TS + HLS)
+- **odrelay** (8147) — **replaces FFmpeg for on-demand channels**: one upstream connection per channel shared by all viewers, a ring buffer, late join on a keyframe, source fallback, replay/rewind suppression after reconnects, offline slate, TS and HLS output. Sources: MPEG-TS and HLS (HLS with a separate audio rendition is merged with [gohlslib](https://github.com/bluenviron/gohlslib) + [mediacommon](https://github.com/bluenviron/mediacommon), MIT). Encrypted HLS / fMP4 is detected and stays on FFmpeg (cached 24 h). DASH stays on ckts.
+- **ffmpeg-golive** — same Go engine for **live** channels, opt-in per stream id in `/home/xc_vm/config/golive_streams.txt` (empty by default). XC_VM still builds its normal FFmpeg command; the Go engine runs it when it is a plain copy to HLS (TS, HLS, HLS with separate audio, ckts output) and hands over to the real FFmpeg (`exec`) for anything else (transcode, filters, logo, encrypted HLS, fMP4, several outputs). It writes the same segments, playlist and `-progress` file (frame, fps, bitrate) XC_VM monitors. Panel settings are re-read every 10 s. Activating a channel needs a restart of its XC_VM stream monitor.
 - **livehold** (8150) — viewers stay connected through FFmpeg restarts and source drops (offline slate instead of a disconnect)
 - **ckts** (8160) — ClearKey DASH → MPEG-TS engine, with ad-break relays
 - **mpdproxy** (8098-8113) — DASH/ClearKey proxy with cache, plus **FFmpeg 8.1-dash**
 - Fix for the XC_VM 2.7.2/2.7.4 bug that disconnected active TS/VOD viewers every 10-20 min
 - Reseller credit refunds, trial API, line API, provider import, XAccel-compatible API, source proxies
-- *Service Status* on the dashboard shows which servers run the Go engine
+- *Service Status* on the dashboard shows which servers run the Go engine; the stream list shows a `go` badge for channels run by Go, and on-demand channels served by Go get their stats (codecs, resolution, FPS, bitrate, CPU/RAM share) through `cron:streams`
 
 Details: [INSTALL.md](INSTALL.md).
 
 ---
+
+### 📈 Go vs FFmpeg — measured on a production load balancer
+
+| Measure | PHP + FFmpeg | Go |
+| --- | --- | --- |
+| On-demand open (5 channels) | 4.2–9.4 s (probe + first segment) | 1.1–1.3 s to first byte |
+| Live restart → first segment, HLS with separate audio | 4.6–4.7 s | 2.1–2.7 s |
+| Live restart → first segment, MPEG-TS | 1.2–1.3 s | 1.2–1.3 s |
+| RAM per live channel | ~52 MB | ~48 MB |
+| CPU per live copy channel | ~0.8 % | 0.5–2.3 % (HLS + separate audio remux: ~8 %) |
+
+FFmpeg stays slightly cheaper in CPU for a plain copy; Go wins on start time, shared upstream connections and viewer continuity.
 
 ## 🔧 Known Limitations
 
@@ -355,6 +371,8 @@ Details: [INSTALL.md](INSTALL.md).
 - ❌ Some bugs in transcoding module (upstream, in progress)
 - ❌ New XC_VM versions reach this fork only once its changes are carried over to them
 - ❌ The Go engine is installed on Ubuntu / Debian x86-64 only
+- ❌ Transcoding, filters and logos always use FFmpeg (no production-grade Go encoder exists)
+- ❌ Go live (`ffmpeg-golive`) keeps all tracks of the source; `-map` track selection is not applied yet
 
 ---
 

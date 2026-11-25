@@ -272,19 +272,19 @@
    "role": "main",
    "path": "Domain/Stream/StreamProcess.php",
    "kind": "core",
-   "ours_md5": "8ce6e7f6988d0ab94e592d127273647b",
+   "ours_md5": "a568938923a211452d161c827e8f113a",
    "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
    "diff": "diffs/main/Domain/Stream/StreamProcess.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
-     "ours_md5": "8ce6e7f6988d0ab94e592d127273647b",
+     "ours_md5": "a568938923a211452d161c827e8f113a",
      "file": "files/main/Domain/Stream/StreamProcess.php",
      "diff": "diffs/main/Domain/Stream/StreamProcess.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "f5b30d4a771765ffa825c2a6078b8da5",
-     "ours_md5": "5529e09b75217495b55a737f1d11dde4",
+     "ours_md5": "867403a9f0b2a812d75006ed1343ce2d",
      "file": "files_2.7.4/main/Domain/Stream/StreamProcess.php",
      "diff": "diffs_2.7.4/main/Domain/Stream/StreamProcess.php.diff"
     }
@@ -975,19 +975,19 @@
    "role": "lb",
    "path": "Domain/Stream/StreamProcess.php",
    "kind": "core",
-   "ours_md5": "e841a981169ff2ebe1d7c4c0dc648e16",
+   "ours_md5": "0b017b3093f6c75216a45764b6356fdf",
    "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
    "diff": "diffs/lb/Domain/Stream/StreamProcess.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
-     "ours_md5": "e841a981169ff2ebe1d7c4c0dc648e16",
+     "ours_md5": "0b017b3093f6c75216a45764b6356fdf",
      "file": "files/lb/Domain/Stream/StreamProcess.php",
      "diff": "diffs/lb/Domain/Stream/StreamProcess.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "f5b30d4a771765ffa825c2a6078b8da5",
-     "ours_md5": "7032745f99f66948fa5f994f299984d6",
+     "ours_md5": "5399edf2226def3595de2087841017fe",
      "file": "files_2.7.4/lb/Domain/Stream/StreamProcess.php",
      "diff": "diffs_2.7.4/lb/Domain/Stream/StreamProcess.php.diff"
     }
@@ -997,19 +997,19 @@
    "role": "lb",
    "path": "Public/stream/live.php",
    "kind": "core",
-   "ours_md5": "e59650c95d432eedff967bfa62957ac8",
+   "ours_md5": "9ac2f08a6f04cf991da7e5f63c961d5f",
    "pristine_md5": "c2fd1a329411da56276eafb465265e1d",
    "diff": "diffs/lb/Public/stream/live.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "c2fd1a329411da56276eafb465265e1d",
-     "ours_md5": "e59650c95d432eedff967bfa62957ac8",
+     "ours_md5": "9ac2f08a6f04cf991da7e5f63c961d5f",
      "file": "files/lb/Public/stream/live.php",
      "diff": "diffs/lb/Public/stream/live.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "2a3c54119256aa35f77ff038c2e3b459",
-     "ours_md5": "06df60465e43568ca6972dd329cb5cc4",
+     "ours_md5": "fbb44079538ff399d210950850851aa4",
      "file": "files_2.7.4/lb/Public/stream/live.php",
      "diff": "diffs_2.7.4/lb/Public/stream/live.php.diff"
     }
@@ -1213,6 +1213,138 @@
    "path": "config/livehold_streams.txt",
    "kind": "template",
    "ours_md5": "b3136a962c78ed1216a17f6c0e30b9c0"
+  },
+  {
+   "role": "lb",
+   "path": "Core/Process/ProcessManager.php",
+   "kind": "core",
+   "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+   "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
+   "diff": "diffs/lb/Core/Process/ProcessManager.php.diff",
+   "v": {
+    "2.7.2": {
+     "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
+     "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+     "file": "files/lb/Core/Process/ProcessManager.php",
+     "diff": "diffs/lb/Core/Process/ProcessManager.php.diff"
+    },
+    "2.7.4": {
+     "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
+     "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+     "file": "files_2.7.4/lb/Core/Process/ProcessManager.php",
+     "diff": "diffs_2.7.4/lb/Core/Process/ProcessManager.php.diff"
+    }
+   }
+  },
+  {
+   "role": "main",
+   "path": "Core/Process/ProcessManager.php",
+   "kind": "core",
+   "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+   "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
+   "diff": "diffs/main/Core/Process/ProcessManager.php.diff",
+   "v": {
+    "2.7.2": {
+     "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
+     "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+     "file": "files/main/Core/Process/ProcessManager.php",
+     "diff": "diffs/main/Core/Process/ProcessManager.php.diff"
+    },
+    "2.7.4": {
+     "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
+     "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+     "file": "files_2.7.4/main/Core/Process/ProcessManager.php",
+     "diff": "diffs_2.7.4/main/Core/Process/ProcessManager.php.diff"
+    }
+   }
+  },
+  {
+   "role": "lb",
+   "path": "Cli/CronJobs/StreamsCronJob.php",
+   "kind": "core",
+   "ours_md5": "e26b8d634009cd121278128a2a8dca2a",
+   "pristine_md5": "2003cd6c399fc7364bc7a81378937778",
+   "diff": "diffs/lb/Cli/CronJobs/StreamsCronJob.php.diff",
+   "v": {
+    "2.7.2": {
+     "pristine_md5": "2003cd6c399fc7364bc7a81378937778",
+     "ours_md5": "e26b8d634009cd121278128a2a8dca2a",
+     "file": "files/lb/Cli/CronJobs/StreamsCronJob.php",
+     "diff": "diffs/lb/Cli/CronJobs/StreamsCronJob.php.diff"
+    },
+    "2.7.4": {
+     "pristine_md5": "2003cd6c399fc7364bc7a81378937778",
+     "ours_md5": "e26b8d634009cd121278128a2a8dca2a",
+     "file": "files_2.7.4/lb/Cli/CronJobs/StreamsCronJob.php",
+     "diff": "diffs_2.7.4/lb/Cli/CronJobs/StreamsCronJob.php.diff"
+    }
+   }
+  },
+  {
+   "role": "main",
+   "path": "Cli/CronJobs/StreamsCronJob.php",
+   "kind": "core",
+   "ours_md5": "e26b8d634009cd121278128a2a8dca2a",
+   "pristine_md5": "2003cd6c399fc7364bc7a81378937778",
+   "diff": "diffs/main/Cli/CronJobs/StreamsCronJob.php.diff",
+   "v": {
+    "2.7.2": {
+     "pristine_md5": "2003cd6c399fc7364bc7a81378937778",
+     "ours_md5": "e26b8d634009cd121278128a2a8dca2a",
+     "file": "files/main/Cli/CronJobs/StreamsCronJob.php",
+     "diff": "diffs/main/Cli/CronJobs/StreamsCronJob.php.diff"
+    },
+    "2.7.4": {
+     "pristine_md5": "2003cd6c399fc7364bc7a81378937778",
+     "ours_md5": "e26b8d634009cd121278128a2a8dca2a",
+     "file": "files_2.7.4/main/Cli/CronJobs/StreamsCronJob.php",
+     "diff": "diffs_2.7.4/main/Cli/CronJobs/StreamsCronJob.php.diff"
+    }
+   }
+  },
+  {
+   "role": "main",
+   "path": "Public/Controllers/Admin/TableController.php",
+   "kind": "core",
+   "ours_md5": "de5d8b9ca8c42074332e05bec75a2389",
+   "pristine_md5": "3fc41887079066691f751be83830aa2d",
+   "diff": "diffs/main/Public/Controllers/Admin/TableController.php.diff",
+   "v": {
+    "2.7.2": {
+     "pristine_md5": "3fc41887079066691f751be83830aa2d",
+     "ours_md5": "de5d8b9ca8c42074332e05bec75a2389",
+     "file": "files/main/Public/Controllers/Admin/TableController.php",
+     "diff": "diffs/main/Public/Controllers/Admin/TableController.php.diff"
+    },
+    "2.7.4": {
+     "pristine_md5": "3fc41887079066691f751be83830aa2d",
+     "ours_md5": "de5d8b9ca8c42074332e05bec75a2389",
+     "file": "files_2.7.4/main/Public/Controllers/Admin/TableController.php",
+     "diff": "diffs_2.7.4/main/Public/Controllers/Admin/TableController.php.diff"
+    }
+   }
+  },
+  {
+   "role": "main",
+   "path": "Public/Views/admin/streams.php",
+   "kind": "core",
+   "ours_md5": "838bd245085238bf732084927b451bab",
+   "pristine_md5": "4e29cb3206e2110fab6cea90ef65055a",
+   "diff": "diffs/main/Public/Views/admin/streams.php.diff",
+   "v": {
+    "2.7.2": {
+     "pristine_md5": "4e29cb3206e2110fab6cea90ef65055a",
+     "ours_md5": "838bd245085238bf732084927b451bab",
+     "file": "files/main/Public/Views/admin/streams.php",
+     "diff": "diffs/main/Public/Views/admin/streams.php.diff"
+    },
+    "2.7.4": {
+     "pristine_md5": "4e29cb3206e2110fab6cea90ef65055a",
+     "ours_md5": "838bd245085238bf732084927b451bab",
+     "file": "files_2.7.4/main/Public/Views/admin/streams.php",
+     "diff": "diffs_2.7.4/main/Public/Views/admin/streams.php.diff"
+    }
+   }
   }
  ]
 }

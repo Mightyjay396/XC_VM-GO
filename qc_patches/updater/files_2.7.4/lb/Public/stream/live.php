@@ -150,7 +150,7 @@ if ($rChannelInfo) {
 	// QC-LIVEHOLD: 24/7 channels served through livehold (Go): clients stay connected across ffmpeg restarts
 	$rLiveHold = false;
 	$rLHHeld = false;
-	if ($rLegacy && !$rFanout && $rChannelInfo["on_demand"] != 1 && is_readable("/home/xc_vm/config/livehold_streams.txt")/* QC-LH-PROXYOK : tampon aussi pour les chaines a proxy */) {
+	if ($rLegacy && !$rFanout && $rChannelInfo["on_demand"] != 1 && is_readable("/home/xc_vm/config/livehold_streams.txt")/* QC-LH-PROXYOK : tampon aussi pour les chaines a proxy (TVA/Akamai) */) {
 		$rLHList = preg_split('/\s+/', trim((string) @file_get_contents("/home/xc_vm/config/livehold_streams.txt")));
 		if (in_array("*", $rLHList, true) || in_array((string) intval($rStreamID), $rLHList, true)) {
 			$rLiveHold = true;
@@ -232,9 +232,9 @@ if ($rChannelInfo) {
 			DatabaseFactory::connectLazy();
 			$rODSrc = FanoutClient::buildSource(StreamSource::sourceRow(intval($rStreamID), $db), StreamSource::arguments(intval($rStreamID), true, $db));
 			$rODUrls = array_values(array_filter($rODSrc["urls"], function ($rU) {
-				return preg_match('#^https?://#i', $rU) && !preg_match('/\.(m3u8|mpd)(\?|$)/i', $rU);
+				return preg_match('#^https?://#i', $rU) && !preg_match('/\.mpd(\?|$)/i', $rU); // QC-ODRELAY-ALL: HLS sources too (DASH stays on its engine)
 			}));
-			if ($rODUrls && $rODSrc["proxy"] === "") {
+			if ($rODUrls) { // QC-ODRELAY-ALL: per-stream http proxy passed to Go (&p=)
 				$rODHdr = ["X-XC_VM-Detect" => "1", "X-XC_VM-Prebuffer" => "1", "User-Agent" => $rODSrc["ua"]];
 				if ($rODSrc["cookie"] !== "") {
 					$rODHdr["Cookie"] = $rODSrc["cookie"];
@@ -243,7 +243,11 @@ if ($rChannelInfo) {
 				foreach ($rODUrls as $rU) {
 					$rODRelay .= "&u=" . rtrim(strtr(base64_encode($rU), "+/", "-_"), "=");
 				}
-				$rFanout = true;
+				$rODRelay .= "&w=" . max(3, intval($rSettings["on_demand_wait_time"])) . "&seg=" . max(1, intval($rSettings["seg_time"])) . "&list=" . max(3, intval($rSettings["seg_list_size"] ?? 5)) . "&scan=" . max(3, (int) round(intval($rSettings["on_demand_scan_time"] ?? 8000) / 1000)) . "&stall=" . max(5, intval($rSettings["segment_wait_time"] ?? 15)) . "&del=" . max(0, intval($rSettings["seg_delete_threshold"] ?? 3)) . "&fsleep=" . max(1, intval($rSettings["stream_fail_sleep"] ?? 3)) . "&fexit=" . (!empty($rSettings["on_demand_failure_exit"]) ? 1 : 0) /* QC-ODRELAY-PANEL3 QC-ODRELAY-PANEL4 */ . (!empty($rSettings["on_demand_instant_off"]) ? "&idle=" . max(5, intval($rSettings["on_demand_instant_off_grace"] ?? 20)) : ""); // QC-ODRELAY-PANEL QC-ODRELAY-PANEL2: panel settings drive odrelay
+				if ($rODSrc["proxy"] !== "") { $rODRelay .= "&p=" . rtrim(strtr(base64_encode($rODSrc["proxy"]), "+/", "-_"), "="); }
+				// HLS source Go cannot carry whole (encrypted / fMP4): keep ffmpeg (Go answers from a 24 h cache)
+				if (preg_match('/\.m3u8(\?|$)/i', $rODUrls[0]) && @file_get_contents("http://127.0.0.1:8147/check/" . intval($rStreamID) . $rODRelay, false, stream_context_create(["http" => ["timeout" => 10]])) === "unsup") { $rODRelay = null; }
+				$rFanout = $rODRelay !== null;
 			}
 		}
 	}
@@ -940,7 +944,7 @@ if ($rChannelInfo) {
 				while (ob_get_level()) {
 					ob_end_clean();
 				}
-				$rODFP = @fopen("http://127.0.0.1:8147/ts/" . intval($rStreamID) . $rODRelay, "rb", false, stream_context_create(["http" => ["timeout" => 25]]));
+				$rODFP = @fopen("http://127.0.0.1:8147/ts/" . intval($rStreamID) . $rODRelay . "&pb=" . intval($rUserInfo["is_restreamer"] ? (!empty($rTokenData["prebuffer"]) ? $rSettings["seg_time"] : $rSettings["restreamer_prebuffer"]) : $rSettings["client_prebuffer"]) . "&c=" . md5(($rUserInfo["id"] ?? "") . "|" . $rIP) /* QC-ODRELAY-RESUME */, "rb", false, stream_context_create(["http" => ["timeout" => 25]]));
 				if (!$rODFP) {
 					OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 				}
@@ -958,7 +962,7 @@ if ($rChannelInfo) {
 
 			// ────────────────────────────────────────────────────────────────
 			if ($rLiveHold) { // QC-LIVEHOLD: TS from livehold, held across ffmpeg restarts
-				$rLHPb = max(40, (int) ($rUserInfo["is_restreamer"] ? (!empty($rTokenData["prebuffer"]) ? intval($rSettings["seg_time"]) : intval($rSettings["restreamer_prebuffer"])) : intval($rSettings["client_prebuffer"]))); // QC-LH-PB40 : 40 s d avance minimum = redemarrage ClearKey invisible
+				$rLHPb = max(0, (int) ($rUserInfo["is_restreamer"] ? (!empty($rTokenData["prebuffer"]) ? intval($rSettings["seg_time"]) : intval($rSettings["restreamer_prebuffer"])) : intval($rSettings["client_prebuffer"]))); // QC-LH-PB : client_prebuffer du panneau, comme XC_VM
 				$rLHFP = @fopen("http://127.0.0.1:8150/ts/" . intval($rStreamID) . "?pb=" . $rLHPb, "rb", false, stream_context_create(["http" => ["timeout" => 15]]));
 				if ($rLHFP) { // livehold unreachable: the legacy chase-read below serves the client
 					$rRelayLoop($rLHFP, $rTokenData["uuid"], $rVideoCodec);

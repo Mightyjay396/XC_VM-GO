@@ -288,6 +288,7 @@ LayoutRenderer::renderFooter('admin');
         var PRODUCER = {
             fanout: ['info', 'fanout'],
             ffmpeg: ['secondary', 'ffmpeg'],
+            go: ['success', 'go'], // QC-GOLIVE-PRODUCER
             php: ['secondary', 'php'],
             driver: ['primary', 'module']
         };

@@ -1,5 +1,5 @@
---- a/Domain/Stream/StreamProcess.php
-+++ b/Domain/Stream/StreamProcess.php
+--- /tmp/r274_lb/Domain/Stream/StreamProcess.php	2026-11-20 16:29:38.000000000 +0000
++++ files_2.7.4/lb/Domain/Stream/StreamProcess.php	2026-11-25 22:30:55.930678573 +0000
 @@ -695,7 +695,7 @@
  	 * @return string The `-f tee …` output fragment.
  	 */
@@ -86,15 +86,16 @@
  
  			if (!$rStream['server_info']['parent_id'] && $rStream['stream_info']['enable_transcode'] == 1 && $rStream['stream_info']['type_key'] != 'created_live') {
  				if ($rStream['stream_info']['transcode_profile_id'] == -1) {
-@@ -1139,6 +1163,7 @@
+@@ -1139,6 +1163,8 @@
  			}
  
  			$rFFMPEG = ((isset($rStream['stream_info']['transcode_attributes']['gpu']) ? $rFFMPEG_GPU : $rFFMPEG_CPU)) . ' -y -nostdin -hide_banner -loglevel ' . (($rSettings['ffmpeg_warnings'] ? 'warning' : 'error')) . ' -err_detect ignore_err -thread_queue_size 1024 ' . $rOptions . ' {GEN_PTS} {READ_NATIVE} ' . $rLLODInputFlags . '-probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' -progress "' . $rProgressFile . '" {CONCAT} -i {STREAM_SOURCE} {LOGO} -max_muxing_queue_size 1024 ';
 +			if (preg_match('#/ffmpeg_bin/8\.#', (string) ($data['ffmpegReal'] ?? $rFFMPEG_CPU))) { $rFFMPEG = preg_replace('# -loglevel (error|warning) #', ' -loglevel datetime+$1 ', $rFFMPEG, 1); } // QC-ERRLOG-TIME : erreurs ffmpeg horodatées dans <id>.errors
++			if (in_array((string) intval($rStreamID), preg_split('/\s+/', trim((string) @file_get_contents(MAIN_HOME . 'config/golive_streams.txt'))), true) && is_executable('/opt/odrelay/ffmpeg-golive')) { $rFFMPEG = '/opt/odrelay/ffmpeg-golive --ffmpeg=' . $rFFMPEG; } // QC-GOLIVE: live channel in Go (ffmpeg drop-in, falls back to ffmpeg by itself)
  
  			self::applyDefaultCopyCodecs($rStream['stream_info']['transcode_attributes']);
  
-@@ -1162,7 +1187,8 @@
+@@ -1162,7 +1188,8 @@
  			$rFLVOptions = '{MAP} {AAC_FILTER}';
  		}
  
@@ -104,7 +105,7 @@
  		// Fast start: shorten the first segment so players can begin sooner.
  		// Capped at seg_time so a small seg_time never produces a longer first segment.
  		$rInitTime = min(2, intval($rSegmentSettings['seg_time']));
-@@ -1247,6 +1273,19 @@
+@@ -1247,6 +1274,19 @@
  			$rFFMPEG .= ' >/dev/null 2>>' . STREAMS_PATH . intval($rStreamID) . '.errors & echo $! > ' . STREAMS_PATH . intval($rStreamID) . '_.pid';
  		}
  
@@ -124,7 +125,7 @@
  		$ffprobeContainer = (isset($rFFProbeOutput['container']) && is_string($rFFProbeOutput['container'])) ? $rFFProbeOutput['container'] : '';
  
  		$audioCodec = (isset($rFFProbeOutput['codecs']['audio']['codec_name']) && is_array($rFFProbeOutput['codecs']['audio'])) ? $rFFProbeOutput['codecs']['audio']['codec_name'] : '';
-@@ -1636,7 +1675,7 @@
+@@ -1636,7 +1676,7 @@
  		}
  		$rStreamSource = StreamUtils::parseStreamURL($rSource, (string) (array_column($rStreamArguments, 'value', 'argument_key')['proxy'] ?? ''), (int) (array_column($rStreamArguments, 'value', 'argument_key')['max_height'] ?? 0));
  		$rProtocol = strtolower(substr($rStreamSource, 0, (int) strpos($rStreamSource, '://')));
@@ -133,7 +134,7 @@
  	}
  
  	/**
-@@ -1735,8 +1774,12 @@
+@@ -1735,8 +1775,12 @@
  	 */
  	private static function supervisorHealth(array $rStreamInfo, array $rSettings): array {
  		$rSegTime = max(1, intval($rSettings['seg_time'] ?? 10));
@@ -147,7 +148,7 @@
  			'audio_loss_sec' => !empty($rSettings['audio_restart_loss']) ? 30 : 0,
  			'fps_threshold'  => 0,
  			'fps_grace_sec'  => max(0, intval($rSettings['fps_delay'] ?? 0)),
-@@ -1951,6 +1994,38 @@
+@@ -1951,6 +1995,38 @@
  			}
  			$rFetchOptions = implode(' ', StreamUtils::getArguments($rArguments, $rProtocol, 'fetch'));
  
@@ -186,7 +187,7 @@
  			$rFFMPEG = self::buildLive([
  				// Portable: force dts_legacy_ffmpeg off so buildLive does not swap the
  				// {ffmpeg_cpu} token for MAIN's legacy binary path (FfmpegPaths::legacy)
-@@ -1963,7 +2038,7 @@
+@@ -1963,7 +2039,7 @@
  				'probesize' => $rProbesize, 'analyseDuration' => $rAnalyseDuration,
  				'llod' => $rLLOD, 'loopback' => $rLoopback,
  				'segmentStart' => 0, 'delayActive' => false,
@@ -195,7 +196,7 @@
  				// Portable: the command carries the {ffmpeg_cpu} token, but -nofix_dts
  				// is a property of the ffmpeg version/build (cluster-wide), so decide
  				// it from MAIN's real binary of that version — the same build the
-@@ -1974,7 +2049,8 @@
+@@ -1974,7 +2050,8 @@
  			]);
  
  			$rEntry = ['label' => $rLabels[$i], 'cmd' => $rFFMPEG];
@@ -205,7 +206,7 @@
  				$rNative = [
  					'streamID' => $rStreamID, 'source' => $rStreamSource, 'arguments' => array_column($rArguments, null, 'argument_key'),
  					'segmentSettings' => $rSegmentSettings, 'ingestSock' => $rIngestSock,
-@@ -1989,12 +2065,12 @@
+@@ -1989,12 +2066,12 @@
  				if ($rBackend === 'auto') {
  					$rEntry['fallback_cmd'] = $rFFMPEG;
  				}
@@ -221,7 +222,7 @@
  			}
  			$rSpecSources[] = $rEntry;
  		}
-@@ -2088,6 +2164,73 @@
+@@ -2088,6 +2165,73 @@
  	 * and probing each one on the hand-over path would cost seconds per source,
  	 * so a source with nothing cached gets the minimum buildLive() needs.
  	 */
@@ -295,7 +296,7 @@
  	private static function cachedProbe(string $rSource, string $rStreamSource): array {
  		$rCache = CACHE_TMP_PATH . md5($rSource);
  		if (file_exists($rCache)) {
-@@ -2999,6 +3142,42 @@
+@@ -2999,6 +3143,42 @@
  					$rProtocol = strtolower(substr($rStreamSource, 0, strpos($rStreamSource, '://')));
  					$rProbeOptions = implode(' ', StreamUtils::getArguments($rProbeArguments, $rProtocol, 'fetch'));
  					$rFetchOptions = implode(' ', StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'fetch'));
@@ -338,7 +339,7 @@
  
  					$rSkipFFProbe = self::hasSkipFFProbe($rStream['stream_arguments']);
  
-@@ -3013,7 +3192,7 @@
+@@ -3013,7 +3193,7 @@
  						break;
  					}
  
@@ -347,7 +348,7 @@
  						// Cache key must match the write below and the existence check
  						// above (both md5($rSource)); reading md5($rStreamSource) here
  						// fetched a different file, so the cache always missed.
-@@ -3070,7 +3249,7 @@
+@@ -3070,7 +3250,7 @@
  						return 0;
  					}
  

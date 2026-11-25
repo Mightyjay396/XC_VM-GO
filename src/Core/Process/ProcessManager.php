@@ -196,6 +196,9 @@ class ProcessManager {
 			$cmdline = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
 			return strpos($cmdline, "\0remux\0") !== false ? 'fanout' : null;
 		}
+		if ($exe === 'ffmpeg-golive') { // QC-GOLIVE-PRODUCER: live channel run by our Go engine (falls back by exec to real ffmpeg, then shows ffmpeg)
+			return 'go';
+		}
 		if (preg_match('/^(ffmpeg|php)/', $exe, $m)) {
 			return $m[1];
 		}

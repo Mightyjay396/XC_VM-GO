@@ -38,7 +38,7 @@ func loadSlate() {
 		case pid == 0:
 			pmtPID = patPMT(p)
 		case pid == pmtPID && vpid == 0:
-			vpid = pmtVideo(p)
+			vpid, _ = pmtVideo(p)
 		case pid == vpid:
 			if t := pesPTS(p); t >= 0 {
 				if lo < 0 || t < lo {
