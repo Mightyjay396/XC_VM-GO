@@ -1,6 +1,6 @@
 --- a/Public/stream/live.php
 +++ b/Public/stream/live.php
-@@ -145,6 +145,107 @@
+@@ -145,6 +145,111 @@
  		}
  	}
  
@@ -89,9 +89,9 @@
 +			DatabaseFactory::connectLazy();
 +			$rODSrc = FanoutClient::buildSource(StreamSource::sourceRow(intval($rStreamID), $db), StreamSource::arguments(intval($rStreamID), true, $db));
 +			$rODUrls = array_values(array_filter($rODSrc["urls"], function ($rU) {
-+				return preg_match('#^https?://#i', $rU) && !preg_match('/\.(m3u8|mpd)(\?|$)/i', $rU);
++				return preg_match('#^https?://#i', $rU) && !preg_match('/\.mpd(\?|$)/i', $rU); // QC-ODRELAY-ALL: HLS sources too (DASH stays on its engine)
 +			}));
-+			if ($rODUrls && $rODSrc["proxy"] === "") {
++			if ($rODUrls) { // QC-ODRELAY-ALL: per-stream http proxy passed to Go (&p=)
 +				$rODHdr = ["X-XC_VM-Detect" => "1", "X-XC_VM-Prebuffer" => "1", "User-Agent" => $rODSrc["ua"]];
 +				if ($rODSrc["cookie"] !== "") {
 +					$rODHdr["Cookie"] = $rODSrc["cookie"];
@@ -100,7 +100,11 @@
 +				foreach ($rODUrls as $rU) {
 +					$rODRelay .= "&u=" . rtrim(strtr(base64_encode($rU), "+/", "-_"), "=");
 +				}
-+				$rFanout = true;
++				$rODRelay .= "&w=" . max(3, intval($rSettings["on_demand_wait_time"])) . "&seg=" . max(1, intval($rSettings["seg_time"])) . "&list=" . max(3, intval($rSettings["seg_list_size"] ?? 5)) . "&scan=" . max(3, (int) round(intval($rSettings["on_demand_scan_time"] ?? 8000) / 1000)) . "&stall=" . max(5, intval($rSettings["segment_wait_time"] ?? 15)) . "&del=" . max(0, intval($rSettings["seg_delete_threshold"] ?? 3)) . "&fsleep=" . max(1, intval($rSettings["stream_fail_sleep"] ?? 3)) . "&fexit=" . (!empty($rSettings["on_demand_failure_exit"]) ? 1 : 0) /* QC-ODRELAY-PANEL3 QC-ODRELAY-PANEL4 */ . (!empty($rSettings["on_demand_instant_off"]) ? "&idle=" . max(5, intval($rSettings["on_demand_instant_off_grace"] ?? 20)) : ""); // QC-ODRELAY-PANEL QC-ODRELAY-PANEL2: panel settings drive odrelay
++				if ($rODSrc["proxy"] !== "") { $rODRelay .= "&p=" . rtrim(strtr(base64_encode($rODSrc["proxy"]), "+/", "-_"), "="); }
++				// HLS source Go cannot carry whole (encrypted / fMP4): keep ffmpeg (Go answers from a 24 h cache)
++				if (preg_match('/\.m3u8(\?|$)/i', $rODUrls[0]) && @file_get_contents("http://127.0.0.1:8147/check/" . intval($rStreamID) . $rODRelay, false, stream_context_create(["http" => ["timeout" => 10]])) === "unsup") { $rODRelay = null; }
++				$rFanout = $rODRelay !== null;
 +			}
 +		}
 +	}
@@ -108,7 +112,7 @@
  	if (file_exists(STREAMS_PATH . $rStreamID . "_.pid")) {
  		$rChannelInfo["pid"] = intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.pid"));
  	}
-@@ -159,6 +260,16 @@
+@@ -159,6 +264,16 @@
  
  	if (!$rFanout && !ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
  		$rChannelInfo["pid"] = null;
@@ -125,7 +129,7 @@
  		$rStart = FanoutMode::startFor($rLegacy, !empty($rChannelInfo["proxy"]), $rChannelInfo["on_demand"] == 1);
  
  		if ($rStart === FanoutMode::START_PROXY) {
-@@ -238,7 +349,24 @@
+@@ -238,7 +353,24 @@
  			// 10 s analyze window for a non-LLOD start) — so the wait is the
  			// configured on_demand_wait_time, not a fixed ~6 s.
  			$rPidWaitMs = max(1, intval($rSettings["on_demand_wait_time"])) * 1000;
@@ -151,7 +155,7 @@
  			$rChannelInfo["pid"] = (intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.pid", false)) ?: null);
  
  			if (!$rChannelInfo["pid"]) {
-@@ -250,11 +378,162 @@
+@@ -250,11 +382,162 @@
  			// unreachable, so show not-on-air (the keepalive brings it back in
  			// ~2 s). A dead always-on stream is likewise not-on-air: its watchdog
  			// (the cron's) restarts it.
@@ -316,7 +320,7 @@
  		$rPlaylist = STREAMS_PATH . $rStreamID . "_.m3u8";
  
  		if ($rExtension == "ts") {
-@@ -264,20 +543,35 @@
+@@ -264,20 +547,35 @@
  				$maxRetries = intval($rSettings["on_demand_wait_time"]) * 10;
  
  				// Use async file monitoring instead of busy-wait loop
@@ -356,7 +360,7 @@
  
  			if (!$foundFile) {
  				generateError("WAIT_TIME_EXPIRED");
-@@ -391,8 +685,45 @@
+@@ -391,8 +689,45 @@
  			// With fanout off ($rLegacy), the on-disk playlist is served instead,
  			// its segments by segment.php from STREAMS_PATH (the pre-fanout path).
  			$rHLS = false;
@@ -404,7 +408,7 @@
  			if ($rHLSVia === FanoutMode::VIA_DAEMON) {
  				$rHLS = HLSGenerator::tokenizeDaemonPlaylist($rDaemonPl, $rSettings, (isset($rUsername) ? $rUsername : null), (isset($rPassword) ? $rPassword : null), $rStreamID, $rTokenData["uuid"], $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, intval($rChannelInfo["on_demand"]), $rServerID, $rProxyID);
  			} elseif ($rHLSVia === FanoutMode::VIA_LEGACY) {
-@@ -422,6 +753,41 @@
+@@ -422,6 +757,41 @@
  			// can't track them; the fanout_sync daemon reconciles pid=0 rows
  			// against the daemon's live-connection set (see UsersCronJob).
  			// With fanout off ($rLegacy) the daemon is never asked: VIA_LEGACY.
@@ -446,7 +450,7 @@
  			$rTSVia = FanoutMode::tsDelivery($rLegacy, $rChannelInfo["proxy"] ? $rFanout : (!$rLegacy && LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)));
  			$rTSDaemon = $rTSVia === FanoutMode::VIA_DAEMON;
  			$rConnPID = $rTSDaemon ? 0 : $rPID;
-@@ -568,6 +934,17 @@
+@@ -568,6 +938,17 @@
  				exit;
  			}
  
@@ -454,7 +458,7 @@
 +				while (ob_get_level()) {
 +					ob_end_clean();
 +				}
-+				$rODFP = @fopen("http://127.0.0.1:8147/ts/" . intval($rStreamID) . $rODRelay, "rb", false, stream_context_create(["http" => ["timeout" => 25]]));
++				$rODFP = @fopen("http://127.0.0.1:8147/ts/" . intval($rStreamID) . $rODRelay . "&pb=" . intval($rUserInfo["is_restreamer"] ? (!empty($rTokenData["prebuffer"]) ? $rSettings["seg_time"] : $rSettings["restreamer_prebuffer"]) : $rSettings["client_prebuffer"]) . "&c=" . md5(($rUserInfo["id"] ?? "") . "|" . $rIP) /* QC-ODRELAY-RESUME */, "rb", false, stream_context_create(["http" => ["timeout" => 25]]));
 +				if (!$rODFP) {
 +					OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 +				}
@@ -464,12 +468,12 @@
  			// ────────────────────────────────────────────────────────────────
  			// With fanout on, non-proxy TS is daemon-only (ADR 0003, Phase E):
  			// reaching here means the daemon isn't serving this stream, so show
-@@ -578,6 +955,13 @@
+@@ -578,6 +959,13 @@
  			}
  
  			// ────────────────────────────────────────────────────────────────
 +			if ($rLiveHold) { // QC-LIVEHOLD: TS from livehold, held across ffmpeg restarts
-+				$rLHPb = max(40, (int) ($rUserInfo["is_restreamer"] ? (!empty($rTokenData["prebuffer"]) ? intval($rSettings["seg_time"]) : intval($rSettings["restreamer_prebuffer"])) : intval($rSettings["client_prebuffer"]))); // QC-LH-PB40 : 40 s d avance minimum = redemarrage ClearKey invisible
++				$rLHPb = max(0, (int) ($rUserInfo["is_restreamer"] ? (!empty($rTokenData["prebuffer"]) ? intval($rSettings["seg_time"]) : intval($rSettings["restreamer_prebuffer"])) : intval($rSettings["client_prebuffer"]))); // QC-LH-PB : client_prebuffer du panneau, comme XC_VM
 +				$rLHFP = @fopen("http://127.0.0.1:8150/ts/" . intval($rStreamID) . "?pb=" . $rLHPb, "rb", false, stream_context_create(["http" => ["timeout" => 15]]));
 +				if ($rLHFP) { // livehold unreachable: the legacy chase-read below serves the client
 +					$rRelayLoop($rLHFP, $rTokenData["uuid"], $rVideoCodec);

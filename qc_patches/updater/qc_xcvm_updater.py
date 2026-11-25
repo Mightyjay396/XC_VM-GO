@@ -6,7 +6,7 @@
   python3 qc_xcvm_updater.py --restart          # same + restart XC_VM so PHP/nginx reload the files
   python3 qc_xcvm_updater.py --rollback /root/qc_xcvm_backup_YYYYmmdd_HHMMSS
 Supports XC_VM 2.7.2 and 2.7.4. Installs missing system tools (patch, iproute2) automatically. Options: --role main|lb (auto-detected), --no-deps (skip odrelay/livehold/ckts/mpdproxy/ffmpeg), --force (other XC_VM version).
-Every modification is active after install: companion services are enabled and started, odrelay/livehold/ckts apply to all channels ("*").
+Every modification is active after install: companion services are enabled and started, odrelay/livehold/ckts apply to all channels ("*"), and live copy channels run on the Go engine (ffmpeg-golive) at their next (re)start.
 No channels, database rows, proxies or credentials are shipped: only code, empty templates and empty tables.
 """
 import argparse, glob, hashlib, json, os, re, shutil, subprocess, sys, time
@@ -332,7 +332,9 @@ def install_deps(bk, meta, role):
             if os.path.exists(t) and md5(t) == md5(f"{d}/{name}/{f}"):
                 continue
             save(bk, t, meta["created"]); place(f"{d}/{name}/{f}", t)
-            os.chmod(t, 0o644 if f.endswith(".ts") else 0o755); changed.update(want)
+            os.chmod(t, 0o644 if f.endswith(".ts") else 0o755)
+            if f != "ffmpeg-golive":  # started per channel by XC_VM: replacing it must not restart odrelay (on-demand viewers)
+                changed.update(want)
         for u in sorted({w.split("@")[0] + "@." + w.rsplit(".", 1)[1] if "@" in w else w for w in want}):
             t = f"/etc/systemd/system/{u}"
             if os.path.exists(t) and md5(t) == md5(f"{d}/systemd/{u}"):

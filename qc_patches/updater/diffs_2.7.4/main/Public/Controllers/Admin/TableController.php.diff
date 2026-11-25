@@ -1,5 +1,5 @@
---- /tmp/r274_main/Public/Controllers/Admin/TableController.php	2026-11-20 16:30:11.000000000 +0000
-+++ files_2.7.4/main/Public/Controllers/Admin/TableController.php	2026-11-25 22:31:08.872678516 +0000
+--- a/Public/Controllers/Admin/TableController.php
++++ b/Public/Controllers/Admin/TableController.php
 @@ -1207,7 +1207,8 @@
  										$rActualStatus = 3;
  									}

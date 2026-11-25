@@ -150,7 +150,7 @@ if ($rChannelInfo) {
 	// QC-LIVEHOLD: 24/7 channels served through livehold (Go): clients stay connected across ffmpeg restarts
 	$rLiveHold = false;
 	$rLHHeld = false;
-	if ($rLegacy && !$rFanout && $rChannelInfo["on_demand"] != 1 && is_readable("/home/xc_vm/config/livehold_streams.txt")/* QC-LH-PROXYOK : tampon aussi pour les chaines a proxy (TVA/Akamai) */) {
+	if ($rLegacy && !$rFanout && $rChannelInfo["on_demand"] != 1 && is_readable("/home/xc_vm/config/livehold_streams.txt")/* QC-LH-PROXYOK : tampon aussi pour les chaines a proxy */) {
 		$rLHList = preg_split('/\s+/', trim((string) @file_get_contents("/home/xc_vm/config/livehold_streams.txt")));
 		if (in_array("*", $rLHList, true) || in_array((string) intval($rStreamID), $rLHList, true)) {
 			$rLiveHold = true;

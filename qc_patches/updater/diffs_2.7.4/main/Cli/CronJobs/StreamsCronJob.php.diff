@@ -1,5 +1,5 @@
---- /tmp/r274_main/Cli/CronJobs/StreamsCronJob.php	2026-11-20 16:29:49.000000000 +0000
-+++ files_2.7.4/main/Cli/CronJobs/StreamsCronJob.php	2026-11-25 22:31:08.842678516 +0000
+--- a/Cli/CronJobs/StreamsCronJob.php
++++ b/Cli/CronJobs/StreamsCronJob.php
 @@ -132,6 +132,7 @@
  	private function loadCron(): void {
  		$rRedis = SettingsManager::getBool('redis_handler');

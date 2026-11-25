@@ -272,13 +272,13 @@
    "role": "main",
    "path": "Domain/Stream/StreamProcess.php",
    "kind": "core",
-   "ours_md5": "5eb00e52b5924ccb5e2b90adf81212ed",
+   "ours_md5": "9c842313ec6f449cbab88a40e8433346",
    "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
    "diff": "diffs/main/Domain/Stream/StreamProcess.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
-     "ours_md5": "5eb00e52b5924ccb5e2b90adf81212ed",
+     "ours_md5": "9c842313ec6f449cbab88a40e8433346",
      "file": "files/main/Domain/Stream/StreamProcess.php",
      "diff": "diffs/main/Domain/Stream/StreamProcess.php.diff"
     },
@@ -975,13 +975,13 @@
    "role": "lb",
    "path": "Domain/Stream/StreamProcess.php",
    "kind": "core",
-   "ours_md5": "1661e529250259d1b6f6dad2b6b659c3",
+   "ours_md5": "ca9266c84f6d3a078d7bdf50b8a535b5",
    "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
    "diff": "diffs/lb/Domain/Stream/StreamProcess.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
-     "ours_md5": "1661e529250259d1b6f6dad2b6b659c3",
+     "ours_md5": "ca9266c84f6d3a078d7bdf50b8a535b5",
      "file": "files/lb/Domain/Stream/StreamProcess.php",
      "diff": "diffs/lb/Domain/Stream/StreamProcess.php.diff"
     },
@@ -997,19 +997,19 @@
    "role": "lb",
    "path": "Public/stream/live.php",
    "kind": "core",
-   "ours_md5": "9ac2f08a6f04cf991da7e5f63c961d5f",
+   "ours_md5": "661f978111b11ea765f963bb4286299a",
    "pristine_md5": "c2fd1a329411da56276eafb465265e1d",
    "diff": "diffs/lb/Public/stream/live.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "c2fd1a329411da56276eafb465265e1d",
-     "ours_md5": "9ac2f08a6f04cf991da7e5f63c961d5f",
+     "ours_md5": "661f978111b11ea765f963bb4286299a",
      "file": "files/lb/Public/stream/live.php",
      "diff": "diffs/lb/Public/stream/live.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "2a3c54119256aa35f77ff038c2e3b459",
-     "ours_md5": "fbb44079538ff399d210950850851aa4",
+     "ours_md5": "5459f9387920c9c7c7b43d4ee5395446",
      "file": "files_2.7.4/lb/Public/stream/live.php",
      "diff": "diffs_2.7.4/lb/Public/stream/live.php.diff"
     }

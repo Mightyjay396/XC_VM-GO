@@ -1,1 +1,10 @@
-# QC patch markers: QC-GOLIVE-PRODUCER / QC-GO-OD-STATS (see 2.7.4 diff)
+--- a/Public/Views/admin/streams.php
++++ b/Public/Views/admin/streams.php
+@@ -288,6 +288,7 @@
+         var PRODUCER = {
+             fanout: ['info', 'fanout'],
+             ffmpeg: ['secondary', 'ffmpeg'],
++            go: ['success', 'go'], // QC-GOLIVE-PRODUCER
+             php: ['secondary', 'php'],
+             driver: ['primary', 'module']
+         };

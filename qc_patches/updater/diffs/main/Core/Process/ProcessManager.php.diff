@@ -1,1 +1,12 @@
-# QC patch markers: QC-GOLIVE-PRODUCER / QC-GO-OD-STATS (see 2.7.4 diff)
+--- a/Core/Process/ProcessManager.php
++++ b/Core/Process/ProcessManager.php
+@@ -196,6 +196,9 @@
+ 			$cmdline = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
+ 			return strpos($cmdline, "\0remux\0") !== false ? 'fanout' : null;
+ 		}
++		if ($exe === 'ffmpeg-golive') { // QC-GOLIVE-PRODUCER: live channel run by our Go engine (falls back by exec to real ffmpeg, then shows ffmpeg)
++			return 'go';
++		}
+ 		if (preg_match('/^(ffmpeg|php)/', $exe, $m)) {
+ 			return $m[1];
+ 		}

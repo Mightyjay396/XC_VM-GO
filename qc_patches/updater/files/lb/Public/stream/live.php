@@ -148,7 +148,7 @@ if ($rChannelInfo) {
 	// QC-LIVEHOLD: 24/7 channels served through livehold (Go): clients stay connected across ffmpeg restarts
 	$rLiveHold = false;
 	$rLHHeld = false;
-	if ($rLegacy && !$rFanout && $rChannelInfo["on_demand"] != 1 && is_readable("/home/xc_vm/config/livehold_streams.txt")/* QC-LH-PROXYOK : tampon aussi pour les chaines a proxy (TVA/Akamai) */) {
+	if ($rLegacy && !$rFanout && $rChannelInfo["on_demand"] != 1 && is_readable("/home/xc_vm/config/livehold_streams.txt")/* QC-LH-PROXYOK : tampon aussi pour les chaines a proxy */) {
 		$rLHList = preg_split('/\s+/', trim((string) @file_get_contents("/home/xc_vm/config/livehold_streams.txt")));
 		if (in_array("*", $rLHList, true) || in_array((string) intval($rStreamID), $rLHList, true)) {
 			$rLiveHold = true;
@@ -765,7 +765,7 @@ if ($rChannelInfo) {
 				}
 				// od_xa_burst: young producer still writing > 3 MB per 250 ms = still swallowing the burst: wait (max 6 s).
 				$rODBPid = intval($rChannelInfo["pid"]);
-				// od_xa_only: Xaccel sources only (/stream/<slot>/channel.ts); TV4K and others are handed off at once.
+				// od_xa_only: Xaccel sources only (/stream/<slot>/channel.ts); other sources are handed off at once.
 				$rODBXa = preg_match('#/stream/\d+/channel\.ts#', (string) @file_get_contents(STREAMS_PATH . intval($rStreamID) . "_.source_0"));
 				$rODBStat = ($rODBXa && $rODBPid > 0) ? @file_get_contents("/proc/" . $rODBPid . "/stat") : false;
 				if ($rODBStat !== false) {

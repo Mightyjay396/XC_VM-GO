@@ -1,5 +1,5 @@
---- /tmp/r274_main/Core/Process/ProcessManager.php	2026-11-20 16:29:50.000000000 +0000
-+++ files_2.7.4/main/Core/Process/ProcessManager.php	2026-11-25 22:31:08.811678516 +0000
+--- a/Core/Process/ProcessManager.php
++++ b/Core/Process/ProcessManager.php
 @@ -196,6 +196,9 @@
  			$cmdline = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
  			return strpos($cmdline, "\0remux\0") !== false ? 'fanout' : null;

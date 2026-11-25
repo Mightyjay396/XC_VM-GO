@@ -1,5 +1,5 @@
---- /tmp/r274_lb/Domain/Stream/StreamProcess.php	2026-11-20 16:29:38.000000000 +0000
-+++ files_2.7.4/lb/Domain/Stream/StreamProcess.php	2026-11-25 23:26:48.490663249 +0000
+--- a/Domain/Stream/StreamProcess.php
++++ b/Domain/Stream/StreamProcess.php
 @@ -695,7 +695,7 @@
  	 * @return string The `-f tee …` output fragment.
  	 */

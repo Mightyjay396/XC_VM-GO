@@ -1,5 +1,5 @@
---- /tmp/r274_main/Domain/Stream/StreamProcess.php	2026-11-20 16:29:51.000000000 +0000
-+++ files_2.7.4/main/Domain/Stream/StreamProcess.php	2026-11-25 23:26:48.516663249 +0000
+--- a/Domain/Stream/StreamProcess.php
++++ b/Domain/Stream/StreamProcess.php
 @@ -768,7 +768,7 @@
  		if ($rOnDemand == 1) {
  			$rProbesize = max(0, intval($rProbesizeOndemand)) ?: (max(0, intval($rSettings['probesize_ondemand'] ?? 0)) ?: 1000000);
