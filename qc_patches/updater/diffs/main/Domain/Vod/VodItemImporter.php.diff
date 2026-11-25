@@ -1,0 +1,57 @@
+--- a/Domain/Vod/VodItemImporter.php
++++ b/Domain/Vod/VodItemImporter.php
+@@ -712,7 +712,54 @@
+ 	 * @param int|null $rYear
+ 	 * @return object|null
+ 	 */
++	/**
++	 * Radarr/Sonarr/Plex/Jellyfin naming carries the provider id in the folder or file name:
++	 * "[tmdbid-603]", "{tmdb-603}", "tmdb-603", "[tvdbid-81189]", "{tvdb-81189}".
++	 * Resolves it on TMDB (TVDB ids through /find) and returns a Movie/TVShow object
++	 * (same shape as the search results), or null when no id is present / resolvable.
++	 */
++	public static function matchByExternalID($rTMDB, $rPath, $rType) {
++		$rHaystack = str_replace(['\\', '%20'], ['/', ' '], (string) $rPath);
++		$rTMDBID = $rTVDBID = null;
++		if (preg_match_all('/tmdb(?:id)?\s*[-=:_ ]\s*(\d{1,9})/i', $rHaystack, $rM) && !empty($rM[1])) {
++			$rTMDBID = intval(end($rM[1]));
++		}
++		if (preg_match_all('/tvdb(?:id)?\s*[-=:_ ]\s*(\d{1,9})/i', $rHaystack, $rM) && !empty($rM[1])) {
++			$rTVDBID = intval(end($rM[1]));
++		}
++		if (!$rTMDBID && !$rTVDBID) {
++			return null;
++		}
++		try {
++			if ($rTMDBID) {
++				echo 'ID match: tmdb-' . $rTMDBID . "\n";
++				$rObj = ($rType == 'movie') ? $rTMDB->getMovie($rTMDBID, []) : $rTMDB->getTVShow($rTMDBID, []);
++				if ($rObj && intval($rObj->get('id')) === $rTMDBID) {
++					return $rObj;
++				}
++				echo 'ID match: tmdb-' . $rTMDBID . " not found on TMDB\n";
++			}
++			if ($rTVDBID) {
++				echo 'ID match: tvdb-' . $rTVDBID . "\n";
++				$rFound = $rTMDB->find($rTVDBID, 'tvdb_id');
++				$rList = ($rType == 'movie') ? ($rFound['movies'] ?? []) : ($rFound['tvshows'] ?? []);
++				if (!empty($rList) && $rList[0]->get('id')) {
++					return $rList[0];
++				}
++				echo 'ID match: tvdb-' . $rTVDBID . " not found on TMDB\n";
++			}
++		} catch (\Throwable $e) {
++			echo 'ID match error: ' . $e->getMessage() . "\n";
++		}
++		return null;
++	}
++
+ 	public static function findTmdbMatch($rTMDB, array $rThreadData, array $rSettings, $rTitle, $rAltTitle, $rYear) {
++		// A provider id in the path (Radarr/Sonarr naming) beats any title search.
++		$rIDMatch = self::matchByExternalID($rTMDB, (string) ($rThreadData['file'] ?? ''), (string) ($rThreadData['type'] ?? ''));
++		if ($rIDMatch) {
++			return $rIDMatch;
++		}
+ 		$rYear = $rYear ? intval($rYear) : null;
+ 		foreach (self::titleCandidates((string) $rTitle, $rYear !== null) as $rIndex => $rCandidate) {
+ 			$rMatch = self::findBestTmdbMatch($rTMDB, $rThreadData, $rSettings, $rCandidate, $rIndex === 0 ? $rAltTitle : null, $rYear, $rIndex > 0);

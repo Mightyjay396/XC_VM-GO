@@ -1,0 +1,29 @@
+--- a/Cli/Commands/WatchdogCommand.php
++++ b/Cli/Commands/WatchdogCommand.php
+@@ -167,6 +167,7 @@
+ 
+ 			// ── xc_fanout daemon health (admin "Service Status" panel) ──
+ 			$rStats['fanout'] = FanoutClient::status();
++			$rStats['qc_go'] = self::qcGo(); // QC-GO-DELIVERY
+ 
+ 			// ── PHP PIDs ─────────────────────────────────────────
+ 			// FPM worker pids, which connection rows record; the pool pid
+@@ -308,6 +309,17 @@
+ 		if (!is_dir($rDir)) {
+ 			return;
+ 		}
+-		LocalTelemetry::refresh($rDir, TMP_PATH . 'watchdog_devices.json', time(), ['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status()], static fn(): array => SystemInfo::getDevices(LocalTelemetry::PROBE_TIMEOUT));
++		LocalTelemetry::refresh($rDir, TMP_PATH . 'watchdog_devices.json', time(), ['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status(), 'qc_go' => self::qcGo()], static fn(): array => SystemInfo::getDevices(LocalTelemetry::PROBE_TIMEOUT));
++	}
++
++	/** QC-GO-DELIVERY : 1 quand la delivery Go QC (odrelay 8147 / livehold 8150 / ckts 8160) écoute sur ce serveur (badge du tableau de bord). */
++	public static function qcGo(): int {
++		foreach ([8147, 8150, 8160] as $rPort) {
++			if ($rSock = @fsockopen('127.0.0.1', $rPort, $rErrNo, $rErrStr, 0.2)) {
++				fclose($rSock);
++				return 1;
++			}
++		}
++		return 0;
+ 	}
+ }

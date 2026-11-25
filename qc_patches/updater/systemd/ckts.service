@@ -1,0 +1,21 @@
+[Unit]
+Description=ckts - ClearKey DASH -> MPEG-TS engine for XC_VM
+After=network.target
+
+[Service]
+User=xc_vm
+Group=xc_vm
+ExecStart=/opt/ckts/ckts
+StateDirectory=ckts
+Environment=CKTS_ADDR=127.0.0.1:8160
+Environment=CKTS_ADS_POOL=8115-8129
+Environment=CKTS_FFMPEG=/usr/bin/ffmpeg
+Environment=GOMEMLIMIT=8GiB
+KillMode=mixed
+TimeoutStopSec=60
+Restart=always
+RestartSec=1
+LimitNOFILE=100000
+
+[Install]
+WantedBy=multi-user.target

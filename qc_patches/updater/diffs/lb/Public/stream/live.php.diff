@@ -1,0 +1,480 @@
+--- a/Public/stream/live.php
++++ b/Public/stream/live.php
+@@ -145,6 +145,107 @@
+ 		}
+ 	}
+ 
++	// QC-LIVEHOLD: 24/7 channels served through livehold (Go): clients stay connected across ffmpeg restarts
++	$rLiveHold = false;
++	$rLHHeld = false;
++	if ($rLegacy && !$rFanout && $rChannelInfo["on_demand"] != 1 && is_readable("/home/xc_vm/config/livehold_streams.txt")/* QC-LH-PROXYOK : tampon aussi pour les chaines a proxy */) {
++		$rLHList = preg_split('/\s+/', trim((string) @file_get_contents("/home/xc_vm/config/livehold_streams.txt")));
++		if (in_array("*", $rLHList, true) || in_array((string) intval($rStreamID), $rLHList, true)) {
++			$rLiveHold = true;
++			// restarting while livehold holds its clients: skip XC_VM's off-air checks, livehold serves them
++			if (!ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID) && @file_get_contents("http://127.0.0.1:8150/active/" . intval($rStreamID), false, stream_context_create(["http" => ["timeout" => 2]])) === "1") {
++				$rFanout = true;
++				$rLHHeld = true;
++			}
++		}
++	}
++	// QC-LIVEHOLD: relay a Go stream to the client with the legacy TS loop's per-connection duties
++	$rRelayLoop = function ($rFP, $rUUID, $rCodec) use (&$rSettings, $rServers, $rPID, $rStreamID, $rLiveHold) {
++		while (ob_get_level()) {
++			ob_end_clean();
++		}
++		header("Content-Type: video/mp2t");
++		stream_set_timeout($rFP, 5);
++		$rConSpeedFile = DIVERGENCE_TMP_PATH . $rUUID;
++		$rCheck = $rLastCheck = time();
++		$rBytes = 0;
++		$rT0 = microtime(true);
++		$rCarry = "";
++		while (!feof($rFP) && !connection_aborted()) {
++			$rBuf = fread($rFP, 65536);
++			if ($rBuf !== false && $rBuf !== "") {
++				$rBuf = $rCarry . $rBuf;
++				$rLen = intdiv(strlen($rBuf), 188) * 188;
++				$rCarry = substr($rBuf, $rLen);
++				echo substr($rBuf, 0, $rLen);
++				flush();
++				$rBytes += $rLen;
++			} elseif (!(stream_get_meta_data($rFP)["timed_out"] ?? false)) {
++				usleep(20000);
++			}
++			if (time() - $rCheck >= 5) {
++				$rCheck = time();
++				if (!file_exists(CONS_TMP_PATH . $rUUID) || NodeLease::refusesEverything($rSettings)) {
++					break;
++				}
++				if ($rSettings["monitor_connection_status"] && connection_status() != CONNECTION_NORMAL) {
++					break;
++				}
++				file_put_contents($rConSpeedFile, intval($rBytes / 1024 / max(0.1, microtime(true) - $rT0)));
++				$rBytes = 0;
++				$rT0 = microtime(true);
++				if (file_exists(SIGNALS_PATH . $rUUID)) {
++					$rSignalData = json_decode(file_get_contents(SIGNALS_PATH . $rUUID), true);
++					if (is_array($rSignalData) && ($rSignalData["type"] ?? '') == "drop") {
++						@unlink(SIGNALS_PATH . $rUUID);
++						break;
++					}
++					if (is_array($rSignalData) && ($rSignalData["type"] ?? '') == "signal") {
++						$rSigSeg = $rLiveHold ? @file_get_contents("http://127.0.0.1:8150/latest/" . intval($rStreamID), false, stream_context_create(["http" => ["timeout" => 2]])) : false;
++						if (is_string($rSigSeg) && preg_match('/^' . intval($rStreamID) . '_\d+\.ts$/', $rSigSeg) && file_exists(STREAMS_PATH . $rSigSeg)) {
++							FfmpegPaths::resolve((string) ($rSettings["ffmpeg_cpu"] ?? ''), $rSettings["ffmpeg_gpu"] ?? null);
++							SignalSender::sendSignal(FfmpegPaths::cpu(), $rSignalData, $rSigSeg, ($rCodec ?: "h264"));
++						}
++						@unlink(SIGNALS_PATH . $rUUID);
++					}
++				}
++			}
++			if (time() - $rLastCheck > 300) {
++				$rLastCheck = time();
++				$rSettings = CacheReader::get("settings") ?: $rSettings;
++				if (!ConnectionTracker::checkIn($rSettings, $rUUID, time() - intval($rServers[SERVER_ID]["time_offset"]), $rPID, $rLastCheck)) {
++					break;
++				}
++			}
++		}
++		fclose($rFP);
++		exit;
++	};
++
++	// QC-ODRELAY2: on-demand channels (TS and HLS) start through the Go fast-start relay odrelay
++	$rODRelay = null;
++	if ($rLegacy && !$rFanout && $rChannelInfo["on_demand"] == 1 && empty($rChannelInfo["proxy"]) && is_readable("/home/xc_vm/config/odrelay_streams.txt")) {
++		$rODList = preg_split('/\s+/', trim((string) @file_get_contents("/home/xc_vm/config/odrelay_streams.txt")));
++		if (in_array("*", $rODList, true) || in_array((string) intval($rStreamID), $rODList, true)) {
++			DatabaseFactory::connectLazy();
++			$rODSrc = FanoutClient::buildSource(StreamSource::sourceRow(intval($rStreamID), $db), StreamSource::arguments(intval($rStreamID), true, $db));
++			$rODUrls = array_values(array_filter($rODSrc["urls"], function ($rU) {
++				return preg_match('#^https?://#i', $rU) && !preg_match('/\.(m3u8|mpd)(\?|$)/i', $rU);
++			}));
++			if ($rODUrls && $rODSrc["proxy"] === "") {
++				$rODHdr = ["X-XC_VM-Detect" => "1", "X-XC_VM-Prebuffer" => "1", "User-Agent" => $rODSrc["ua"]];
++				if ($rODSrc["cookie"] !== "") {
++					$rODHdr["Cookie"] = $rODSrc["cookie"];
++				}
++				$rODRelay = "?h=" . rtrim(strtr(base64_encode(json_encode($rODHdr)), "+/", "-_"), "=");
++				foreach ($rODUrls as $rU) {
++					$rODRelay .= "&u=" . rtrim(strtr(base64_encode($rU), "+/", "-_"), "=");
++				}
++				$rFanout = true;
++			}
++		}
++	}
++
+ 	if (file_exists(STREAMS_PATH . $rStreamID . "_.pid")) {
+ 		$rChannelInfo["pid"] = intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.pid"));
+ 	}
+@@ -159,6 +260,16 @@
+ 
+ 	if (!$rFanout && !ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
+ 		$rChannelInfo["pid"] = null;
++		// od_rearm: an on-demand supervision the daemon gave up on (failed start, on_demand_failure_exit) is never
++		// re-armed and blocks every later start (20 s wait then off-air): release it so this viewer starts it afresh.
++		if ($rChannelInfo["on_demand"] == 1 && empty($rChannelInfo["proxy"]) && !$rLegacy) {
++			$rODRSt = FanoutClient::monitorState(intval($rStreamID));
++			if (is_array($rODRSt) && !empty($rODRSt["gave_up"])) {
++				FanoutClient::release(intval($rStreamID));
++				$rChannelInfo["monitor_pid"] = null;
++				@file_put_contents("/home/xc_vm/tmp/od_v2.log", date("Y-m-d H:i:s") . " " . intval($rStreamID) . " " . $rExtension . " rearm (supervision abandonnee liberee)\n", FILE_APPEND);
++			}
++		}
+ 		$rStart = FanoutMode::startFor($rLegacy, !empty($rChannelInfo["proxy"]), $rChannelInfo["on_demand"] == 1);
+ 
+ 		if ($rStart === FanoutMode::START_PROXY) {
+@@ -238,7 +349,24 @@
+ 			// 10 s analyze window for a non-LLOD start) — so the wait is the
+ 			// configured on_demand_wait_time, not a fixed ~6 s.
+ 			$rPidWaitMs = max(1, intval($rSettings["on_demand_wait_time"])) * 1000;
+-			AsyncFileOperations::awaitFileExists(STREAMS_PATH . intval($rStreamID) . "_.pid", intdiv($rPidWaitMs, 20), 20);
++			// od_v2: same wait, but stop at once when the daemon has given up on every source.
++			$rODPEnd = microtime(true) + $rPidWaitMs / 1000;
++			$rODPChk = 0;
++			while (microtime(true) < $rODPEnd) {
++				clearstatcache();
++				if (file_exists(STREAMS_PATH . intval($rStreamID) . "_.pid")) {
++					break;
++				}
++				if ($rChannelInfo["monitor_pid"] == -1 && microtime(true) >= $rODPChk) {
++					$rODPChk = microtime(true) + 0.5;
++					$rODPSt = FanoutClient::monitorState(intval($rStreamID));
++					if (is_array($rODPSt) && !empty($rODPSt["gave_up"])) {
++						@file_put_contents("/home/xc_vm/tmp/od_v2.log", date("Y-m-d H:i:s") . " " . intval($rStreamID) . " " . $rExtension . " hors_ligne_rapide (abandon avant pid)\n", FILE_APPEND);
++						break;
++					}
++				}
++				usleep(20000);
++			}
+ 			$rChannelInfo["pid"] = (intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.pid", false)) ?: null);
+ 
+ 			if (!$rChannelInfo["pid"]) {
+@@ -250,11 +378,162 @@
+ 			// unreachable, so show not-on-air (the keepalive brings it back in
+ 			// ~2 s). A dead always-on stream is likewise not-on-air: its watchdog
+ 			// (the cron's) restarts it.
+-			OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
++			// od_live: a 24/7 stream the daemon is restarting (stall/crash, ~10 s) is not off-air: wait for it
++			// (max 25 s) while the daemon still supervises it and has not given up.
++			$rODLOk = false;
++			if (empty($rChannelInfo["proxy"]) && $rChannelInfo["on_demand"] != 1) {
++				$rODLT0 = microtime(true);
++				while (microtime(true) < $rODLT0 + 25) {
++					$rODLSt = FanoutClient::monitorState(intval($rStreamID));
++					if (!is_array($rODLSt) || !empty($rODLSt["gave_up"])) {
++						break;
++					}
++					AsyncFileOperations::clearFileCache();
++					$rODLPid = intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.pid", false));
++					if ($rODLPid > 0 && ProcessManager::isStreamAlive($rODLPid, $rStreamID)) {
++						$rChannelInfo["pid"] = $rODLPid;
++						$rODLOk = true;
++						break;
++					}
++					usleep(250000);
++				}
++				@file_put_contents("/home/xc_vm/tmp/od_v2.log", date("Y-m-d H:i:s") . " " . intval($rStreamID) . " " . $rExtension . " live_relance " . ($rODLOk ? "reprise" : "hors_ligne") . " apres " . round(microtime(true) - $rODLT0, 1) . "s\n", FILE_APPEND);
++			}
++			if (!$rODLOk) {
++				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
++			}
+ 		}
+ 	}
+ 
+-	if (!isset($rChannelInfo["proxy"]) || !$rChannelInfo["proxy"]) {
++	// od_v3: cold on-demand wait for a supervised stream: next source when the current one fails or sends
++	// nothing for 4 s (restart the supervision on the remaining sources), quick relaunch of a single source
++	// (max 2), wait extended while data flows (cap 30 s), off-air as soon as every source has failed.
++	$rODWait = function (array $rFiles) use ($rStreamID, $rSettings, $rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID) {
++		$rID = intval($rStreamID);
++		$rLog = function ($rMsg) use ($rID, $rExtension) {
++			@file_put_contents("/home/xc_vm/tmp/od_v2.log", date("Y-m-d H:i:s") . " " . $rID . " " . $rExtension . " " . $rMsg . "\n", FILE_APPEND);
++		};
++		$rT0 = microtime(true);
++		$rEnd = $rT0 + max(1, intval($rSettings["on_demand_wait_time"]));
++		$rCap = $rT0 + 30;
++		$rTried = [];
++		$rChk = 0; $rBase = 0; $rTotal = null; $rSpec = null; $rActAt = $rT0; $rIO = []; $rRelaunch = 0; $rDeadSince = null; $rHops = 0;
++		$rLockF = @fopen("/home/xc_vm/tmp/od_v2_" . $rID . ".lock", "c");
++		$rOwner = $rLockF && flock($rLockF, LOCK_EX | LOCK_NB);
++		$rRestart = function ($rFrom) use ($rID, &$rSpec, &$rTotal, &$rBase, &$rActAt, &$rIO, &$rDeadSince) {
++			if ($rSpec === null) {
++				DatabaseFactory::connectLazy();
++				$rSpec = StreamProcess::buildSupervisorSpec($rID);
++				$rTotal = is_array($rSpec) && isset($rSpec["sources"]) ? count($rSpec["sources"]) : 0;
++			}
++			if (!$rTotal || $rFrom >= $rTotal) {
++				return false;
++			}
++			$rSub = $rSpec;
++			$rSub["sources"] = array_values(array_slice($rSpec["sources"], $rFrom));
++			FanoutClient::release($rID);
++			$rOK = FanoutClient::supervise($rID, $rSub);
++			$rBase = $rFrom; $rActAt = microtime(true); $rIO = []; $rDeadSince = null;
++			return $rOK;
++		};
++		while (true) {
++			clearstatcache();
++			foreach ($rFiles as $rFile) {
++				if (file_exists($rFile)) {
++					if ($rHops || $rRelaunch) {
++						$rLog("pret apres " . round(microtime(true) - $rT0, 1) . "s (source " . ($rBase + 1) . ", bascules " . $rHops . ", relances " . $rRelaunch . ")");
++					}
++					return true;
++				}
++			}
++			$rNow = microtime(true);
++			if ($rNow >= $rEnd) {
++				$rLog("attente expiree " . round($rNow - $rT0, 1) . "s");
++				return false;
++			}
++			if ($rOwner && $rNow >= $rChk && $rNow - $rActAt >= 1.5) {
++				$rChk = $rNow + 0.5;
++				$rSt = FanoutClient::monitorState($rID);
++				if (is_array($rSt)) {
++					$rCur = $rBase + intval($rSt["source_idx"] ?? 0);
++					if (file_exists("/home/xc_vm/tmp/od_v2.debug")) {
++						$rLog("dbg t=" . round($rNow - $rT0, 1) . " base=" . $rBase . " idx=" . intval($rSt["source_idx"] ?? 0) . " run=" . intval(!empty($rSt["running"])) . " conf=" . intval(!empty($rSt["confirmed"])) . " gave=" . intval(!empty($rSt["gave_up"])) . " pid=" . intval($rSt["pid"] ?? 0) . " fb=" . intval(!empty($rSt["fallback"])) . " err=" . substr(strval($rSt["last_error"] ?? ""), 0, 60));
++					}
++					$rFailed = !empty($rSt["gave_up"]);
++					if (!$rFailed && empty($rSt["running"])) {
++						$rDeadSince = $rDeadSince ?? $rNow;
++						$rFailed = $rNow - $rDeadSince >= 2;
++					} elseif (!$rFailed) {
++						$rDeadSince = null;
++					}
++					$rSilent = false;
++					if (!$rFailed && !empty($rSt["running"])) {
++						$rPid = intval($rSt["pid"] ?? 0);
++						if ($rPid > 0 && $rPid != intval($rSt["daemon_pid"] ?? 0)) {
++							$rProc = @file_get_contents("/proc/" . $rPid . "/io");
++							if ($rProc !== false && preg_match('/^rchar: (\d+)/m', $rProc, $rM)) {
++								$rIO[] = [$rNow, intval($rM[1]), $rPid];
++								while (count($rIO) > 1 && ($rIO[0][0] < $rNow - 3 || $rIO[0][2] !== $rPid)) {
++									array_shift($rIO);
++								}
++								$rGrowth = count($rIO) > 1 ? intval($rM[1]) - $rIO[0][1] : null;
++								$rSilent = $rNow - $rActAt >= 4 && $rGrowth !== null && $rIO[0][0] <= $rNow - 2.5 && $rGrowth < 65536;
++								if ($rGrowth !== null && $rGrowth >= 65536 && $rEnd - $rNow < 3) {
++									$rEnd = min($rCap, $rNow + 3);
++								}
++							}
++						}
++					}
++					if ($rFailed || $rSilent) {
++						$rWhy = $rFailed ? "en echec" : "muette";
++						// od_v3b: a source the daemon reached by itself and that died at startup gets one clean start.
++						$rFrom = ($rFailed && $rCur > $rBase && empty($rTried[$rCur])) ? $rCur : $rCur + 1;
++						$rTried[$rFrom] = true;
++						if ($rHops < 8 && $rRestart($rFrom)) {
++							$rHops++; $rEnd = min($rCap, max($rEnd, microtime(true) + 10));
++							$rLog(($rFrom == $rCur ? "reprise_source " : "source_suivante ") . ($rFrom + 1) . "/" . $rTotal . " (source " . ($rCur + 1) . " " . $rWhy . ")");
++						} elseif ($rFailed && $rTotal === 1 && $rRelaunch < 2 && $rRestart(0)) {
++							$rRelaunch++; $rEnd = min($rCap, max($rEnd, microtime(true) + 8));
++							$rLog("relance_rapide " . $rRelaunch . "/2");
++						} elseif ($rFailed) {
++							$rLog("hors_ligne_rapide apres " . round($rNow - $rT0, 1) . "s (" . $rTotal . " source(s) en echec)");
++							OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
++						}
++					}
++				}
++			}
++			usleep(100000);
++		}
++	};
++
++	// od_live_wait: a 24/7 stream just restarted can take > 20 s for its first segment: wait up to 30 s
++	// (no source switching, the primary source stays first), stop early if the daemon gave up.
++	$rODLiveWait = function (array $rFiles) use ($rStreamID, $rExtension) {
++		$rT0 = microtime(true); $rChk = 0;
++		while (microtime(true) < $rT0 + 30) {
++			clearstatcache();
++			foreach ($rFiles as $rFile) {
++				if (file_exists($rFile)) {
++					if (microtime(true) - $rT0 > 1) {
++						@file_put_contents("/home/xc_vm/tmp/od_v2.log", date("Y-m-d H:i:s") . " " . intval($rStreamID) . " " . $rExtension . " live_segment apres " . round(microtime(true) - $rT0, 1) . "s\n", FILE_APPEND);
++					}
++					return true;
++				}
++			}
++			if (microtime(true) >= $rChk) {
++				$rChk = microtime(true) + 1;
++				$rSt = FanoutClient::monitorState(intval($rStreamID));
++				if (is_array($rSt) && !empty($rSt["gave_up"])) {
++					break;
++				}
++			}
++			usleep(100000);
++		}
++		@file_put_contents("/home/xc_vm/tmp/od_v2.log", date("Y-m-d H:i:s") . " " . intval($rStreamID) . " " . $rExtension . " live_attente_expiree " . round(microtime(true) - $rT0, 1) . "s\n", FILE_APPEND);
++		return false;
++	};
++
++	if ((!isset($rChannelInfo["proxy"]) || !$rChannelInfo["proxy"]) && !$rODRelay && !$rLHHeld) { // QC-ODRELAY2 QC-LIVEHOLD
+ 		$rPlaylist = STREAMS_PATH . $rStreamID . "_.m3u8";
+ 
+ 		if ($rExtension == "ts") {
+@@ -264,20 +543,35 @@
+ 				$maxRetries = intval($rSettings["on_demand_wait_time"]) * 10;
+ 
+ 				// Use async file monitoring instead of busy-wait loop
+-				$foundFile = AsyncFileOperations::awaitAnyFileExists([$rFirstTS, $rFirstAlt], $maxRetries, 100);
++				// od_xa_fix: a burst source (Xaccel) writes many segments at once, so _0.ts can be rotated out
++				// before we look: the playlist counts as ready too.
++				$foundFile = ($rChannelInfo["on_demand"] != 1) ? $rODLiveWait([$rFirstTS, $rFirstAlt, $rPlaylist]) : (($rChannelInfo["monitor_pid"] == -1) ? $rODWait([$rFirstTS, $rFirstAlt, $rPlaylist]) : AsyncFileOperations::awaitAnyFileExists([$rFirstTS, $rFirstAlt, $rPlaylist], $maxRetries, 100));
+ 
+ 				if (!$foundFile) {
+ 					generateError("WAIT_TIME_EXPIRED");
+ 				} else {
+-					// Verify stream is still running
+-					if (!(StreamProcess::isWatched($rStreamID, $rChannelInfo["monitor_pid"]) && ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID))) {
++					// od_xa_fix: the native puller may hand the source to the ffmpeg fallback (new pid): re-read _.pid for up to 5 s.
++					$rODXAlive = false;
++					for ($rODXi = 0; $rODXi < 25; $rODXi++) {
++						AsyncFileOperations::clearFileCache();
++						$rODXPid = intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.pid", false));
++						if ($rODXPid > 0) {
++							$rChannelInfo["pid"] = $rODXPid;
++						}
++						if (StreamProcess::isWatched($rStreamID, $rChannelInfo["monitor_pid"]) && ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
++							$rODXAlive = true;
++							break;
++						}
++						usleep(200000);
++					}
++					if (!$rODXAlive) {
+ 						OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
+ 					}
+ 				}
+ 			}
+ 		} else {
+ 			$maxRetries = intval($rSettings["on_demand_wait_time"]) * 10;
+-			$foundFile = AsyncFileOperations::awaitAnyFileExists([$rPlaylist], $maxRetries, 100);
++			$foundFile = (!file_exists($rPlaylist) && $rChannelInfo["on_demand"] != 1) ? $rODLiveWait([$rPlaylist]) : ((!file_exists($rPlaylist) && $rChannelInfo["monitor_pid"] == -1) ? $rODWait([$rPlaylist]) : AsyncFileOperations::awaitAnyFileExists([$rPlaylist], $maxRetries, 100));
+ 
+ 			if (!$foundFile) {
+ 				generateError("WAIT_TIME_EXPIRED");
+@@ -391,8 +685,45 @@
+ 			// With fanout off ($rLegacy), the on-disk playlist is served instead,
+ 			// its segments by segment.php from STREAMS_PATH (the pre-fanout path).
+ 			$rHLS = false;
+-			$rDaemonPl = (!$rLegacy && LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)) ? FanoutClient::hlsPlaylist($rStreamID) : null;
+-			$rHLSVia = FanoutMode::hlsDelivery($rLegacy, $rDaemonPl !== null);
++			// od_hls: a cold on-demand stream is fed/segmented by the daemon a moment after its first on-disk
++			// segment: wait (max 8 s) until the daemon playlist lists at least one segment, else it answers empty.
++			if (!$rLegacy && empty($rChannelInfo["proxy"]) && $rChannelInfo["on_demand"] == 1 && LicenseGate::fanoutUsable()) {
++				$rODHT0 = microtime(true);
++				// od_hls2: a burst source (Xaccel) makes the daemon cut many segments at once and its 3-segment
++				// window slides past them: serve the playlist only once its media sequence holds still for 1 s.
++				$rODHXa = preg_match('#/stream/\d+/channel\.ts#', (string) @file_get_contents(STREAMS_PATH . intval($rStreamID) . "_.source_0"));
++				$rODHSeq = null; $rODHSince = 0;
++				while (microtime(true) < $rODHT0 + 8) {
++					if (FanoutClient::isStreamFed($rStreamID)) {
++						$rODHPl = FanoutClient::hlsPlaylist($rStreamID);
++						if ($rODHPl !== null && strpos($rODHPl, "#EXTINF") !== false) {
++							if (!$rODHXa) {
++								break;
++							}
++							$rODHCur = preg_match('/#EXT-X-MEDIA-SEQUENCE:(\d+)/', $rODHPl, $rODHM) ? intval($rODHM[1]) : -1;
++							if ($rODHCur !== $rODHSeq) {
++								$rODHSeq = $rODHCur; $rODHSince = microtime(true);
++							} elseif (microtime(true) - $rODHSince >= 1) {
++								break;
++							}
++						}
++					}
++					usleep(200000);
++				}
++				if (microtime(true) - $rODHT0 > 0.5) {
++					@file_put_contents("/home/xc_vm/tmp/od_v2.log", date("Y-m-d H:i:s") . " " . intval($rStreamID) . " m3u8 attente_playlist " . round(microtime(true) - $rODHT0, 1) . "s\n", FILE_APPEND);
++				}
++			}
++			if ($rLiveHold) { // QC-LIVEHOLD: livehold's continuous playlist (segments = on-disk files via segment.php)
++				$rDaemonPl = @file_get_contents("http://127.0.0.1:8150/hls/" . intval($rStreamID) . "/index.m3u8", false, stream_context_create(["http" => ["timeout" => 10]])) ?: null;
++				$rHLSVia = $rDaemonPl !== null ? FanoutMode::VIA_DAEMON : FanoutMode::hlsDelivery($rLegacy, false);
++			} elseif ($rODRelay) { // QC-ODRELAY2: odrelay's in-RAM HLS, tokenized like the daemon's (segments served by segment.php)
++				$rDaemonPl = @file_get_contents("http://127.0.0.1:8147/hls/" . intval($rStreamID) . "/index.m3u8" . $rODRelay, false, stream_context_create(["http" => ["timeout" => 25]])) ?: null;
++				$rHLSVia = $rDaemonPl !== null ? FanoutMode::VIA_DAEMON : null;
++			} else {
++				$rDaemonPl = (!$rLegacy && LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)) ? FanoutClient::hlsPlaylist($rStreamID) : null;
++				$rHLSVia = FanoutMode::hlsDelivery($rLegacy, $rDaemonPl !== null);
++			}
+ 			if ($rHLSVia === FanoutMode::VIA_DAEMON) {
+ 				$rHLS = HLSGenerator::tokenizeDaemonPlaylist($rDaemonPl, $rSettings, (isset($rUsername) ? $rUsername : null), (isset($rPassword) ? $rPassword : null), $rStreamID, $rTokenData["uuid"], $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, intval($rChannelInfo["on_demand"]), $rServerID, $rProxyID);
+ 			} elseif ($rHLSVia === FanoutMode::VIA_LEGACY) {
+@@ -422,6 +753,41 @@
+ 			// can't track them; the fanout_sync daemon reconciles pid=0 rows
+ 			// against the daemon's live-connection set (see UsersCronJob).
+ 			// With fanout off ($rLegacy) the daemon is never asked: VIA_LEGACY.
++			// od_xa_fix: a cold on-demand producer registers with the daemon a moment after its first segments.
++			// od_live_burst: also 24/7 streams (a young producer = just restarted); warm streams pass straight through.
++			if (!$rLegacy && empty($rChannelInfo["proxy"]) && LicenseGate::fanoutUsable()) {
++				for ($rODXi = 0; $rODXi < 25 && !FanoutClient::isStreamFed($rStreamID); $rODXi++) {
++					usleep(200000);
++				}
++				// od_xa_burst: young producer still writing > 3 MB per 250 ms = still swallowing the burst: wait (max 6 s).
++				$rODBPid = intval($rChannelInfo["pid"]);
++				// od_xa_only: Xaccel sources only (/stream/<slot>/channel.ts); other sources are handed off at once.
++				$rODBXa = preg_match('#/stream/\d+/channel\.ts#', (string) @file_get_contents(STREAMS_PATH . intval($rStreamID) . "_.source_0"));
++				$rODBStat = ($rODBXa && $rODBPid > 0) ? @file_get_contents("/proc/" . $rODBPid . "/stat") : false;
++				if ($rODBStat !== false) {
++					$rODBF = explode(" ", substr($rODBStat, strrpos($rODBStat, ")") + 2));
++					$rODBAge = floatval(@file_get_contents("/proc/uptime")) - intval($rODBF[19] ?? 0) / 100;
++					if ($rODBAge >= 0 && $rODBAge < 15) {
++						$rODBT0 = microtime(true);
++						$rODBLast = -1;
++						while (microtime(true) < $rODBT0 + 6) {
++							$rODBIo = @file_get_contents("/proc/" . $rODBPid . "/io");
++							if ($rODBIo === false || !preg_match('/^wchar: (\d+)/m', $rODBIo, $rODBM)) {
++								break;
++							}
++							if ($rODBLast >= 0 && intval($rODBM[1]) - $rODBLast < 3000000) {
++								break;
++							}
++							$rODBLast = intval($rODBM[1]);
++							usleep(250000);
++						}
++						$rODBWait = microtime(true) - $rODBT0;
++						if ($rODBWait > 0.4) {
++							@file_put_contents("/home/xc_vm/tmp/od_xa.log", date("Y-m-d H:i:s") . " " . intval($rStreamID) . " rafale " . round($rODBWait, 1) . "s age " . round($rODBAge, 1) . "s\n", FILE_APPEND);
++						}
++					}
++				}
++			}
+ 			$rTSVia = FanoutMode::tsDelivery($rLegacy, $rChannelInfo["proxy"] ? $rFanout : (!$rLegacy && LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)));
+ 			$rTSDaemon = $rTSVia === FanoutMode::VIA_DAEMON;
+ 			$rConnPID = $rTSDaemon ? 0 : $rPID;
+@@ -568,6 +934,17 @@
+ 				exit;
+ 			}
+ 
++			if ($rODRelay) { // QC-ODRELAY2: relay bytes from odrelay, PHP keeps the connection like the legacy chase-read
++				while (ob_get_level()) {
++					ob_end_clean();
++				}
++				$rODFP = @fopen("http://127.0.0.1:8147/ts/" . intval($rStreamID) . $rODRelay, "rb", false, stream_context_create(["http" => ["timeout" => 25]]));
++				if (!$rODFP) {
++					OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
++				}
++				$rRelayLoop($rODFP, $rTokenData["uuid"], $rVideoCodec); // QC-LIVEHOLD shared relay loop
++			}
++
+ 			// ────────────────────────────────────────────────────────────────
+ 			// With fanout on, non-proxy TS is daemon-only (ADR 0003, Phase E):
+ 			// reaching here means the daemon isn't serving this stream, so show
+@@ -578,6 +955,13 @@
+ 			}
+ 
+ 			// ────────────────────────────────────────────────────────────────
++			if ($rLiveHold) { // QC-LIVEHOLD: TS from livehold, held across ffmpeg restarts
++				$rLHPb = max(40, (int) ($rUserInfo["is_restreamer"] ? (!empty($rTokenData["prebuffer"]) ? intval($rSettings["seg_time"]) : intval($rSettings["restreamer_prebuffer"])) : intval($rSettings["client_prebuffer"]))); // QC-LH-PB40 : 40 s d avance minimum = redemarrage ClearKey invisible
++				$rLHFP = @fopen("http://127.0.0.1:8150/ts/" . intval($rStreamID) . "?pb=" . $rLHPb, "rb", false, stream_context_create(["http" => ["timeout" => 15]]));
++				if ($rLHFP) { // livehold unreachable: the legacy chase-read below serves the client
++					$rRelayLoop($rLHFP, $rTokenData["uuid"], $rVideoCodec);
++				}
++			}
+ 			// Fanout off: the pre-fanout TS feed. Stream the on-disk HLS segments
+ 			// to the client as one continuous MPEG-TS, chasing ffmpeg's write head.
+ 			// ────────────────────────────────────────────────────────────────

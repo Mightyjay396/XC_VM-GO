@@ -1,0 +1,13 @@
+--- a/Streaming/Codec/FFprobeRunner.php
++++ b/Streaming/Codec/FFprobeRunner.php
+@@ -21,7 +21,9 @@
+ 		if (!is_array($rFetchArguments)) {
+ 			$rFetchArguments = !empty($rFetchArguments) ? [$rFetchArguments] : [];
+ 		}
+-		$rCommand = $rPrepend . 'timeout ' . $rTimeout . ' ' . $rFFPROBE . ' -probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' ' . implode(' ', $rFetchArguments) . ' -i ' . escapeshellarg((string) $rSourceURL) . ' -v quiet -print_format json -show_streams -show_format';
++		// QC ClearKey : une source avec clé de déchiffrement se sonde avec le build « -dash »
++		$rProbeBin = (str_contains(implode(' ', $rFetchArguments), 'decryption_key') ? FfmpegPaths::dash('ffprobe') : null) ?? $rFFPROBE;
++		$rCommand = $rPrepend . 'timeout ' . $rTimeout . ' ' . $rProbeBin . ' -probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' ' . implode(' ', $rFetchArguments) . ' -i ' . escapeshellarg((string) $rSourceURL) . ' -v quiet -print_format json -show_streams -show_format';
+ 		exec($rCommand, $rReturn);
+ 		$result = implode("\n", $rReturn);
+ 		if ($rParse) {

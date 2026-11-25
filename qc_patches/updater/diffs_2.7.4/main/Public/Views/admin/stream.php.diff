@@ -1,0 +1,14 @@
+--- a/Public/Views/admin/stream.php
++++ b/Public/Views/admin/stream.php
+@@ -217,7 +217,10 @@
+                     </div>
+                     <div class="row mb-6">
+                         <div class="col-md-6"><label class="form-label" for="user_agent"><?= $language::get('user_agent'); ?></label><input type="text" class="form-control" id="user_agent" name="user_agent" value="<?= htmlspecialchars($rArg('user_agent', 1), ENT_QUOTES); ?>"></div>
+-                        <div class="col-md-6"><label class="form-label" for="http_proxy">HTTP Proxy</label><input type="text" class="form-control" id="http_proxy" name="http_proxy" value="<?= htmlspecialchars($rArg('proxy', 2), ENT_QUOTES); ?>"></div>
++                        <?php /* srcproxy */ $rSrcProxies = \XcVm\Domain\Stream\ProxyService::all(true); $rSrcProxyArg = \XcVm\Domain\Stream\ProxyService::argumentID(); $rSrcProxySel = (int) $rArg('proxy_id', $rSrcProxyArg); ?>
++                        <div class="col-md-3"><label class="form-label" for="proxy_id">Proxy (liste)</label><select class="form-select" id="proxy_id" name="proxy_id" data-testid="stream-proxy-select"><option value="0">— aucun / manuel —</option><?php foreach ($rSrcProxies as $rSP): ?><option value="<?= (int) $rSP['id']; ?>" <?= $rSrcProxySel === (int) $rSP['id'] ? 'selected' : ''; ?>><?= htmlspecialchars($rSP['name'] . ' (' . $rSP['host'] . ':' . $rSP['port'] . ')'); ?></option><?php endforeach; ?></select></div>
++                        <div class="col-md-3"><label class="form-label" for="http_proxy">HTTP Proxy (manuel)</label><input type="text" class="form-control" id="http_proxy" name="http_proxy" value="<?= htmlspecialchars($rArg('proxy', 2), ENT_QUOTES); ?>" <?= $rSrcProxySel > 0 ? 'readonly' : ''; ?>></div>
++                        <script>document.getElementById('proxy_id').addEventListener('change', function () { var t = document.getElementById('http_proxy'); t.readOnly = this.value !== '0'; if (this.value !== '0') { t.value = ''; t.placeholder = 'défini par le proxy choisi'; } else { t.placeholder = ''; } });</script>
+                     </div>
+                     <div class="row mb-6">
+                         <div class="col-md-6"><label class="form-label" for="cookie">Cookie</label><input type="text" class="form-control" id="cookie" name="cookie" value="<?= htmlspecialchars($rArg('cookie', 17), ENT_QUOTES); ?>"></div>

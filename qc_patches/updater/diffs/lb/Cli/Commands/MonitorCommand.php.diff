@@ -1,0 +1,71 @@
+--- a/Cli/Commands/MonitorCommand.php
++++ b/Cli/Commands/MonitorCommand.php
+@@ -108,6 +108,8 @@
+ 		$rStreamProbe = false;
+ 		$rSources = [];
+ 		$rSegmentTime = intval(SettingsManager::get('seg_time'));
++		// QC-CLEARKEY-LEGACY: DASH via mpdproxy (slow CDN, SSAI ad break) is stalled only after 150 s, as under the fanout supervisor.
++		$rDashStall = stripos((string) ($rStreamInfo['stream_source'] ?? ''), '.mpd') !== false ? 150 : 0;
+ 		$rPrioritySwitch = false;
+ 		$rMaxFails = 0;
+ 
+@@ -140,7 +142,7 @@
+ 				if (is_numeric($rPID) && $rPID > 0) {
+ 					shell_exec('kill -9 ' . intval($rPID));
+ 				}
+-				shell_exec('rm -f ' . STREAMS_PATH . intval($rStreamID) . '_*');
++				StreamProcess::qcRestartCleanup(intval($rStreamID)); // QC-SEAMLESS
+ 				file_put_contents(STREAMS_PATH . $rStreamID . '_.monitor', getmypid());
+ 				if ($rDelay && ProcessManager::isNamedProcessRunning($rDelayPID, 'XC_VMDelay', $rStreamID) && is_numeric($rDelayPID) && $rDelayPID > 0) {
+ 					shell_exec('kill -9 ' . intval($rDelayPID));
+@@ -242,7 +244,7 @@
+ 							break;
+ 						}
+ 					}
+-					if (($rSegmentTime * 6) <= time() - $rCheckedTime) {
++					if (max($rSegmentTime * 6, $rDashStall) <= time() - $rCheckedTime) {
+ 						$rNewMd5 = md5_file($rPlaylist);
+ 						if ($rMD5 != $rNewMd5) {
+ 							$rMD5 = $rNewMd5;
+@@ -330,7 +332,7 @@
+ 				while (true) {
+ 					$rStartFailed = false;
+ 					echo "Restarting...\n";
+-					shell_exec('rm -f ' . STREAMS_PATH . intval($rStreamID) . '_*');
++					StreamProcess::qcRestartCleanup(intval($rStreamID)); // QC-SEAMLESS
+ 					file_put_contents(STREAMS_PATH . $rStreamID . '_.monitor', getmypid());
+ 					$rOffset = 0;
+ 					$rTotalCalls++;
+@@ -362,7 +364,7 @@
+ 							CreatedChannelEpg::regenerate((int) $rStreamID);
+ 						}
+ 					} else {
+-						$rData = StreamProcess::startStream($rStreamID, $rTotalCalls < MONITOR_CALLS, $rForceSource);
++						$rData = StreamProcess::startStream($rStreamID, $rTotalCalls < MONITOR_CALLS || $rDashStall > 0, $rForceSource); // QC-CK-PROBECACHE
+ 					}
+ 					if ((is_numeric($rData) && ($rData == 0))) {
+ 						$rMaxFails++;
+@@ -373,12 +375,12 @@
+ 						// An on-demand source that cannot even be probed is a failed
+ 						// start like any other: honour on_demand_failure_exit here too,
+ 						// instead of re-probing a dead source until the cron stops it.
+-						if (SettingsManager::get('on_demand_failure_exit') && $rStreamInfo['on_demand']) {
++						if (SettingsManager::get('on_demand_failure_exit') && $rStreamInfo['on_demand'] && $rMaxFails >= 3) { // QC-OD-FAST
+ 							echo "On-demand source failed to probe, exiting.\n";
+ 							return 0;
+ 						}
+ 						echo 'Stream start failed (attempt ' . $rMaxFails . '). Sleeping ' . SettingsManager::get('stream_fail_sleep') . " seconds...\n";
+-						sleep(SettingsManager::get('stream_fail_sleep'));
++						sleep($rStreamInfo['on_demand'] ? 1 : SettingsManager::get('stream_fail_sleep')); // QC-OD-FAST
+ 						continue;
+ 					}
+ 					break;
+@@ -415,7 +417,7 @@
+ 				$rFirstSegment = $rFolder . $rStreamID . '_0.ts';
+ 				$rSegmentSeen = false;
+ 				$rChecks = 0;
+-				$rMaxChecks = max(20, min($rSegmentTime * 3, 30), intval($rData['start_timeout'] ?? 0));
++				$rMaxChecks = max(60, min($rSegmentTime * 3, 30), intval($rData['start_timeout'] ?? 0)); // QC-START-WAIT
+ 				while (true) {
+ 					echo 'Checking for playlist ' . ($rChecks + 1) . '/' . $rMaxChecks . "...\n";
+ 					if (!ProcessManager::isStreamRunning($rPID, $rStreamID)) {

@@ -1,0 +1,32 @@
+--- a/Core/Http/ApiClient.php
++++ b/Core/Http/ApiClient.php
+@@ -127,7 +127,13 @@
+ 		foreach ($rPaths as $rPath) {
+ 			// Encoded once more: the server urldecode()s what it is sent, and a
+ 			// file name may hold a `+` or a `%`.
+-			$rAnswer = json_decode((string) NodeRpc::request($rServerID, ['action' => 'scandir_recursive', 'dir' => rawurlencode($rPath), 'allowed' => '', 'stat' => 1, 'size' => 1]), true);
++			for ($rTry = 0; $rTry < 2; $rTry++) {
++				// 600 s = node.rpc TTL: a loaded VOD server answers in up to ~10 min.
++				$rAnswer = json_decode((string) NodeRpc::request($rServerID, ['action' => 'scandir_recursive', 'dir' => rawurlencode($rPath), 'allowed' => '', 'stat' => 1, 'size' => 1], 600), true);
++				if (is_array($rAnswer) && is_array($rAnswer['sizes'] ?? null)) {
++					break;
++				}
++			}
+ 			if (!is_array($rAnswer) || !is_array($rAnswer['sizes'] ?? null)) {
+ 				return null;
+ 			}
+@@ -156,7 +162,13 @@
+ 		$rFiles = [];
+ 		$rAfter = null;
+ 		for ($rPage = 0; $rPage < self::MAX_LISTING_PAGES; $rPage++) {
+-			$rAnswer = json_decode((string) NodeRpc::request($rServerID, $rRequest + ['stat' => 1] + ($rAfter !== null ? ['after' => $rAfter] : [])), true);
++			for ($rTry = 0; $rTry < 2; $rTry++) {
++				// 600 s = node.rpc TTL: a loaded VOD server answers a page in up to ~10 min.
++				$rAnswer = json_decode((string) NodeRpc::request($rServerID, $rRequest + ['stat' => 1] + ($rAfter !== null ? ['after' => $rAfter] : []), 600), true);
++				if (is_array($rAnswer) && array_key_exists('files', $rAnswer)) {
++					break;
++				}
++			}
+ 			if (!is_array($rAnswer) || !array_key_exists('files', $rAnswer)) {
+ 				// No answer, a refusal ({"result":false}), or a node from before `stat` (its plain list).
+ 				return $rAnswer;

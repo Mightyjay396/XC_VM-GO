@@ -1,0 +1,169 @@
+--- a/Modules/watchfolder_*/WatchCron.php
++++ b/Modules/watchfolder_*/WatchCron.php
+@@ -10,6 +10,9 @@
+ use XcVm\Domain\Cluster\NodeRegistry;
+ use XcVm\Domain\Vod\VodItemImporter;
+ use XcVm\Domain\Stream\StreamRepository;
++use XcVm\Core\Events\EventDispatcher; // QC-VOD-SELFHEAL
++use XcVm\Core\Events\Stream\StreamsChangedEvent; // QC-VOD-SELFHEAL
++use XcVm\Domain\Stream\StreamProcess; // QC-VOD-SELFHEAL
+ 
+ /**
+  * WatchCron — cron task for watch folders.
+@@ -425,6 +428,9 @@
+             }
+         }
+         $rNow = time();
++        // QC-VOD-SELFHEAL: renamed/replaced files and never-started items heal here.
++        self::retryUnstarted($rRow, $rServerID, $rFiles, $rNow);
++        $rStreamDatabaseSet += self::healMoved($rRow, $rServerID, $rFiles);
+         $rSettled = ($rTimes !== null && in_array(null, $rTimes, true)) ? self::settled($rRow['id'], $rFiles, $rNow) : array();
+         $rThreadData = self::importItems($rRow, $rServerID, $rFiles, $rTimes, $rSettled, $rSubtitles, $rStreamDatabaseSet, $rSettings, $rMaxFilesPerRun, $rNow);
+         if (count($rThreadData) > 0) {
+@@ -443,6 +449,146 @@
+         self::checkBouquets();
+     }
+ 
++    // QC-VOD-SELFHEAL: at most this many never-started items per folder per scan, each once per cooldown.
++    private const HEAL_BATCH = 100;
++    private const HEAL_COOLDOWN = 21600;
++
++    /** A stream's path on $rServerID (`s:<server>:<path>`), null for any other source. */
++    private static function serverPath($rSource, $rServerID) {
++        $rList = json_decode((string) $rSource, true);
++        $rPrefix = 's:' . $rServerID . ':';
++        $rFirst = is_array($rList) ? (string) ($rList[0] ?? '') : '';
++        return strpos($rFirst, $rPrefix) === 0 ? substr($rFirst, strlen($rPrefix)) : null;
++    }
++
++    /** A release's name up to its quality: "Show - S01E02 - ", "Title (Year) [", else "name." (another container). */
++    private static function releaseKey($rPath) {
++        $rBase = basename($rPath);
++        $rParts = explode(' - ', $rBase);
++        if (count($rParts) >= 3 && preg_match('/^S\d+E\d+/i', $rParts[1])) {
++            return $rParts[0] . ' - ' . $rParts[1] . ' - ';
++        }
++        $rPos = strpos($rBase, ' [');
++        return $rPos !== false ? substr($rBase, 0, $rPos + 2) : pathinfo($rBase, PATHINFO_FILENAME) . '.';
++    }
++
++    /**
++     * Radarr/Sonarr rename or replace a file (upgrade): the stream kept the old
++     * path, its link dangled and it played the offline video, and the new file
++     * was only an upgrade when both could be compared. The new file is the one
++     * file of the same folder with the same release key that no stream has: the
++     * stream takes it, its row starts over and it starts again on its server.
++     *
++     * @return array<string, int> the new sources, keyed as importItems() looks them up
++     */
++    private static function healMoved(array $rRow, $rServerID, array $rFiles) {
++        $rType = array('movie' => 2, 'series' => 5)[$rRow['type']] ?? 0;
++        if (!$rType || count($rFiles) == 0) {
++            return array();
++        }
++        $db = self::db();
++        $rDir = rtrim($rRow['directory'], '/') . '/';
++        $rListed = array_flip($rFiles);
++        $rUsed = $rMissing = array();
++        $db->query('SELECT s.id, s.stream_source FROM `streams` s INNER JOIN `streams_servers` ss ON ss.stream_id = s.id AND ss.server_id = ? WHERE s.type = ?;', $rServerID, $rType);
++        foreach ($db->get_rows() as $rStream) {
++            $rPath = self::serverPath($rStream['stream_source'], $rServerID);
++            if ($rPath === null || strpos($rPath, $rDir) !== 0) {
++                continue;
++            }
++            if (isset($rListed[$rPath])) {
++                $rUsed[$rPath] = true;
++            } else {
++                $rMissing[intval($rStream['id'])] = $rPath;
++            }
++        }
++        // A listing that lost much of the folder (disk not mounted, node restarting) moves nothing.
++        if (count($rMissing) == 0 || count($rMissing) > max(500, count($rUsed) / 10)) {
++            if (count($rMissing) > 0) {
++                echo 'Self-heal skipped: ' . count($rMissing) . ' sources missing from ' . $rDir . "\n";
++            }
++            return array();
++        }
++        $rFree = array();
++        foreach ($rFiles as $rFile) {
++            if (!isset($rUsed[$rFile])) {
++                $rFree[dirname($rFile)][$rFile] = true;
++            }
++        }
++        $rNew = $rIDs = $rChanged = array();
++        foreach ($rMissing as $rID => $rPath) {
++            $rKey = self::releaseKey($rPath);
++            $rMatches = array();
++            foreach (array_keys($rFree[dirname($rPath)] ?? array()) as $rFile) {
++                if (strpos(basename($rFile), $rKey) === 0) {
++                    $rMatches[] = $rFile;
++                }
++            }
++            if (count($rMatches) != 1) {
++                continue;
++            }
++            $rFile = $rMatches[0];
++            unset($rFree[dirname($rPath)][$rFile]);
++            $rSource = json_encode(array('s:' . $rServerID . ':' . $rFile), JSON_UNESCAPED_UNICODE);
++            $rExt = strtolower(pathinfo($rFile, PATHINFO_EXTENSION));
++            $db->query('UPDATE `streams` SET `stream_source` = ?, `target_container` = ? WHERE `id` = ?;', $rSource, $rExt, $rID);
++            // Same container: the node relinks it itself (cron:vod self-heal) once its replica has the new
++            // source; a start queued now could run on the old one. Another container needs a new link: started.
++            if ($rExt !== strtolower(pathinfo($rPath, PATHINFO_EXTENSION))) {
++                $db->query('UPDATE `streams_servers` SET `bitrate` = NULL, `current_source` = NULL, `to_analyze` = 0, `pid` = NULL, `stream_started` = NULL, `stream_info` = NULL, `compatible` = 0, `video_codec` = NULL, `audio_codec` = NULL, `resolution` = NULL, `stream_status` = 0 WHERE `stream_id` = ? AND `server_id` = ?;', $rID, $rServerID);
++                $rIDs[] = $rID;
++            }
++            $rNew[$rSource] = 0;
++            $rChanged[] = $rID;
++            echo 'Self-heal #' . $rID . ': ' . basename($rPath) . ' -> ' . basename($rFile) . "\n";
++        }
++        if (count($rChanged) > 0) {
++            EventDispatcher::dispatch(new StreamsChangedEvent($rChanged));
++        }
++        if (count($rIDs) > 0) {
++            StreamProcess::queueMovies($rIDs, $rServerID);
++        }
++        return $rNew;
++    }
++
++    /**
++     * Items of this folder whose start never happened (pid NULL: a queued start
++     * lost while the node was busy) are queued again, HEAL_BATCH at a time and
++     * each at most once per HEAL_COOLDOWN, when their file is listed.
++     */
++    private static function retryUnstarted(array $rRow, $rServerID, array $rFiles, $rNow) {
++        $rType = array('movie' => 2, 'series' => 5)[$rRow['type']] ?? 0;
++        if (!$rType || count($rFiles) == 0) {
++            return;
++        }
++        $db = self::db();
++        $rState = WATCH_TMP_PATH . 'retry_' . intval($rRow['id']) . '.json';
++        $rTried = json_decode((string) @file_get_contents($rState), true);
++        $rTried = array_filter(is_array($rTried) ? $rTried : array(), function ($rAt) use ($rNow) {
++            return $rNow - intval($rAt) < self::HEAL_COOLDOWN;
++        });
++        $rListed = array_flip($rFiles);
++        $rIDs = array();
++        $db->query('SELECT s.id, s.stream_source FROM `streams` s INNER JOIN `streams_servers` ss ON ss.stream_id = s.id AND ss.server_id = ? WHERE s.type = ? AND ss.pid IS NULL AND s.direct_source = 0;', $rServerID, $rType);
++        foreach ($db->get_rows() as $rStream) {
++            $rID = intval($rStream['id']);
++            $rPath = self::serverPath($rStream['stream_source'], $rServerID);
++            if ($rPath === null || !isset($rListed[$rPath]) || isset($rTried[$rID])) {
++                continue;
++            }
++            $rTried[$rID] = $rNow;
++            $rIDs[] = $rID;
++            if (count($rIDs) >= self::HEAL_BATCH) {
++                break;
++            }
++        }
++        file_put_contents($rState, json_encode($rTried));
++        if (count($rIDs) > 0) {
++            StreamProcess::queueMovies($rIDs, $rServerID);
++            echo 'Self-heal: queued ' . count($rIDs) . ' never-started items of ' . $rRow['directory'] . "\n";
++        }
++    }
++
+     /**
+      * The import jobs for a folder's new files: those settled (not written to
+      * for FILE_STABLE_SECONDS, by their time, or by settled() when the listing

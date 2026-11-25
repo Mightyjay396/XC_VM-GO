@@ -1,0 +1,20 @@
+--- a/Cli/Commands/OndemandCommand.php
++++ b/Cli/Commands/OndemandCommand.php
+@@ -138,11 +138,15 @@
+ 			}
+ 
+ 			foreach ($rRows as $rRow) {
++				$rStreamID = $rRow['stream_id'];
++				$rLastView = STREAMS_PATH . $rStreamID . '_.lastview'; // QC-OD-FAST: 60 s keep-alive after last viewer
+ 				if ($rRow['online_clients'] > 0 || $rRow['attached'] > 0) {
++					@touch($rLastView);
++					continue;
++				}
++				if (file_exists($rLastView) && time() - @filemtime($rLastView) < 60) {
+ 					continue;
+ 				}
+-
+-				$rStreamID = $rRow['stream_id'];
+ 				$pidFile = STREAMS_PATH . $rStreamID . '_.pid';
+ 				$monitorFile = STREAMS_PATH . $rStreamID . '_.monitor';
+ 

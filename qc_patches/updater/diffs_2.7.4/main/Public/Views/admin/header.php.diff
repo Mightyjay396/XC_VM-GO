@@ -1,0 +1,35 @@
+--- a/Public/Views/admin/header.php
++++ b/Public/Views/admin/header.php
+@@ -203,6 +203,32 @@
+                                  is intentionally deferred; it will return fed by a controller/provider,
+                                  not inline DB access in the shell. -->
+ 
++                                                <!-- tickets_icon: plain link to the tickets page (no DB access in the shell) -->
++                                                <?php
++                                                // tickets_icon2: open tickets the admin has not read yet, one COUNT cached 30 s on disk.
++                                                $rTkNew = 0;
++                                                $rTkCache = '/home/xc_vm/tmp/tickets_unread.cache';
++                                                if (is_file($rTkCache) && time() - filemtime($rTkCache) < 30) {
++                                                    $rTkNew = (int) @file_get_contents($rTkCache);
++                                                } else {
++                                                    global $db;
++                                                    try {
++                                                        $rTkNew = isset($db) ? (int) $db->fetchValue('SELECT COUNT(*) FROM `tickets` WHERE `admin_read` = 0 AND `status` <> 0;') : 0;
++                                                        @file_put_contents($rTkCache, (string) $rTkNew);
++                                                    } catch (\Throwable $e) {
++                                                        $rTkNew = 0;
++                                                    }
++                                                }
++                                                ?>
++                                                <li class="nav-item">
++                                                    <a class="nav-link btn btn-icon rounded-pill position-relative <?= $rTkNew > 0 ? 'btn-text-warning text-warning' : 'btn-text-secondary'; ?>" href="tickets" title="<?= htmlspecialchars($language::get('tickets'), ENT_QUOTES); ?><?= $rTkNew > 0 ? ' (' . $rTkNew . ')' : ''; ?>">
++                                                        <i class="icon-base ti tabler-ticket icon-22px"></i>
++                                                        <?php if ($rTkNew > 0): ?>
++                                                            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" style="font-size:0.65rem;"><?= $rTkNew; ?></span>
++                                                        <?php endif; ?>
++                                                    </a>
++                                                </li>
++
+                                                 <!-- Theme switcher (light / dark / system) -->
+                                                 <li class="nav-item dropdown">
+                                                     <a class="nav-link dropdown-toggle hide-arrow btn btn-icon btn-text-secondary rounded-pill"

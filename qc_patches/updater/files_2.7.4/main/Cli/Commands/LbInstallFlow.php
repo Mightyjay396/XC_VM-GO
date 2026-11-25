@@ -1,0 +1,1338 @@
+<?php
+
+namespace XcVm\Cli\Commands;
+
+use XcVm\Core\Cluster\AgentPaths;
+use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\CredentialFreeConfig;
+use XcVm\Core\Cluster\Crypto\ClusterCrypto;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
+use XcVm\Core\Cluster\NodeCorePin;
+use XcVm\Core\Cluster\ReplicaBoot;
+use XcVm\Core\Cluster\RootPin;
+use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Config\TreeOwnership;
+use XcVm\Core\Process\PhpFpmPools;
+use XcVm\Core\Updates\GitHubReleases;
+use XcVm\Core\Updates\ReleaseAsset;
+use XcVm\Core\Updates\UpdateChannels;
+use XcVm\Domain\Cluster\ClusterAdmin;
+use XcVm\Domain\Cluster\ClusterAudit;
+use XcVm\Domain\Cluster\ClusterCli;
+use XcVm\Domain\Cluster\ClusterPolicy;
+use XcVm\Domain\Cluster\CorePins;
+use XcVm\Domain\Cluster\DbCredentials;
+use XcVm\Domain\Cluster\EnrolmentService;
+use XcVm\Domain\Cluster\LeaseService;
+use XcVm\Domain\Cluster\NodeConfigPack;
+use XcVm\Domain\Cluster\NodeRegistry;
+use XcVm\Domain\Cluster\XcvtTargets;
+
+class LbInstallFlow {
+	// Per-distribution package lists, mirrored from the MAIN installer (install -> PACKAGES),
+	// with the mariadb-server/client/common packages removed (LB nodes use the main server's DB).
+	public static function getPackages(string $rDistID = 'debian', string $rVersion = ''): array {
+		$rLists = [
+			'debian' => ['iproute2', 'net-tools', 'dirmngr', 'gpg-agent', 'software-properties-common', 'libcurl4', 'libgeoip-dev', 'libxslt1-dev', 'libonig-dev', 'e2fsprogs', 'wget', 'sysstat', 'alsa-utils', 'v4l-utils', 'certbot', 'iptables-persistent', 'ipset', 'ipset-persistent', 'libjpeg-dev', 'libpng-dev', 'libharfbuzz-dev', 'libfribidi-dev', 'libogg0', 'libnuma1', 'xz-utils', 'zip', 'unzip', 'libssh2-1', 'libsodium23', 'cpufrequtils', 'mcrypt', 'cron', 'git', 'curl'],
+			'debian13' => ['iproute2', 'net-tools', 'dirmngr', 'gpg-agent', 'software-properties-common', 'libcurl4', 'wget', 'curl', 'unzip', 'zip', 'xz-utils', 'cron', 'git', 'sysstat', 'perl', 'gawk', 'socat', 'libxml2-dev', 'libxslt1-dev', 'libonig5', 'libonig-dev', 'zlib1g-dev', 'libssl-dev', 'pkg-config', 'autoconf', 'automake', 'alsa-utils', 'v4l-utils', 'e2fsprogs', 'certbot', 'iptables-persistent', 'ipset', 'ipset-persistent', 'libssh2-1', 'libssh2-1-dev', 'libjpeg-dev', 'libpng-dev', 'libharfbuzz-dev', 'libfribidi-dev', 'libgeoip1', 'geoip-bin', 'libsodium23', 'cpufrequtils', 'mcrypt', 'libogg0', 'libnuma1'],
+			'ubuntu20' => ['iproute2', 'net-tools', 'dirmngr', 'gpg-agent', 'software-properties-common', 'wget', 'curl', 'unzip', 'zip', 'xz-utils', 'cron', 'git', 'sysstat', 'ca-certificates', 'libcurl3-gnutls', 'libcurl4-gnutls-dev', 'libxml2-dev', 'libxslt1-dev', 'libonig5', 'libonig-dev', 'libjpeg-dev', 'libpng-dev', 'zlib1g-dev', 'alsa-utils', 'v4l-utils', 'e2fsprogs', 'iptables-persistent', 'ipset', 'certbot', 'python3-certbot', 'libssh2-1', 'libssh2-1-dev', 'libsodium23', 'cpufrequtils', 'mcrypt', 'libogg0', 'libnuma1'],
+			'ubuntu22' => ['iproute2', 'net-tools', 'dirmngr', 'gpg-agent', 'software-properties-common', 'libcurl4', 'libcurl3-gnutls', 'libgeoip-dev', 'libxslt1-dev', 'libonig-dev', 'e2fsprogs', 'wget', 'curl', 'unzip', 'zip', 'xz-utils', 'cron', 'git', 'sysstat', 'ca-certificates', 'libxml2-dev', 'libonig5', 'zlib1g-dev', 'alsa-utils', 'v4l-utils', 'certbot', 'python3-certbot', 'iptables-persistent', 'ipset', 'ipset-persistent', 'libjpeg-dev', 'libpng-dev', 'libharfbuzz-dev', 'libfribidi-dev', 'libogg0', 'libnuma1', 'libssh2-1', 'libssh2-1-dev', 'libsodium23', 'cpufrequtils', 'mcrypt'],
+			'ubuntu24' => ['iproute2', 'net-tools', 'dirmngr', 'gpg-agent', 'software-properties-common', 'libcurl4t64', 'wget', 'curl', 'unzip', 'zip', 'xz-utils', 'cron', 'git', 'sysstat', 'perl', 'gawk', 'socat', 'libxml2-dev', 'libxslt1-dev', 'libonig5', 'libonig-dev', 'zlib1g-dev', 'libssl-dev', 'pkg-config', 'autoconf', 'automake', 'alsa-utils', 'v4l-utils', 'e2fsprogs', 'certbot', 'python3-certbot', 'ufw', 'libssh2-1t64', 'libssh2-1-dev', 'libjpeg-dev', 'libpng-dev', 'libharfbuzz-dev', 'libfribidi-dev', 'libgeoip1t64', 'geoip-bin', 'libsodium23', 'cpufrequtils', 'mcrypt', 'libogg0', 'libnuma1', 'ipset'],
+			'redhat' => ['epel-release', 'wget', 'sysstat', 'alsa-utils', 'v4l-utils', 'libcurl-devel', 'geoip-devel', 'libxslt-devel', 'oniguruma-devel', 'e2fsprogs', 'libjpeg-turbo-devel', 'libpng-devel', 'harfbuzz-devel', 'fribidi-devel', 'libogg', 'xz', 'zip', 'unzip', 'libssh2-devel', 'cronie', 'certbot', 'iptables-services', 'GeoIP-update', 'git', 'curl', 'libsodium', 'numactl', 'kernel-tools'],
+		];
+
+		$rKey = self::resolvePackageKey(strtolower(trim($rDistID)), explode('.', $rVersion)[0]);
+		return $rLists[$rKey] ?? $rLists['debian'];
+	}
+
+	// Mirrors the MAIN installer's _PACKAGE_KEY_MAP: (dist_id, major_version) -> package list key.
+	private static function resolvePackageKey(string $rDistID, string $rMajor): string {
+		if (in_array($rDistID, ['rocky', 'almalinux', 'rhel', 'centos', 'redhat', 'fedora'], true)) {
+			return 'redhat';
+		}
+		$rMap = [
+			'ubuntu' => ['18' => 'ubuntu20', '20' => 'ubuntu20', '22' => 'ubuntu22', '24' => 'ubuntu24', '26' => 'ubuntu24'],
+			'debian' => ['12' => 'debian', '13' => 'debian13', 'ipset'],
+		];
+		return $rMap[$rDistID][$rMajor] ?? 'debian';
+	}
+
+	/**
+	 * The load-balancer archive of MAIN's own release, from GitHub: a node runs
+	 * MAIN's release, never a newer one, as UpdateCommand pins its updates. The
+	 * md5 is null when the release lists no such asset or cannot be read.
+	 *
+	 * @return array{url: string, md5: ?string}
+	 */
+	public static function resolveUpdateData(GitHubReleases $gitRelease): array {
+		$rUpdateData = $gitRelease->getVersionFile('lb', XC_VM_VERSION);
+		return [
+			'url' => $rUpdateData['url'],
+			'md5' => $rUpdateData['md5'],
+		];
+	}
+
+	/** Non-secret install parameters for reinstalls; the password is never stored. */
+	public static function writeInstallMetadata(string $rInstallDir, int $rServerID, string $rUsername, int $rPort): void {
+		file_put_contents($rInstallDir . $rServerID . '.json', json_encode(['root_username' => $rUsername, 'ssh_port' => $rPort]));
+	}
+
+	/**
+	 * The shell line that writes $rText (and a newline) to $rPath as root
+	 * over SSH, appending when $rAppend. A `sudo echo` redirected to it runs
+	 * only the echo as root: the redirect is opened by the SSH user's shell,
+	 * so it fails unless that user is root. `tee` is what runs under sudo.
+	 */
+	public static function sudoWrite(string $rText, string $rPath, bool $rAppend = false): string {
+		return 'echo ' . escapeshellarg($rText) . ' | sudo tee ' . ($rAppend ? '-a ' : '') . escapeshellarg($rPath) . ' > /dev/null';
+	}
+
+	/** The sudoers drop-in a serve-only node carries for the agent's node.root/ban ops. */
+	public const NODE_ROOT_SUDOERS = '/etc/sudoers.d/xcvm-noderoot';
+
+	/**
+	 * The shell line that makes what root runs on a PHP-free serve-only node root's
+	 * (TreeOwnership::ROOT_OWNED, group xc_vm kept so it still reads), as rootOwn()
+	 * does on MAIN: the node has no PHP to run it, and xc_vm.service starts
+	 * `bash service` as root, so xc_vm must not be able to replace it. Run it after
+	 * the blanket chown to xc_vm and after PHP is removed (console.php, bin/php are
+	 * skipped); entries absent on the node are skipped, links never followed.
+	 */
+	public static function rootOwnPhpFreeCommand(): string {
+		$rAlone = $rTrees = [];
+		foreach (TreeOwnership::ROOT_OWNED as $rPath => $rTree) {
+			if ($rPath === 'console.php' || $rPath === 'bin/php' || str_starts_with($rPath, 'bin/php/')) {
+				continue;
+			}
+			$rFull = rtrim(MAIN_HOME . $rPath, '/');
+			if ($rTree) {
+				$rTrees[] = escapeshellarg($rFull);
+			} else {
+				$rAlone[] = escapeshellarg($rFull);
+			}
+		}
+		$rOwner = 'root:' . TreeOwnership::USER;
+		$rLoop = static fn(string $rFlags, array $rPaths): string => 'for p in ' . implode(' ', $rPaths) . '; do if [ -e "$p" ] || [ -L "$p" ]; then sudo chown ' . $rFlags . ' ' . $rOwner . ' "$p"; fi; done';
+		return $rLoop('-h', $rAlone) . '; ' . $rLoop('-hR', $rTrees);
+	}
+
+	/** Where the root-owned node.root helper lives on a serve-only node (outside xc_vm's reach). */
+	public const NODE_ROOT_HELPER = '/usr/local/sbin/xcvm-noderoot';
+
+	/**
+	 * Install the node.root helper as root:root 0755, sent from MAIN's own trusted
+	 * copy: the node's /home/xc_vm/bin/install copy is xc_vm-writable, so copying
+	 * it would let a compromised xc_vm plant what root then runs. True only when
+	 * the send, chown and chmod all succeeded.
+	 */
+	public static function provisionNodeRootHelper($rConn, callable $rRunSSH, callable $rSendFileSSH): bool {
+		if (!call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/install/xcvm-noderoot', self::NODE_ROOT_HELPER, false)) {
+			return false;
+		}
+		foreach (['sudo chown root:root ', 'sudo chmod 0755 '] as $rCmd) {
+			$rOut = call_user_func($rRunSSH, $rConn, $rCmd . self::NODE_ROOT_HELPER . ' && echo __NODEROOT_HELPER_OK__');
+			if (strpos((string) ($rOut['output'] ?? ''), '__NODEROOT_HELPER_OK__') === false) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Grant the xc_vm agent ONE NOPASSWD rule: the root-owned helper. Every raw
+	 * command (tee, chmod, systemctl, mount ...) is a confused-deputy root for a
+	 * compromised xc_vm, so the privileged ops live in the helper, which validates
+	 * its own arguments. No env_keep: sudo's env_reset strips XCVM_NODEROOT_ROOT
+	 * and TMPDIR, which a caller must not control.
+	 *
+	 * Written to a root temp file outside /etc/sudoers.d, validated with visudo,
+	 * and only then installed: the live included dir never holds an unvalidated
+	 * file, so a bad write cannot lock sudo out. True only on the validated install.
+	 */
+	public static function provisionNodeRootSudoers($rConn, callable $rRunSSH): bool {
+		$rContent = "Defaults:xc_vm !requiretty\nxc_vm ALL=(root) NOPASSWD: " . self::NODE_ROOT_HELPER . "\n";
+		$rCmd = 't=$(sudo mktemp /tmp/xcvm-sudoers.XXXXXXXXXX) && printf %s ' . escapeshellarg($rContent) . ' | sudo tee "$t" > /dev/null'
+			. ' && sudo chown root:root "$t" && sudo chmod 0440 "$t"'
+			. ' && sudo visudo -cf "$t" > /dev/null && sudo install -m0440 -o root -g root "$t" ' . self::NODE_ROOT_SUDOERS
+			. ' && echo __NODEROOT_SUDOERS_OK__; sudo rm -f "$t"';
+		$rOut = call_user_func($rRunSSH, $rConn, $rCmd);
+		return strpos((string) ($rOut['output'] ?? ''), '__NODEROOT_SUDOERS_OK__') !== false;
+	}
+
+	/**
+	 * A directory on the node only the SSH user can enter (mktemp -d: 0700),
+	 * under a name nobody can guess, for what root is about to run or unpack.
+	 * At a fixed path in /tmp another user of the node (the panel's own, whose
+	 * cron runs through a reinstall) could own the file first, and swap it
+	 * between its check and its use. Null when the node gave none; the path
+	 * goes into shell commands, so nothing else is accepted.
+	 */
+	public static function privateDir($rConn, callable $rRunSSH): ?string {
+		$rDir = self::lastLine((array) call_user_func($rRunSSH, $rConn, 'mktemp -d /tmp/xcvm.XXXXXXXXXX'));
+		return preg_match('~^/tmp/xcvm\.[A-Za-z0-9]{10}\z~', $rDir) ? $rDir : null;
+	}
+
+	public static function installArchive($rConn, callable $rRunSSH, string $rInstallFiles, string $rHash, int $rServerID, $db): bool {
+		echo "Download archive\n";
+		$rDir = self::privateDir($rConn, $rRunSSH);
+		if ($rDir === null) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Could not create a private directory on the node! Exiting\n";
+			return false;
+		}
+		$rArchive = $rDir . '/XC_VM.tar.gz';
+		call_user_func($rRunSSH, $rConn, 'wget --timeout=2 -O ' . $rArchive . ' -o /dev/null "' . $rInstallFiles . '"');
+		$rFileHash = call_user_func($rRunSSH, $rConn, 'md5=($(md5sum ' . $rArchive . ')); echo $md5;');
+		if (empty($rFileHash['output']) || $rHash != trim($rFileHash['output'])) {
+			call_user_func($rRunSSH, $rConn, 'rm -rf ' . $rDir);
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Invalid MD5 checksum! Exiting\n";
+			return false;
+		}
+
+		echo "Extracting to directory\n";
+		// The node's config is preserved across this extraction by stashNodeConfig /
+		// restoreNodeConfig (ServerInstallCommand), which bracket prepareInstallRoot —
+		// it wipes BIN_PATH before this runs — and the extraction below.
+		call_user_func($rRunSSH, $rConn, 'sudo rm -rf ' . MAIN_HOME . 'console.php');
+		call_user_func($rRunSSH, $rConn, 'sudo tar -zxvf ' . $rArchive . ' -C "' . MAIN_HOME . '"');
+		call_user_func($rRunSSH, $rConn, 'sudo rm -rf ' . $rDir);
+		$rRemoteCheck = trim(call_user_func($rRunSSH, $rConn, 'test -f ' . MAIN_HOME . 'console.php && echo OK')['output']);
+		if ($rRemoteCheck !== 'OK') {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Failed to extract files! Exiting\n";
+			return false;
+		}
+
+		return true;
+	}
+
+	/** Sentinel the stash/restore scripts print on a clean run, so the SSH runner
+	 *  (which sees only stdout, not an exit code) can tell success from a `set -e`
+	 *  abort. */
+	private const PRESERVE_SENTINEL = 'XCVM_PRESERVE_OK';
+
+	/** Where a node's config is stashed across a reinstall: under MAIN_HOME but
+	 *  outside BIN_PATH, so prepareInstallRoot's `rm -rf BIN_PATH` and the archive
+	 *  extraction both leave it alone. */
+	private static function preserveDir(): string {
+		return rtrim(MAIN_HOME, '/') . '/.preserve';
+	}
+
+	/**
+	 * The shell that stashes the node's tuned fanout config, its certbot config (the
+	 * real certificate) and the front's server.{crt,key} before a reinstall wipes
+	 * BIN_PATH and re-extracts the archive's defaults over it (XC_VM #477). A fresh
+	 * node (no bin/) stashes nothing; an unconsumed snapshot from an interrupted
+	 * retry is kept rather than overwritten with the just-extracted defaults. `set -e`
+	 * makes a real copy failure abort (non-zero) instead of being swallowed by a
+	 * trailing `true`. $rHome stands in for MAIN_HOME, $rKeep for preserveDir() —
+	 * parameters so the script is testable without the constants.
+	 */
+	public static function stashConfigScript(string $rHome, string $rKeep): string {
+		$rH = rtrim($rHome, '/');
+		$rK = rtrim($rKeep, '/');
+		return 'set -e' . "\n"
+			. 'if [ ! -e "' . $rH . '/bin" ] && [ ! -d "' . $rK . '" ]; then echo ' . self::PRESERVE_SENTINEL . '; exit 0; fi' . "\n"
+			. 'if [ -d "' . $rK . '" ]; then echo ' . self::PRESERVE_SENTINEL . '; exit 0; fi' . "\n"
+			. 'mkdir -p "' . $rK . '"' . "\n"
+			. 'if [ -e "' . $rH . '/bin/xc_fanout/config.json" ]; then cp -a "' . $rH . '/bin/xc_fanout/config.json" "' . $rK . '/fanout.json"; fi' . "\n"
+			. 'if [ -e "' . $rH . '/bin/certbot/config" ]; then cp -a "' . $rH . '/bin/certbot/config" "' . $rK . '/certbot"; fi' . "\n"
+			. 'if [ -e "' . $rH . '/bin/nginx/conf/server.crt" ]; then cp -a "' . $rH . '/bin/nginx/conf/server.crt" "' . $rK . '/server.crt"; fi' . "\n"
+			. 'if [ -e "' . $rH . '/bin/nginx/conf/server.key" ]; then cp -a "' . $rH . '/bin/nginx/conf/server.key" "' . $rK . '/server.key"; fi' . "\n"
+			. 'echo ' . self::PRESERVE_SENTINEL;
+	}
+
+	/**
+	 * The shell that restores what stashConfigScript saved, after extraction, then
+	 * consumes the snapshot. Each item is restored only if it was stashed (so a
+	 * first install keeps the archive defaults), and `set -e` makes a real failure
+	 * abort instead of leaving defaults silently in place.
+	 */
+	public static function restoreConfigScript(string $rHome, string $rKeep): string {
+		$rH = rtrim($rHome, '/');
+		$rK = rtrim($rKeep, '/');
+		return 'set -e' . "\n"
+			. 'if [ -e "' . $rK . '/fanout.json" ]; then mkdir -p "' . $rH . '/bin/xc_fanout"; rm -f "' . $rH . '/bin/xc_fanout/config.json"; cp -a "' . $rK . '/fanout.json" "' . $rH . '/bin/xc_fanout/config.json"; fi' . "\n"
+			. 'if [ -e "' . $rK . '/certbot" ]; then mkdir -p "' . $rH . '/bin/certbot"; rm -rf "' . $rH . '/bin/certbot/config"; cp -a "' . $rK . '/certbot" "' . $rH . '/bin/certbot/config"; fi' . "\n"
+			. 'if [ -e "' . $rK . '/server.crt" ]; then mkdir -p "' . $rH . '/bin/nginx/conf"; rm -f "' . $rH . '/bin/nginx/conf/server.crt"; cp -a "' . $rK . '/server.crt" "' . $rH . '/bin/nginx/conf/server.crt"; fi' . "\n"
+			. 'if [ -e "' . $rK . '/server.key" ]; then mkdir -p "' . $rH . '/bin/nginx/conf"; rm -f "' . $rH . '/bin/nginx/conf/server.key"; cp -a "' . $rK . '/server.key" "' . $rH . '/bin/nginx/conf/server.key"; fi' . "\n"
+			. 'rm -rf "' . $rK . '"' . "\n"
+			. 'echo ' . self::PRESERVE_SENTINEL;
+	}
+
+	/**
+	 * Stash the node's config before a reinstall destroys it (prepareInstallRoot +
+	 * installArchive). False if the stash did not complete — the caller must then
+	 * abort, before anything is wiped. Call only for an LB (type 2).
+	 */
+	public static function stashNodeConfig($rConn, callable $rRunSSH): bool {
+		$rOut = call_user_func($rRunSSH, $rConn, 'sudo sh -c ' . escapeshellarg(self::stashConfigScript(MAIN_HOME, self::preserveDir())));
+		return strpos((string) ($rOut['output'] ?? ''), self::PRESERVE_SENTINEL) !== false;
+	}
+
+	/** Restore the stashed config after a successful extraction, then drop the snapshot. */
+	public static function restoreNodeConfig($rConn, callable $rRunSSH): void {
+		call_user_func($rRunSSH, $rConn, 'sudo sh -c ' . escapeshellarg(self::restoreConfigScript(MAIN_HOME, self::preserveDir())));
+	}
+
+	/**
+	 * What follows the archive on the node: its binaries, xcvm_core, its two
+	 * ramdisks and, when the admin asked for it, the panel's sysctl.conf. False
+	 * when one of them could not be put in place, and the install stops: the
+	 * archive carries no PHP, nginx or extension, the segments and caches of a
+	 * node without its ramdisks go to disk, and a sysctl.conf that was asked
+	 * for and not written would be recorded as applied.
+	 */
+	public static function runPostExtractSteps($rConn, callable $rRunSSH, callable $rSendFileSSH, string $rDistID, string $rVersion, int $rUpdateSysctl, string $rSysCtl, int $rServerID): bool {
+		echo "Installing distribution-specific binaries\n";
+		if (!self::installDistributionBinaries($rConn, $rRunSSH, $rDistID, $rVersion)) {
+			echo "Failed to install the distribution binaries (PHP, nginx) from GitHub. Exiting\n";
+			return false;
+		}
+		if (!self::installExtension($rConn, $rRunSSH, $rSendFileSSH)) {
+			return false;
+		}
+		if (!self::ensureRamdisks($rConn, $rRunSSH)) {
+			echo "Could not add the ramdisk mounts to /etc/fstab on the node. Exiting\n";
+			return false;
+		}
+
+		return self::applySysctl($rConn, $rRunSSH, $rSendFileSSH, $rUpdateSysctl, $rSysCtl, $rServerID);
+	}
+
+	/**
+	 * The node's sysctl.conf, when its server row asks for one, and the marker
+	 * that says the file is the panel's to keep (config/sysctl.on, read by the
+	 * node's root cron). A file that names XC_VM is ours already and is left.
+	 * False when the file or the marker could not be written.
+	 */
+	public static function applySysctl($rConn, callable $rRunSSH, callable $rSendFileSSH, int $rUpdateSysctl, string $rSysCtl, int $rServerID): bool {
+		$rManaged = stripos(call_user_func($rRunSSH, $rConn, 'sudo cat /etc/sysctl.conf')['output'], 'XC_VM') !== false;
+		if ($rUpdateSysctl && !$rManaged) {
+			echo "Adding sysctl.conf\n";
+			// Best effort: newer kernels name the module nf_conntrack, or build it in.
+			call_user_func($rRunSSH, $rConn, 'sudo modprobe ip_conntrack');
+			file_put_contents(TMP_PATH . 'sysctl_' . $rServerID, $rSysCtl);
+			if (!call_user_func($rSendFileSSH, $rConn, TMP_PATH . 'sysctl_' . $rServerID, '/etc/sysctl.conf', false)) {
+				echo "Could not write /etc/sysctl.conf on the node. Exiting\n";
+				return false;
+			}
+			// One key the node's kernel does not know fails the whole command, while
+			// the file is in place and applies at every boot: what it refused is said,
+			// and the install goes on.
+			$rRefused = trim((string) call_user_func($rRunSSH, $rConn, 'sudo sysctl -p 2>&1 >/dev/null')['output']);
+			if ($rRefused !== '') {
+				echo "sysctl -p did not apply every key on the node (the file is in place and applies at boot):\n" . $rRefused . "\n";
+			}
+		}
+		$rMarker = escapeshellarg(CONFIG_PATH . 'sysctl.on');
+		$rSet = call_user_func($rRunSSH, $rConn, ($rUpdateSysctl ? 'sudo touch ' . $rMarker . ' && sudo test -e ' : 'sudo rm -f ' . $rMarker . ' && sudo test ! -e ') . $rMarker . ' && echo MARK_OK')['output'];
+		if (trim((string) $rSet) !== 'MARK_OK') {
+			echo 'Could not ' . ($rUpdateSysctl ? 'set' : 'clear') . " the node's sysctl marker (config/sysctl.on). Exiting\n";
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * The node's two ramdisks in its fstab: the live segments (content/streams)
+	 * and tmp. Each missing one is added, so a file that holds one only is
+	 * completed, and the file is read again: true when both are there.
+	 */
+	public static function ensureRamdisks($rConn, callable $rRunSSH, string $rFstab = '/etc/fstab'): bool {
+		$rRead = static fn(): string => (string) call_user_func($rRunSSH, $rConn, 'sudo cat ' . escapeshellarg($rFstab))['output'];
+		$rHave = $rRead();
+		$rAdded = false;
+		// tee -a writes from the file's last byte: a last line with no newline would get the new one glued to it, and neither would mount.
+		$rBreak = $rHave === '' || str_ends_with($rHave, "\n") ? '' : "\n";
+		foreach ([STREAMS_PATH => 'size=90%', TMP_PATH => 'size=2G'] as $rPath => $rSize) {
+			if (stripos($rHave, $rPath) === false) {
+				if (!$rAdded) {
+					echo "Adding ramdisk mounts\n";
+				}
+				$rAdded = true;
+				call_user_func($rRunSSH, $rConn, self::sudoWrite($rBreak . 'tmpfs ' . $rPath . ' tmpfs defaults,noatime,nosuid,nodev,noexec,mode=1777,' . $rSize . ' 0 0', $rFstab, true));
+				$rBreak = '';
+			}
+		}
+		if ($rAdded) {
+			$rHave = $rRead();
+		}
+		return stripos($rHave, STREAMS_PATH) !== false && stripos($rHave, TMP_PATH) !== false;
+	}
+
+	/**
+	 * Install xcvm_core on the node. The binaries bundle does not carry it, the
+	 * LB archive has no bin/install, and the node's console.php cannot boot
+	 * without it, so MAIN sends its own installer script over, which takes the
+	 * extension from GitHub.
+	 *
+	 * False when the node ends without it, and the install stops: the script
+	 * could not be sent, it failed (its exit status), or the node's PHP, run
+	 * as the panel runs it, does not have the extension's class.
+	 */
+	public static function installExtension($rConn, callable $rRunSSH, callable $rSendFileSSH): bool {
+		echo "Installing the xcvm_core PHP extension\n";
+		$rInstaller = self::extensionInstaller();
+		if ($rInstaller === null) {
+			echo 'MAIN has no ' . MAIN_HOME . "bin/install/install_xcvm_core.sh and could not take it from GitHub. Exiting\n";
+			return false;
+		}
+		// The script runs as root: it goes where no other user can reach it.
+		$rDir = self::privateDir($rConn, $rRunSSH);
+		if ($rDir === null) {
+			echo "Could not create a private directory on the node for the xcvm_core installer. Exiting\n";
+			return false;
+		}
+		$rScript = $rDir . '/install_xcvm_core.sh';
+		if (!call_user_func($rSendFileSSH, $rConn, $rInstaller, $rScript, true)) {
+			call_user_func($rRunSSH, $rConn, 'rm -rf ' . $rDir);
+			echo 'Could not send ' . $rInstaller . " to the node. Exiting\n";
+			return false;
+		}
+		$rArgs = implode(' ', array_map('escapeshellarg', [GIT_OWNER, GIT_REPO_BIN, BIN_PATH]));
+		$rLines = preg_split('/\R/', trim((string) call_user_func($rRunSSH, $rConn, 'sudo bash ' . $rScript . ' ' . $rArgs . ' 2>&1; echo "exit=$?"; rm -rf ' . $rDir)['output'])) ?: [];
+		$rExit = (string) array_pop($rLines);
+		echo implode("\n", $rLines) . "\n";
+		$rLoaded = self::lastLine((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg('echo class_exists("XC_VM", false) ? "CORE_OK" : "CORE_MISSING";') . ' 2>/dev/null'));
+		if ($rExit !== 'exit=0' || $rLoaded !== 'CORE_OK') {
+			echo "xcvm_core is not installed on the node, and a load balancer cannot run without it. Check that the node reaches raw.githubusercontent.com, then install again. Exiting\n";
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * MAIN's copy of the xcvm_core installer, the script it sends to a node. A
+	 * MAIN that reached its release through updates may not have it: until
+	 * 2.6.0 the updater left bin/install out, and an install then ran
+	 * "bash: /tmp/install_xcvm_core.sh: No such file or directory". A missing
+	 * one is taken from the panel's GitHub repository, at MAIN's release (main
+	 * for a build with no tag of its own), and kept. Null when MAIN has none
+	 * and GitHub gave none.
+	 *
+	 * @param (callable(string, string): bool)|null $rDownload Tests: fetch a URL to a file.
+	 */
+	public static function extensionInstaller(?string $rPath = null, ?callable $rDownload = null): ?string {
+		$rPath ??= MAIN_HOME . 'bin/install/install_xcvm_core.sh';
+		if (is_file($rPath) && filesize($rPath) > 0) {
+			return $rPath;
+		}
+		$rDownload ??= [ReleaseAsset::class, 'download'];
+		$rPart = $rPath . '.part';
+		foreach ([XC_VM_VERSION, 'main'] as $rRef) {
+			$rUrl = 'https://raw.githubusercontent.com/' . GIT_OWNER . '/' . GIT_REPO_MAIN . '/' . rawurlencode((string) $rRef) . '/src/bin/install/install_xcvm_core.sh';
+			// A shell script, not an error page: it is run as root on the node.
+			if ($rDownload($rUrl, $rPart) && str_starts_with((string) @file_get_contents($rPart, false, null, 0, 11), '#!/bin/bash') && @rename($rPart, $rPath)) {
+				echo 'MAIN had no install_xcvm_core.sh: taken from GitHub (' . $rRef . ")\n";
+				return $rPath;
+			}
+			@unlink($rPart);
+		}
+		return null;
+	}
+
+	/**
+	 * Securely provision config.enc onto a freshly-installed LB node.
+	 *
+	 * The DB password never enters PHP: we read the node's install_id over the
+	 * SSH channel, then XC_VM::config_pack() pulls the credentials from MAIN's
+	 * own config.enc and returns a transport blob (XCVT) encrypted for that
+	 * install_id. The node re-encrypts it to its at-rest format on first read.
+	 *
+	 * Replaces the old config.ini flow, which wrote empty credentials because
+	 * the extension never exposes them to PHP — producing an unreadable
+	 * config.enc on the node ("failed to read config.enc").
+	 *
+	 * The order is the extension's ADR-005 (Decision 7), all of it as root and
+	 * before config/ is handed to xc_vm: (1, 2) the config dir and the
+	 * install_id (provisionInstallId); (3, 4) the node's panel key, MAIN's
+	 * root, and the v2 pin over this verified session (provisionXcvt); (5) the
+	 * config, v2 for a node so pinned (NodeConfigPack); (6) chown and chmod.
+	 * In release N a node whose v2 pin failed gets a v1 config, only when it
+	 * holds no pin (cluster_pinned); from N+1 that is fatal.
+	 *
+	 * @param ClusterCrypto|null $rCrypto Tests: MAIN's cluster crypto (default ClusterCryptoFactory::create()).
+	 * @return bool True on success; on failure marks the server as errored (status 4).
+	 */
+	public static function provisionConfig($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?bool $rApiMode = null, bool $rServeOnly = false, ?ClusterCrypto $rCrypto = null): bool {
+		echo "Generating configuration file\n";
+		$rApiMode ??= self::installsInApiMode(SettingsManager::getAll(), $rServerID);
+		if ($rApiMode && !CredentialFreeConfig::supported()) {
+			// Refused before anything is written: an older extension would pack
+			// MAIN's credentials into a node meant never to hold them.
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "This node installs in API mode (lb_new_node_mode is api, or MAIN keeps it free of its credentials: cluster mode 2 or a revoked grant), but this panel's xcvm_core cannot pack a configuration without MAIN's credentials (it needs install_config). Update the extension. Exiting\n";
+			return false;
+		}
+
+		$rInstallId = self::provisionInstallId($rConn, $rRunSSH, $rServerID, $db);
+		if ($rInstallId === null) {
+			return false;
+		}
+
+		// The node's panel key and the v2 pin, before the config is packed and
+		// before the chown below (ADR-005, Decision 7, steps 3 and 4).
+		$rWhyNot = self::provisionXcvt($rConn, $rRunSSH, $rServerID, $rInstallId, $rCrypto);
+		if ($rWhyNot !== null) {
+			$rPinned = self::probePinned($rConn, $rRunSSH);
+			if (!NodeConfigPack::v1Allowed() || ($rPinned !== 'NOT_PINNED' && $rPinned !== 'NONE')) {
+				// N+1, or a node that holds a pin: a v1 config would be refused there.
+				$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+				echo 'The node cannot be pinned for XCVT v2 (' . $rWhyNot . ')' . (NodeConfigPack::v1Allowed() ? ', and it holds a pin (' . ($rPinned === '' ? 'no answer' : $rPinned) . '), which refuses a v1 config' : '') . ". Exiting\n";
+				return false;
+			}
+			// Seen unpinned: a v1 config is what it takes (release N), and the
+			// record says so (no sticky v2), keeping the key and why there is none.
+			CorePins::unpinned($rServerID);
+			$rRec = XcvtTargets::get($rServerID, $rCrypto);
+			$rSame = $rRec !== null && $rRec['install_id'] === $rInstallId;
+			XcvtTargets::record($rServerID, $rInstallId, $rSame ? $rRec['panel_pk'] : null, null, 0, 'install', $rCrypto, false, $rSame ? $rRec['probe'] : null);
+			echo 'XCVT v2 is not used for this node (' . $rWhyNot . "): it gets a v1 config. Pin it later with console.php server:xcvt-pin\n";
+		} else {
+			echo "Panel key pinned in the node's xcvm_core (XCVT v2)\n";
+		}
+
+		// Pack config.enc targeted at the node's install_id. Credentials are
+		// read from MAIN's config.enc inside the extension, never exposed here;
+		// in API mode there are none (CredentialFreeConfig).
+		$rPackParams = self::configPackParams($rServers, $rServerID, $rServeOnly);
+		$rParams = $rApiMode ? CredentialFreeConfig::params($rPackParams) : $rPackParams;
+		$rBlob = $rParams === null ? false : NodeConfigPack::pack($rServerID, $rParams);
+		if (empty($rBlob)) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			$rWhy = error_get_last()['message'] ?? 'no warning';
+			echo 'Failed to pack node configuration (install_id ' . $rInstallId . ', hostname ' . var_export($rPackParams['hostname'], true) . ', api mode ' . ($rApiMode ? 'yes' : 'no') . ', ' . $rWhy . ")! Exiting\n";
+			return false;
+		}
+
+		// Ship the ready-to-use config.enc. Drop any stale config.ini first so the
+		// extension does not migrate it over our blob.
+		call_user_func($rRunSSH, $rConn, 'sudo rm -f ' . CONFIG_PATH . 'config.ini');
+		$rTmp = TMP_PATH . 'config_' . $rServerID . '.enc';
+		file_put_contents($rTmp, $rBlob);
+		$rOk = call_user_func($rSendFileSSH, $rConn, $rTmp, CONFIG_PATH . 'config.enc', false);
+		@unlink($rTmp);
+		if (!$rOk) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Failed to upload node configuration! Exiting\n";
+			return false;
+		}
+		if (!self::provisionOpensslExtra($rConn, $rRunSSH, $rSendFileSSH, CONFIG_PATH . 'openssl_extra')) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Failed to upload OPENSSL_EXTRA! Exiting\n";
+			return false;
+		}
+		// install_id, panel.sk, panel.pk and core.pin were created by root above
+		// and SCP writes config.enc as root; hand the whole config/ dir to xc_vm
+		// so FPM can read them and re-encrypt the transport blob to at-rest
+		// format on first read (checked by readback() once the node runs).
+		call_user_func($rRunSSH, $rConn, 'sudo chown -R xc_vm:xc_vm ' . CONFIG_PATH);
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 600 ' . CONFIG_PATH . 'config.enc');
+
+		// The plaintext serve_only marker that run.sh reads is written by
+		// ServerInstallCommand on a completed install (and removed on a non-serve-only
+		// one), not here — so a failure after this point never leaves the node's
+		// runtime mode disagreeing with MAIN. The config.enc serve_only above
+		// (configPackParams) is PHP-side only and inert on an incomplete install.
+		return true;
+	}
+
+	/**
+	 * The node's config dir and install_id (ADR-005, Decision 7, steps 1 and
+	 * 2), as root. Null when the node gave no install_id (status 4).
+	 */
+	public static function provisionInstallId($rConn, callable $rRunSSH, int $rServerID, $db): ?string {
+		// Generate the node's install_id AS root. At this point in the flow the
+		// bundled PHP under bin/ is still root-owned (ownership is handed to
+		// xc_vm later in the install, after provisionConfig), so running php as
+		// xc_vm here cannot load the xcvm_core extension — XC_VM is undefined and
+		// install_id() prints nothing ("Failed to read install_id"). Root can
+		// always load the extension.
+		//
+		// install_id() creates config/install_id on its first call; the at-rest
+		// config.enc key is derived from its VALUE, not from the creating user
+		// (SHA-256("xcvm_cfg_v1" || install_id || machine_id)). So we create it as
+		// root and hand the whole config/ dir to xc_vm at the end, letting FPM
+		// (xc_vm) read both install_id and config.enc on boot. If install_id
+		// stayed root-owned, config.enc would fail to decrypt and the extension
+		// would silently fall back to a default config (server_id=1, is_lb=0).
+		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . CONFIG_PATH);
+		$rIdResult = call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg('echo XC_VM::install_id();'));
+		// A freshly installed PHP may print warnings before the id, which
+		// config_pack() would refuse as part of it.
+		$rInstallId = self::lastLine($rIdResult);
+		if (!CorePins::validInstallId($rInstallId)) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Failed to read install_id from node! Exiting\n";
+			foreach (['output', 'error'] as $rStream) {
+				$rText = trim((string) ($rIdResult[$rStream] ?? ''));
+				if ($rText !== '') {
+					echo $rText . "\n";
+				}
+			}
+			return null;
+		}
+		return $rInstallId;
+	}
+
+	/**
+	 * Steps 3 and 4 of the extension's ADR-005 (Decision 7), as root over this
+	 * verified session: the node shows its panel key (`panel_pk()`, creating
+	 * panel.sk when there is none), MAIN's root is checked (ensureRoot), and
+	 * the v2 pin is packed for the install and pinned with replace (the trust
+	 * on first use of a fresh node, or a stale core.pin of an earlier
+	 * install). Recorded (XcvtTargets) once pinned to this panel's key; any
+	 * key the node showed is recorded either way. Null when pinned, else why
+	 * not. No licence: a pin carries public keys only (Decision 8).
+	 */
+	public static function provisionXcvt($rConn, callable $rRunSSH, int $rServerID, string $rInstallId, ?ClusterCrypto $rCrypto = null): ?string {
+		$rKey = self::probePanelPk($rConn, $rRunSSH);
+		if (!XcvtTargets::validKey($rKey)) {
+			XcvtTargets::record($rServerID, $rInstallId, null, null, 0, 'install', $rCrypto, null, $rKey === 'ext_old' ? 'ext_old' : 'no_pk');
+			return $rKey === 'ext_old' ? "the node's xcvm_core predates XCVT v2 (no panel_pk)" : "the node's panel key could not be read (panel.sk does not open)";
+		}
+		try {
+			$rCrypto ??= ClusterCryptoFactory::create();
+		} catch (\Throwable $rE) {
+			XcvtTargets::record($rServerID, $rInstallId, null, null, 0, 'install');
+			return "MAIN's cluster crypto is unavailable: " . $rE->getMessage();
+		}
+		XcvtTargets::record($rServerID, $rInstallId, $rKey, null, 0, 'install', $rCrypto);
+		$rWhy = self::pinCore($rConn, $rRunSSH, $rCrypto, $rInstallId);
+		if ($rWhy !== null) {
+			return $rWhy;
+		}
+		$rFp = (string) CorePins::panelFp();
+		if (!XcvtTargets::record($rServerID, $rInstallId, $rKey, $rFp, 2, 'install', $rCrypto) || !XcvtTargets::ready($rServerID, $rCrypto)) {
+			return 'pinned, but MAIN could not record the node\'s key';
+		}
+		return null;
+	}
+
+	/**
+	 * What the node's xcvm_core says its panel key is, as root: 64 hex
+	 * characters, `ext_old` (no `panel_pk()`: an extension before ADR-005), or
+	 * `no_pk` (panel.sk does not open, or no answer).
+	 */
+	public static function probePanelPk($rConn, callable $rRunSSH): string {
+		$rAsk = 'echo !class_exists("XC_VM") || !method_exists("XC_VM", "panel_pk") ? "NONE" : (is_string($k = XC_VM::panel_pk()) ? "PK " . $k : "ERR");';
+		$rOut = self::lastLine((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg($rAsk)));
+		if ($rOut === 'NONE') {
+			return 'ext_old';
+		}
+		return str_starts_with($rOut, 'PK ') && XcvtTargets::validKey(substr($rOut, 3)) ? substr($rOut, 3) : 'no_pk';
+	}
+
+	/**
+	 * What the node's xcvm_core has pinned (`cluster_pinned()`), as root or as
+	 * $rUser: `OK <sha256 of the panel signing key>`, `NOT_PINNED` (no
+	 * core.pin), `NONE` (an extension without it), `ERR <code>` (a pin that
+	 * does not open, which refuses every config), or '' (no answer).
+	 */
+	public static function probePinned($rConn, callable $rRunSSH, ?string $rUser = null): string {
+		$rAsk = 'if (!class_exists("XC_VM") || !method_exists("XC_VM", "cluster_pinned")) { echo "NONE"; } elseif (is_array($p = XC_VM::cluster_pinned())) { echo "OK " . hash("sha256", (string) $p["panel_sign_pub"]); } else { $e = (string) XC_VM::cluster_last_error(); echo $e === "NOT_PINNED" ? $e : "ERR " . $e; }';
+		return self::lastLine((array) call_user_func($rRunSSH, $rConn, ($rUser === null ? 'sudo ' : 'sudo -u ' . escapeshellarg($rUser) . ' ') . PHP_BIN . ' -r ' . escapeshellarg($rAsk)));
+	}
+
+	/**
+	 * The node as FPM sees it, once it runs (ADR-005, Decision 7): read as
+	 * xc_vm after runStartup, before the install is marked done. Its config is
+	 * a load balancer's (is_lb 1) and, for a v2 target, its panel key is the
+	 * one MAIN recorded and its pin is this panel's key; its server_id is this
+	 * node's. It also proves the
+	 * chown: a root-owned panel.sk or core.pin does not open as xc_vm. Null
+	 * when it holds, else what does not.
+	 */
+	public static function readback($rConn, callable $rRunSSH, int $rServerID, ?ClusterCrypto $rCrypto = null): ?string {
+		// config_server() would mint a new install_id over one xc_vm cannot read: asked only when it can,
+		// at the path the extension reads (its ADR-006): keys/install_id when that is there, else the flat
+		// path (an older extension, or the symlink its first ADR-006 release leaves).
+		$rKeyed = var_export(CONFIG_PATH . 'keys/install_id', true);
+		$rReadable = 'file_exists(' . $rKeyed . ') ? is_readable(' . $rKeyed . ') : is_readable(' . var_export(CONFIG_PATH . 'install_id', true) . ')';
+		$rAsk = 'if (!(' . $rReadable . ')) { echo json_encode(["error" => "install_id"]); } else { $s = XC_VM::config_server(); echo json_encode(["server_id" => is_array($s) ? (int) ($s["server_id"] ?? 0) : null, "is_lb" => is_array($s) ? (int) ($s["is_lb"] ?? 0) : null, "pk" => method_exists("XC_VM", "panel_pk") && ' . NodeCorePin::identityProbe(CONFIG_PATH, 'panel_sk') . ' ? XC_VM::panel_pk() : null]); }';
+		$rDoc = json_decode(self::lastLine((array) call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' -r ' . escapeshellarg($rAsk))), true);
+		if (is_array($rDoc) && isset($rDoc['error'])) {
+			return 'xc_vm cannot read its install_id';
+		}
+		if (!is_array($rDoc) || ($rDoc['is_lb'] ?? null) !== 1 || ($rDoc['server_id'] ?? null) !== $rServerID) {
+			return 'its config.enc does not read as this load balancer\'s as xc_vm (server_id ' . var_export(is_array($rDoc) ? ($rDoc['server_id'] ?? null) : null, true) . ', is_lb ' . var_export(is_array($rDoc) ? ($rDoc['is_lb'] ?? null) : null, true) . ')';
+		}
+		if (!XcvtTargets::ready($rServerID, $rCrypto)) {
+			return null; // a v1 config (release N): nothing pinned to check
+		}
+		$rKey = (string) (XcvtTargets::get($rServerID, $rCrypto)['panel_pk'] ?? '');
+		if (!is_string($rDoc['pk'] ?? null) || !hash_equals($rKey, $rDoc['pk'])) {
+			return 'its panel key as xc_vm (' . var_export($rDoc['pk'] ?? null, true) . ') is not the one MAIN recorded (' . $rKey . ')';
+		}
+		$rPinned = self::probePinned($rConn, $rRunSSH, 'xc_vm');
+		$rFp = (string) CorePins::panelFp();
+		if (!hash_equals('OK ' . $rFp, $rPinned)) {
+			return 'its pin as xc_vm (' . ($rPinned === '' ? 'no answer' : $rPinned) . ') is not this panel\'s key (' . $rFp . ')';
+		}
+		return null;
+	}
+
+	/**
+	 * Is this install in API mode? (ClusterSettings::newNodesInApiMode)
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function apiMode(array $rSettings): bool {
+		return ClusterSettings::newNodesInApiMode($rSettings);
+	}
+
+	/**
+	 * Does this node install (or re-enrol) in API mode? New nodes do when
+	 * `lb_new_node_mode` is api (apiMode()). A node MAIN already keeps
+	 * credential-free — in cluster mode 2, or with its grant revoked
+	 * (DbCredentials::credentialFree) — does too, whatever the setting: a
+	 * reinstall over SSH must not hand it MAIN's credentials and grant back,
+	 * nor drop it to mode 1. Ask before the enrolment, which replaces the
+	 * node's row.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function installsInApiMode(array $rSettings, int $rServerID): bool {
+		return self::apiMode($rSettings) || (!empty($rSettings['cluster_api_enabled']) && DbCredentials::credentialFree($rServerID));
+	}
+
+	/**
+	 * The server parameters config_pack() builds the node's config.enc from:
+	 * MAIN's address for the node to reach the DB at, and the node's own
+	 * server_id and is_lb. There is no `port`: ConfigReader holds only the
+	 * `server` section (server_id, is_lb), so the DB port was always 0 there,
+	 * which config_pack() refuses. Without one, config_pack() packs its
+	 * documented default, 3306 (the extension's ADR-001) — the port the
+	 * installer runs MAIN's MariaDB on.
+	 *
+	 * @param array<int, array<string, mixed>> $rServers
+	 * @return array<string, mixed>
+	 */
+	public static function configPackParams(array $rServers, int $rServerID, bool $rServeOnly = false): array {
+		return [
+			'hostname'  => $rServers[SERVER_ID]['server_ip'],
+			'database'  => 'xc_vm',
+			'server_id' => $rServerID,
+			'is_lb'     => 1,
+		] + ($rServeOnly ? ['serve_only' => 1] : []);
+	}
+
+	/**
+	 * Give the node the MAIN's OPENSSL_EXTRA, which keys the stream tokens MAIN
+	 * mints for the redirects the node serves.
+	 *
+	 * The MAIN's config/openssl_extra ($rLocalFile) is shipped when it holds a
+	 * value; without one the MAIN runs on the built-in default and so does the
+	 * node. Whatever a previous MAIN left on a reused host is removed first.
+	 * Runs before config/ is handed to xc_vm, which makes the file readable by FPM.
+	 *
+	 * @return bool False only when the upload failed.
+	 */
+	public static function provisionOpensslExtra($rConn, callable $rRunSSH, callable $rSendFileSSH, string $rLocalFile): bool {
+		call_user_func($rRunSSH, $rConn, 'sudo rm -f ' . CONFIG_PATH . 'openssl_extra ' . CONFIG_PATH . 'openssl_extra.prev');
+		if (!is_file($rLocalFile) || trim((string) @file_get_contents($rLocalFile)) === '') {
+			return true;
+		}
+		if (!call_user_func($rSendFileSSH, $rConn, $rLocalFile, CONFIG_PATH . 'openssl_extra', false)) {
+			return false;
+		}
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 600 ' . CONFIG_PATH . 'openssl_extra');
+
+		return true;
+	}
+
+	public static function configureRuntime($rConn, callable $rSendFileSSH, callable $rRunSSH, array $rServers, int $rServerID, bool $rServeOnly = false): int {
+		// real-IP trust CIDRs: shipped for every LB — the Go front reads these too
+		// (-front-realip), and a serve-only node appends its loopback trust to
+		// realip_xc_vm.conf below, so the base files must be present.
+		call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/nginx/conf/realip_cdn.conf', MAIN_HOME . 'bin/nginx/conf/realip_cdn.conf', false);
+		call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/nginx/conf/realip_cloudflare.conf', MAIN_HOME . 'bin/nginx/conf/realip_cloudflare.conf', false);
+		call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/nginx/conf/realip_xc_vm.conf', MAIN_HOME . 'bin/nginx/conf/realip_xc_vm.conf', false);
+		// HTTP-nginx-only config (the server tuning + the limit_req zones): skipped for
+		// a serve-only node, where the Go front is the sole HTTP listener (run.sh
+		// launches it; `service` starts no http-nginx) and applies its own rate limit.
+		// A mode-1 LB runs these unchanged.
+		if (!$rServeOnly) {
+			call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/nginx/conf/custom.conf', MAIN_HOME . 'bin/nginx/conf/custom.conf', false);
+			call_user_func($rRunSSH, $rConn, self::sudoWrite('', '/home/xc_vm/bin/nginx/conf/limit.conf'));
+			call_user_func($rRunSSH, $rConn, self::sudoWrite('', '/home/xc_vm/bin/nginx/conf/limit_queue.conf'));
+		}
+		$rIP = '127.0.0.1:' . $rServers[$rServerID]['http_broadcast_port'];
+		call_user_func($rRunSSH, $rConn, self::sudoWrite('on_play http://' . $rIP . '/stream/rtmp; on_publish http://' . $rIP . '/stream/rtmp; on_play_done http://' . $rIP . '/stream/rtmp;', '/home/xc_vm/bin/nginx_rtmp/conf/live.conf'));
+		if ($rServeOnly) {
+			// Serve-only single-binary LB: the Go front (xc_fanout -front) is the whole
+			// HTTP surface and binds the node's public HTTPS port(s) directly — there is
+			// no nginx loopback backend and no :443->:8080 demote (the rethink dropped the
+			// nginx fallback; http-nginx + php-fpm are not provisioned here, and their now-
+			// inert configs are removed by the install AFTER the serve_only marker is
+			// committed — see ServerInstallCommand — so a failed convert still boots the
+			// normal nginx stack). Here we only keep the loopback real-IP trust (the front
+			// sets X-Real-IP / X-Forwarded-For on anything it still proxies to the agent)
+			// and record the front's listen address for run.sh — the node's
+			// https_broadcast_port, not a hardcoded :443.
+			call_user_func($rRunSSH, $rConn, self::sudoWrite("\nset_real_ip_from 127.0.0.1;\nset_real_ip_from ::1;\n", MAIN_HOME . 'bin/nginx/conf/realip_xc_vm.conf', true));
+			// Written AS xc_vm (never root): config/cluster is xc_vm-owned, so a root
+			// write/chown through it would follow a symlink an unprivileged xc_vm could
+			// plant there and escalate. xc_vm writing its own file crosses no boundary.
+			call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm mkdir -p ' . CONFIG_PATH . 'cluster');
+			call_user_func($rRunSSH, $rConn, 'echo ' . escapeshellarg(':' . intval($rServers[$rServerID]['https_broadcast_port'])) . ' | sudo -u xc_vm tee ' . CONFIG_PATH . 'cluster/front_addr > /dev/null');
+			// Reset ports/https.conf to the node's PUBLIC https port(s): the Go front binds
+			// what this file says, so a node that still carried a stale `listen 127.0.0.1:8080;`
+			// from the retired demote (a pre-rethink release) would otherwise bind loopback
+			// until the port-reconcile cron corrects it. Same `listen <port> ssl;` list the cron
+			// writes (broadcast + https_ports_add); runStartup chowns the tree to xc_vm after.
+			$rHttpsPorts = [];
+			foreach (array_merge([intval($rServers[$rServerID]['https_broadcast_port'])], explode(',', (string) ($rServers[$rServerID]['https_ports_add'] ?? ''))) as $rHttpsPort) {
+				if (is_numeric($rHttpsPort) && $rHttpsPort > 0 && $rHttpsPort <= 65535) {
+					$rHttpsPorts[] = 'listen ' . intval($rHttpsPort) . ' ssl;';
+				}
+			}
+			call_user_func($rRunSSH, $rConn, self::sudoWrite(implode(' ', $rHttpsPorts), MAIN_HOME . 'bin/nginx/conf/ports/https.conf'));
+		}
+		$rServices = (intval(call_user_func($rRunSSH, $rConn, 'sudo cat /proc/cpuinfo | grep "^processor" | wc -l')['output']) ?: 4);
+		// The php-fpm HTTP pools: provisioned for every LB EXCEPT a serve-only one,
+		// whose HTTP surface is the Go front — `service` starts no php-fpm there, so
+		// its pool configs have nothing to run. ($rServices is still returned for
+		// servers.total_services; the PHP CLI and nginx_rtmp are unaffected.)
+		if (!$rServeOnly) {
+			call_user_func($rRunSSH, $rConn, 'sudo rm ' . MAIN_HOME . 'bin/php/etc/*.conf');
+			// The pool configs, daemons.sh and balance.conf, each through a
+			// temporary file under an unpredictable name.
+			foreach (PhpFpmPools::files($rServices, (string) file_get_contents(MAIN_HOME . 'bin/php/etc/template'), MAIN_HOME) as $rPath => $rBody) {
+				$rTmpPath = TMP_PATH . bin2hex(random_bytes(16)) . '_' . basename($rPath);
+				file_put_contents($rTmpPath, $rBody);
+				call_user_func($rSendFileSSH, $rConn, $rTmpPath, $rPath, false);
+			}
+		}
+		call_user_func($rRunSSH, $rConn, 'sudo chmod +x ' . MAIN_HOME . 'bin/daemons.sh');
+		// Only its owner writes to bin/. An update closes it to others again
+		// (0750): what the flows check in it, they check as root.
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 0755 /home/xc_vm/bin');
+
+		return $rServices;
+	}
+
+	/** @param bool $rCommands false: ownership only, for an API-mode node, whose commands wait for its replica (startOnReplica()). */
+	public static function runStartup($rConn, callable $rRunSSH, bool $rCommands = true): void {
+		// Fix ownership BEFORE any PHP runs, so the extension never creates or reads
+		// install_id / config.enc as root. A root-owned install_id is unreadable by
+		// FPM (xc_vm) and makes config.enc decryption fall back to a default config.
+		call_user_func($rRunSSH, $rConn, 'sudo chown xc_vm:xc_vm -R /home/xc_vm >/dev/null 2>&1');
+		// Older release archives also lack this directory; prepare it on the
+		// node even when API-mode startup waits for its replica.
+		call_user_func($rRunSSH, $rConn, 'sudo install -d -o xc_vm -g xc_vm -m 0755 /home/xc_vm/bin/ffmpeg_bin');
+		if (!$rCommands) {
+			return;
+		}
+		// No `status 1` here: it runs as root only, and the service restart before
+		// this ran it (`startup`, as root).
+		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php startup');
+		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:servers');
+		// The node's ffmpeg builds, which no release archive carries: before its
+		// first stream (cron:root_signals keeps them current daily).
+		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php ffmpeg');
+	}
+
+	/**
+	 * An API-mode node's startup, once enrolled: it holds no credentials, so
+	 * nothing boots on it until its agent has applied MAIN's settings and
+	 * servers (ReplicaBoot::now()), and the service started before that
+	 * wrote no crontab. Then XC_VM is restarted on it (`startup` as root,
+	 * the daemons from the replica) and runStartup()'s commands run.
+	 *
+	 * @param (callable(): void)|null $rPause Between two looks at the node (tests).
+	 * @return string The install log's line.
+	 */
+	public static function startOnReplica($rConn, callable $rRunSSH, ?callable $rPause = null): string {
+		$rPause ??= static function (): void {
+			sleep(3);
+		};
+		$rReady = 'sudo -u xc_vm ' . PHP_BIN . ' -r ' . escapeshellarg('require "' . MAIN_HOME . 'bootstrap.php"; XC_Bootstrap::boot(XcVm\Core\Enum\BootContext::Minimal); echo XcVm\Core\Cluster\ReplicaBoot::now() ? "READY" : "WAIT";') . ' 2>/dev/null';
+		for ($rLooks = 0; $rLooks < 60; $rLooks++) {
+			if (str_ends_with(trim((string) call_user_func($rRunSSH, $rConn, $rReady)['output']), 'READY')) {
+				call_user_func($rRunSSH, $rConn, 'sudo systemctl restart xc_vm');
+				self::runStartup($rConn, $rRunSSH);
+				return 'The node booted from its replica: XC_VM restarted on it';
+			}
+			$rPause();
+		}
+		return "The node's replica is not built yet: once its agent has applied it, restart XC_VM on the node (systemctl restart xc_vm) to start its crons";
+	}
+
+	/**
+	 * Resolve a repo's latest release tag from the github.com `/releases/latest`
+	 * redirect (302 → …/releases/tag/<TAG>) using cURL on MAIN. Unlike the REST
+	 * API this is not rate-limited, so it is a reliable fallback during installs.
+	 *
+	 * @return string The tag, or '' when it cannot be resolved.
+	 */
+	private static function latestReleaseTagViaRedirect(string $rOwner, string $rRepo): string {
+		$rCurl = curl_init('https://github.com/' . $rOwner . '/' . $rRepo . '/releases/latest');
+		curl_setopt_array($rCurl, [
+			CURLOPT_NOBODY         => true,
+			CURLOPT_FOLLOWLOCATION => false,
+			CURLOPT_RETURNTRANSFER => true,
+			CURLOPT_CONNECTTIMEOUT => 10,
+			CURLOPT_TIMEOUT        => 20,
+			CURLOPT_USERAGENT      => 'XC_VM',
+		]);
+		$rHeaders = (string) curl_exec($rCurl);
+		$rLocation = (string) curl_getinfo($rCurl, CURLINFO_REDIRECT_URL);
+		curl_close($rCurl);
+
+		if ($rLocation === '' && preg_match('~^location:\s*(\S+)~im', $rHeaders, $rM)) {
+			$rLocation = trim($rM[1]);
+		}
+		if ($rLocation !== '' && preg_match('~/releases/tag/([^/\s]+)~', $rLocation, $rM)) {
+			return trim($rM[1]);
+		}
+		return '';
+	}
+
+	private static function installDistributionBinaries($rConn, callable $rRunSSH, string $rDistID, string $rVersion): bool {
+		$rBinaryName = ReleaseAsset::bundleFor($rDistID, $rVersion);
+		if ($rBinaryName === null) {
+			echo "Unsupported distribution for binaries: {$rDistID} {$rVersion}\n";
+			return false;
+		}
+
+		// Resolve the release tag on MAIN, honouring the per-repository BIN channel,
+		// so a BIN channel of `beta` provisions LB nodes with the newest pre-release
+		// binaries (GitHub's `/releases/latest` only ever returns stable). Fall back
+		// to the node-side `releases/latest` lookup if the API yields nothing.
+		$rTag = '';
+		try {
+			$rBinRepo = new GitHubReleases(GIT_OWNER, GIT_REPO_BIN, UpdateChannels::bin());
+			$rBinRepo->setTimeout(20);
+			$rBinReleases = $rBinRepo->getReleases();
+			if (!empty($rBinReleases[0])) {
+				$rTag = trim($rBinReleases[0]);
+			}
+		} catch (\Throwable) {
+			$rTag = '';
+		}
+		// Non-API fallback resolved on MAIN: the github.com `/releases/latest`
+		// redirect is not subject to the 60/hour unauthenticated API rate limit
+		// that can throttle the channel-aware lookup above during a busy install.
+		if ($rTag === '') {
+			$rTag = self::latestReleaseTagViaRedirect(GIT_OWNER, GIT_REPO_BIN);
+		}
+		// Last resort: resolve on the node itself (needs curl, in the package list).
+		if ($rTag === '') {
+			$rTagCmd = 'curl -s https://api.github.com/repos/' . GIT_OWNER . '/' . GIT_REPO_BIN . '/releases/latest';
+			$rTag = trim(call_user_func($rRunSSH, $rConn, $rTagCmd . ' | grep ' . "'\"tag_name\"'" . ' | sed -E ' . "'s/.*\"([^\"]+)\".*/\\1/'")['output']);
+		}
+		if (empty($rTag)) {
+			echo "Failed to get latest binaries release tag\n";
+			return false;
+		}
+
+		// Root copies these into bin/: they are fetched and unpacked where no other user can reach them.
+		$rDir = self::privateDir($rConn, $rRunSSH);
+		if ($rDir === null) {
+			echo "Could not create a private directory on the node\n";
+			return false;
+		}
+		$rTar = $rDir . '/xc_vm_bin.tar.gz';
+		$rUnpacked = $rDir . '/xc_vm_bin';
+
+		$rURL = 'https://github.com/' . GIT_OWNER . '/' . GIT_REPO_BIN . '/releases/download/' . $rTag . '/' . $rBinaryName;
+		echo "Downloading {$rBinaryName} from release {$rTag}\n";
+		call_user_func($rRunSSH, $rConn, 'wget -q --timeout=30 -O ' . $rTar . ' "' . $rURL . '"');
+
+		$rCheck = trim(call_user_func($rRunSSH, $rConn, 'test -s ' . $rTar . ' && echo OK')['output']);
+		if ($rCheck !== 'OK') {
+			echo "Failed to download distribution binaries\n";
+			call_user_func($rRunSSH, $rConn, 'rm -rf ' . $rDir);
+			return false;
+		}
+
+		$rHashURL = 'https://github.com/' . GIT_OWNER . '/' . GIT_REPO_BIN . '/releases/download/' . $rTag . '/hashes.md5';
+		$rHashContent = trim(call_user_func($rRunSSH, $rConn, 'curl -sL --max-time 15 "' . $rHashURL . '"')['output']);
+		$rExpectedHash = null;
+		if (!empty($rHashContent)) {
+			foreach (explode("\n", $rHashContent) as $rLine) {
+				$rLine = trim($rLine);
+				if (empty($rLine)) {
+					continue;
+				}
+				$rParts = preg_split('/\s+/', $rLine, 2);
+				if (count($rParts) !== 2) {
+					continue;
+				}
+
+				$rAssetName = ltrim(trim($rParts[1]), '*');
+				if (strpos($rAssetName, './') === 0) {
+					$rAssetName = substr($rAssetName, 2);
+				}
+
+				if ($rAssetName === $rBinaryName) {
+					$rExpectedHash = $rParts[0];
+					break;
+				}
+			}
+		}
+
+		if ($rExpectedHash !== null) {
+			$rActualHash = trim(explode(' ', call_user_func($rRunSSH, $rConn, 'md5sum ' . $rTar)['output'])[0]);
+			if ($rActualHash !== $rExpectedHash) {
+				echo "MD5 verification failed for {$rBinaryName}: expected {$rExpectedHash}, got {$rActualHash}\n";
+				call_user_func($rRunSSH, $rConn, 'rm -rf ' . $rDir);
+				return false;
+			}
+			echo "MD5 verification passed for {$rBinaryName}\n";
+		} else {
+			echo "No MD5 hash for {$rBinaryName} in the hashes.md5 of release {$rTag} (or the node could not fetch it): the bundle is not installed unverified\n";
+			call_user_func($rRunSSH, $rConn, 'rm -rf ' . $rDir);
+			return false;
+		}
+
+		echo "Extracting distribution binaries\n";
+		call_user_func($rRunSSH, $rConn, 'mkdir -p ' . $rUnpacked);
+		call_user_func($rRunSSH, $rConn, 'sudo tar -xzf ' . $rTar . ' -C ' . $rUnpacked);
+
+		$rSourceDir = trim(call_user_func($rRunSSH, $rConn, 'sudo find ' . $rUnpacked . ' -maxdepth 3 -type d -name php -print -quit 2>/dev/null | xargs dirname 2>/dev/null')['output']);
+		if (empty($rSourceDir) || $rSourceDir === '.') {
+			echo "Could not find binary structure in archive\n";
+			call_user_func($rRunSSH, $rConn, 'sudo rm -rf ' . $rDir);
+			return false;
+		}
+
+		echo "Installing binaries from {$rSourceDir}\n";
+		call_user_func($rRunSSH, $rConn, 'sudo cp -rf ' . $rSourceDir . '/* ' . BIN_PATH);
+
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 0551 ' . MAIN_HOME . 'bin/php/bin/php');
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 0551 ' . MAIN_HOME . 'bin/php/sbin/php-fpm');
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 0550 ' . MAIN_HOME . 'bin/nginx/sbin/nginx');
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 0750 ' . MAIN_HOME . 'bin/nginx_rtmp/sbin/nginx_rtmp');
+		// As update_binaries.sh leaves them on an update (cron:servers runs bin/network).
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 0750 ' . MAIN_HOME . 'bin/network ' . MAIN_HOME . 'bin/network.py 2>/dev/null');
+
+		$rVersionFile = BIN_PATH . 'bin_version.json';
+		$rVersionData = [
+			'owner' => GIT_OWNER,
+			'repository' => GIT_REPO_BIN,
+			'release' => $rTag,
+			'asset' => $rBinaryName,
+			'distribution' => $rDistID,
+			'distribution_version' => $rVersion,
+			'updated_at_utc' => gmdate('Y-m-d\TH:i:s\Z'),
+		];
+		$rVersionJson = json_encode($rVersionData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+		if ($rVersionJson !== false) {
+			$rEncodedVersion = base64_encode($rVersionJson);
+			call_user_func($rRunSSH, $rConn, 'echo ' . escapeshellarg($rEncodedVersion) . ' | base64 -d | sudo tee ' . escapeshellarg($rVersionFile) . ' > /dev/null');
+			call_user_func($rRunSSH, $rConn, 'sudo chown xc_vm:xc_vm ' . escapeshellarg($rVersionFile));
+		} else {
+			echo "Warning: Failed to encode binaries version metadata\n";
+		}
+
+		call_user_func($rRunSSH, $rConn, 'sudo rm -rf ' . $rDir);
+		echo "Distribution-specific binaries installed successfully\n";
+		return true;
+	}
+
+	/** Where the agent and its state live on the node. */
+	public const AGENT_BIN = MAIN_HOME . 'bin/xc_agent/xc_agent';
+	public const AGENT_STATE = CONFIG_PATH . AgentPaths::STATE;
+	public const FANOUT_BIN = MAIN_HOME . 'bin/xc_fanout/xc_fanout';
+
+	/**
+	 * Enrol the new LB in the cluster API (MAIN ↔ LB plan, section 6), over the
+	 * install's verified SSH session. Runs after runStartup(), when /home/xc_vm
+	 * belongs to xc_vm.
+	 *
+	 * With the API disabled, no extension, or no agent binary on the node (it
+	 * could not take one from the agent's GitHub release), the node stays
+	 * legacy (mode 0) and the install goes on: it can be enrolled later.
+	 * Otherwise:
+	 *
+	 * 1. the node installs the SHA-256-verified agent from its GitHub release
+	 *    itself (`console.php fanout_binary agent`), as it keeps it current;
+	 * 2. `xc_agent keygen` on the node — its private keys never leave it;
+	 * 3. `xc_agent probe` — the node checks MAIN's signed health with the panel
+	 *    key it got over SSH, before any token exists;
+	 * 4. MAIN mints epoch 1 (EnrolmentService::issueFirst);
+	 * 5. `xc_agent install` opens and checks the token, then the agent starts
+	 *    and completes enrolment itself (`enrol_complete`).
+	 *
+	 * Only a refusal by an available extension, or a node that cannot reach
+	 * MAIN's API, stops the install (status 4). So does a mode 2 enrolment
+	 * while the Redis connection handler is on, before anything runs on the
+	 * node.
+	 *
+	 * @param bool $rMarkFailed Set status 4 on failure (a fresh install); false for `server:enrol` on a live node.
+	 * @param bool $rServeOnly The node is installed serve-only: it takes the fanout daemon here too, and the install stops without it.
+	 */
+	public static function provisionCluster($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?ClusterCrypto $rCrypto = null, bool $rMarkFailed = true, ?bool $rApiMode = null, bool $rServeOnly = false): bool {
+		$rSettings = SettingsManager::getAll();
+		if (empty($rSettings['cluster_api_enabled'])) {
+			return true;
+		}
+		// A node MAIN keeps credential-free re-enrols in mode 2 whatever
+		// lb_new_node_mode says (installsInApiMode, asked before the row goes).
+		if ($rApiMode ?? self::installsInApiMode($rSettings, $rServerID)) {
+			$rSettings['lb_new_node_mode'] = 'api';
+		}
+		$rFail = static function (string $rWhy) use ($db, $rServerID, $rMarkFailed): bool {
+			if ($rMarkFailed) {
+				$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			}
+			echo $rWhy . "\n";
+			return false;
+		};
+		// An API-mode node holds no DB grant and no credentials: without its
+		// enrolment it could reach nothing, so it never "stays legacy".
+		$rApiMode = self::apiMode($rSettings);
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
+			$rCrypto = ClusterCli::crypto($rApiMode ? "Cluster API unavailable (%s)\n" : "Cluster API unavailable (%s); the node stays legacy\n");
+			if ($rCrypto === null) {
+				return $rApiMode ? $rFail('An API-mode node cannot run without the cluster API. Exiting') : true;
+			}
+		}
+		echo "Enrolling the node in the cluster API\n";
+
+		// A re-enrolment replaces the node's identity: stop a running agent (the
+		// supervisor first, so it cannot respawn it) before its state changes.
+		call_user_func($rRunSSH, $rConn, 'sudo pkill -u xc_vm -f ' . escapeshellarg(dirname(self::AGENT_BIN) . '/run.sh') . '; sudo pkill -u xc_vm -x xc_agent; true');
+		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)) . ' && sudo rm -f ' . escapeshellarg(dirname(self::AGENT_BIN) . '/stopped') . ' && sudo chown -R xc_vm:xc_vm ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)) . ' && sudo chmod 0700 ' . escapeshellarg(dirname(self::AGENT_STATE)));
+		// The node takes the agent from its GitHub release itself, as it keeps it current.
+		// An API-mode node cannot reach MAIN's database, and has no replica yet:
+		// it boots from the empty one and is handed MAIN's channel and canary.
+		// A serve-only node takes the daemon now as well: it loses PHP at the end of
+		// the install, and with it cron:root_signals, which fetches it on every other node.
+		$rFetch = 'fanout_binary' . ($rServeOnly ? '' : ' agent') . ($rApiMode ? ' ' . ReplicaBoot::OPTION . FanoutBinaryCommand::mainOptions($rSettings) : '');
+		$rGot = trim((string) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php ' . $rFetch . ' 2>&1; sudo test -x ' . escapeshellarg(self::AGENT_BIN) . ' && echo AGENT_OK')['output']);
+		if (!str_ends_with($rGot, 'AGENT_OK')) {
+			$rWhy = trim((string) strrchr("\n" . $rGot, "\n")) ?: 'it could not install one';
+			if ($rApiMode) {
+				return $rFail('No xc_agent on the node (' . $rWhy . '): an API-mode node cannot run without it. Exiting');
+			}
+			echo 'No xc_agent on the node (' . $rWhy . "); the node stays legacy and can be enrolled later\n";
+			return true;
+		}
+		if ($rServeOnly && self::lastLine((array) call_user_func($rRunSSH, $rConn, 'sudo test -x ' . escapeshellarg(self::FANOUT_BIN) . ' && echo FANOUT_OK')) !== 'FANOUT_OK') {
+			return $rFail('No xc_fanout on the node: a serve-only node serves nothing without it. Exiting');
+		}
+		$rAgent = 'sudo -u xc_vm ' . escapeshellarg(self::AGENT_BIN);
+
+		$rUuid = self::uuid4();
+		$rOut = (string) call_user_func($rRunSSH, $rConn, $rAgent . ' keygen -state ' . escapeshellarg(self::AGENT_STATE) . ' -uuid ' . $rUuid)['output'];
+		$rKeys = json_decode(trim($rOut), true);
+		$rHex = static fn($rV) => is_string($rV) && preg_match('/^[0-9a-f]{64}$/', $rV) ? (string) hex2bin($rV) : null;
+		$rSign = $rHex($rKeys['sign_pub'] ?? null);
+		$rBox = $rHex($rKeys['box_pub'] ?? null);
+		$rEph = $rHex($rKeys['eph_pub'] ?? null);
+		if (($rKeys['node_uuid'] ?? null) !== $rUuid || $rSign === null || $rBox === null || $rEph === null) {
+			return $rFail('xc_agent keygen failed on the node! Exiting');
+		}
+		$rSas = EnrolmentService::sas($rUuid, $rSign, $rBox);
+		if (($rKeys['sas'] ?? null) !== $rSas) {
+			return $rFail('The node\'s keys do not match their SAS! Exiting');
+		}
+
+		$rMain = $rServers[SERVER_ID] ?? [];
+		$rPolicy = ClusterPolicy::current($rSettings, $rMain);
+		$rPanelPub = (string) ($rCrypto->info()['panel_sign_pub'] ?? '');
+		$rProbe = $rAgent . ' probe -panel-pub ' . bin2hex($rPanelPub);
+		foreach ($rPolicy['main_urls'] as $rUrl) {
+			$rProbe .= ' -url ' . escapeshellarg($rUrl);
+		}
+		$rProbed = call_user_func($rRunSSH, $rConn, $rProbe . ' 2>&1');
+		if (!str_starts_with(trim((string) $rProbed['output']), 'OK ')) {
+			return $rFail("The node cannot reach MAIN's cluster API (" . implode(', ', $rPolicy['main_urls']) . '): ' . trim((string) $rProbed['output']) . "\nOpen the cluster API port from the LB to MAIN, then reinstall. Exiting");
+		}
+
+		try {
+			$rFirst = EnrolmentService::issueFirst($rCrypto, $rServerID, $rUuid, $rSign, $rBox, $rEph, $rSettings, $rMain);
+		} catch (ClusterRefusedException $rE) {
+			return $rFail(($rE->reason() === 'LICENCE' ? 'CLUSTER_LICENCE_REQUIRED' : 'Cluster token refused: ' . $rE->reason()) . '! Exiting');
+		}
+		$rInstall = (string) json_encode([
+			'server_id' => $rServerID,
+			'panel_sign_pub' => base64_encode($rPanelPub),
+			'panel_box_pub' => base64_encode((string) ($rCrypto->info()['panel_box_pub'] ?? '')),
+			'main_urls' => $rPolicy['main_urls'],
+			'policy_ver' => $rPolicy['policy_ver'],
+			'epoch' => 1,
+			'token_sealed' => base64_encode($rFirst['token_sealed']),
+		] + LeaseService::wire($rFirst['lease']), JSON_UNESCAPED_SLASHES);
+		$rTmp = TMP_PATH . 'agent_install_' . $rServerID . '.json';
+		$rRemote = '/tmp/xc_agent_install_' . $rServerID . '.json';
+		file_put_contents($rTmp, $rInstall);
+		$rSent = call_user_func($rSendFileSSH, $rConn, $rTmp, $rRemote, false);
+		@unlink($rTmp);
+		if (!$rSent) {
+			return $rFail('Failed to upload the first cluster token! Exiting');
+		}
+		$rDone = call_user_func($rRunSSH, $rConn, 'sudo chown xc_vm:xc_vm ' . $rRemote . ' && ' . $rAgent . ' install -state ' . escapeshellarg(self::AGENT_STATE) . ' < ' . $rRemote . ' 2>&1; sudo rm -f ' . $rRemote);
+		if (trim((string) $rDone['output']) !== 'OK') {
+			return $rFail('xc_agent install failed on the node: ' . trim((string) $rDone['output']) . ' Exiting');
+		}
+		// Root's own pin of the panel key, for root commands (cluster:root): written
+		// over this verified SSH session, root-owned, so nothing the panel's user
+		// can write becomes root's trust anchor. A new pin starts root's seq afresh.
+		$rPinDir = RootPin::DIR;
+		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . escapeshellarg($rPinDir) . ' && sudo chown root:root /etc/xc_vm ' . escapeshellarg($rPinDir) . ' && sudo chmod 0755 /etc/xc_vm ' . escapeshellarg($rPinDir)
+			. ' && echo ' . escapeshellarg(bin2hex($rPanelPub)) . ' | sudo tee ' . escapeshellarg($rPinDir . 'main_sign.pub') . ' >/dev/null'
+			. ' && echo ' . escapeshellarg($rUuid) . ' | sudo tee ' . escapeshellarg($rPinDir . 'node') . ' >/dev/null'
+			. ' && sudo chmod 0644 ' . escapeshellarg($rPinDir . 'main_sign.pub') . ' ' . escapeshellarg($rPinDir . 'node')
+			. ' && sudo rm -f ' . escapeshellarg($rPinDir . 'root.seq')
+			. ' && sudo -u xc_vm mkdir -p ' . escapeshellarg(dirname(self::AGENT_STATE) . '/root-inbox') . ' && sudo chmod 0700 ' . escapeshellarg(dirname(self::AGENT_STATE) . '/root-inbox'));
+		// The extension's own pin of the panel key (core.pin), which its compiled
+		// lease verdict needs, was written before the config (provisionConfig,
+		// ADR-005): recorded for the new row. A node it could not pin is pinned
+		// over the cluster API once it takes root commands (CorePins).
+		self::recordCorePin($rServerID);
+		// Started, and seen running: a release without run.sh, or an agent that
+		// exits at once, would otherwise leave a node that never completes.
+		$rRunSh = escapeshellarg(MAIN_HOME . 'bin/xc_agent/run.sh');
+		$rStart = call_user_func($rRunSSH, $rConn, 'if ! sudo test -f ' . $rRunSh . '; then echo NO_RUNSH; else sudo -u xc_vm bash ' . $rRunSh . ' </dev/null >/dev/null 2>&1 & sleep 3; pgrep -u xc_vm -x xc_agent >/dev/null && echo STARTED; fi');
+		$rStarted = trim((string) ($rStart['output'] ?? ''));
+		if ($rStarted === 'NO_RUNSH') {
+			return $rFail('The node has no bin/xc_agent/run.sh: its release predates the cluster agent. Install a newer release, then retry. Exiting');
+		}
+		if ($rStarted !== 'STARTED') {
+			return $rFail('xc_agent did not start on the node (see ' . MAIN_HOME . 'bin/xc_agent/xc_agent.log there). Exiting');
+		}
+		echo 'Node enrolled (uuid ' . $rUuid . ', SAS ' . $rSas . "); it finishes with enrol_complete within 30 minutes\n";
+		return true;
+	}
+
+	/** The generation of a server's node row, 0 when it has none: asked before an install enrols it (flowsOn()). */
+	public static function nodeGen(int $rServerID): int {
+		return (int) (NodeRegistry::byServer($rServerID)['gen'] ?? 0);
+	}
+
+	/**
+	 * Switch a freshly installed node's flows on, as the Cluster Nodes page
+	 * does one at a time: every flow once the node is active, the data plane
+	 * only for an agent that says `relay` at its hello (the page's own
+	 * condition, ClusterAdmin::relayAdvertised). Only a fresh install does
+	 * this. Its node was stopped first, so it has no viewer for CONNECTIONS
+	 * to lose and no relay for DATAPLANE to refuse; a live node that enrols
+	 * (server:enrol, cluster:reenrol, a code) may have both, and keeps the
+	 * operator's order. Never fatal: a node that is not active in time keeps
+	 * its flows off, for the page.
+	 *
+	 * @param int $rGenBefore The node's generation before this install enrolled it (nodeGen(); 0 with no row).
+	 *                        A row the install did not replace is an earlier enrolment's, whose agent
+	 *                        the install has stopped: it is left alone.
+	 * @param (callable(): void)|null $rPause Between two looks at the node's row (tests).
+	 * @return string The install log's line; '' when nothing was to switch (no row of this install's, or all on already).
+	 */
+	public static function flowsOn(int $rServerID, int $rGenBefore, ?callable $rPause = null): string {
+		$rPause ??= static function (): void {
+			sleep(2);
+		};
+		// A minute for enrol_complete, then a few looks for the hello that
+		// says what the agent does (an older agent says nothing).
+		$rActive = 0;
+		for ($rLooks = 0; $rLooks < 30; $rLooks++) {
+			$rNode = NodeRegistry::byServer($rServerID);
+			if ($rNode === null || (int) $rNode['gen'] <= $rGenBefore || ((int) $rNode['flows'] & ClusterAdmin::MODE2_FLOWS) === ClusterAdmin::MODE2_FLOWS) {
+				return '';
+			}
+			if ($rNode['state'] === 'active' && ($rNode['features'] !== null || ++$rActive > 5)) {
+				break;
+			}
+			$rPause();
+		}
+		if ($rNode['state'] !== 'active') {
+			return "The node's cluster flows stay off: it has not completed its enrolment yet. Switch them on from Cluster Nodes.";
+		}
+		$rRelay = ClusterAdmin::relayAdvertised($rNode);
+		$rWas = (int) $rNode['flows'];
+		$rFlows = $rWas | ($rRelay ? ClusterAdmin::MODE2_FLOWS : ClusterAdmin::MODE2_FLOWS & ~NodeRegistry::FLOW_DATAPLANE);
+		if ($rFlows === $rWas) {
+			return '';
+		}
+		// Only the row that was read: not a re-enrolment's, nor one revoked meanwhile.
+		if (!NodeRegistry::update($rServerID, ['flows' => $rFlows], ['state' => 'active', 'gen' => (int) $rNode['gen']])) {
+			return "The node's cluster flows stay off: its row changed meanwhile. Switch them on from Cluster Nodes.";
+		}
+		ClusterAudit::log('node.flows', $rServerID, ['flows' => $rFlows, 'was' => $rWas], 'install');
+		return $rRelay
+			? "The node's cluster flows are on (all eight)"
+			: "The node's cluster flows are on, but for the data plane: its agent does not say `relay`. Switch it on from Cluster Nodes once it does.";
+	}
+
+	/**
+	 * Pin MAIN's panel key in the node's xcvm_core over an SSH session (the
+	 * extension's ADR-005, Decision 7, step 4): MAIN's root checked
+	 * (XcvtTargets::ensureRoot, the one owner of `cluster_init` here), the v2
+	 * pin packed for the node's install_id (`cluster_pack(…, 2)`: signed with
+	 * the root, an hour, no licence) and pinned there at once, as root, with
+	 * replace. The session's host key was verified, which is what makes this
+	 * the authorised (re-)pin path. The node must answer with this panel's key.
+	 * Returns null when pinned, else why not.
+	 */
+	public static function pinCore($rConn, callable $rRunSSH, ClusterCrypto $rCrypto, string $rInstallId): ?string {
+		if (!$rCrypto->supportsV2()) {
+			return "MAIN's xcvm_core predates XCVT v2 (no panel_pk): update it";
+		}
+		try {
+			$rRoot = XcvtTargets::ensureRoot($rCrypto, $rNotice);
+			if ($rNotice !== null) {
+				echo $rNotice . "\n";
+			}
+		} catch (\Throwable $rE) {
+			$rRoot = "MAIN's cluster root could not be checked: " . $rE->getMessage();
+		}
+		if ($rRoot !== null) {
+			return $rRoot;
+		}
+		try {
+			$rPub = (string) ($rCrypto->info()['panel_sign_pub'] ?? '');
+			$rBlob = $rCrypto->pack($rInstallId, 2);
+		} catch (ClusterRefusedException $rE) {
+			return 'cluster_pack refused: ' . $rE->reason();
+		} catch (\Throwable $rE) {
+			return 'cluster_pack failed: ' . $rE->getMessage();
+		}
+		$rFp = hash('sha256', $rPub);
+		if (!hash_equals((string) CorePins::panelFp(), $rFp)) {
+			return "MAIN's panel key is not the one recorded at cluster:init";
+		}
+		$rPin = '$r = XC_VM::cluster_pin(base64_decode(' . var_export(base64_encode($rBlob), true) . '), true);'
+			. ' echo $r === false ? "ERR " . XC_VM::cluster_last_error() : "OK " . hash("sha256", $r["panel_sign_pub"]);';
+		$rOut = self::lastLine((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg($rPin)));
+		if ($rOut !== 'OK ' . $rFp) {
+			return 'cluster_pin: ' . ($rOut === '' ? 'no answer' : substr($rOut, 0, 120));
+		}
+		return null;
+	}
+
+	/**
+	 * After an enrolment replaced the node's row: what the install recorded
+	 * (XcvtTargets) goes to the row, the install_id and, for a node pinned
+	 * here, its pin (CorePins), so cron:cluster does not offer it again.
+	 */
+	public static function recordCorePin(int $rServerID): void {
+		$rRec = XcvtTargets::get($rServerID);
+		if ($rRec === null || $rRec['install_id'] === null) {
+			return;
+		}
+		CorePins::rememberInstallId($rServerID, $rRec['install_id']);
+		if ($rRec['pin_ver'] === 2 && $rRec['pin_fp'] !== null) {
+			CorePins::recorded($rServerID, $rRec['pin_fp'], 'install');
+		}
+	}
+
+	/** The last stdout line of an SSH command: what it echoed after any PHP warnings. */
+	private static function lastLine(array $rOut): string {
+		$rLines = preg_split('/\R/', trim((string) ($rOut['output'] ?? ''))) ?: [];
+		return trim((string) end($rLines));
+	}
+
+	private static function uuid4(): string {
+		$rB = random_bytes(16);
+		$rB[6] = chr((ord($rB[6]) & 0x0f) | 0x40);
+		$rB[8] = chr((ord($rB[8]) & 0x3f) | 0x80);
+		$rH = bin2hex($rB);
+		return substr($rH, 0, 8) . '-' . substr($rH, 8, 4) . '-' . substr($rH, 12, 4) . '-' . substr($rH, 16, 4) . '-' . substr($rH, 20);
+	}
+}

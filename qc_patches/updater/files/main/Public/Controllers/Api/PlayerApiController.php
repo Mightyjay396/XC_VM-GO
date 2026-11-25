@@ -1,0 +1,1146 @@
+<?php
+
+namespace XcVm\Public\Controllers\Api;
+
+use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Config\DomainResolver;
+use XcVm\Core\Config\Maintenance;
+use XcVm\Core\Logging\RefusalLog;
+use XcVm\Core\Util\Encryption;
+use XcVm\Core\Util\ImageUtils;
+use XcVm\Domain\Line\ActiveCodeService;
+use XcVm\Domain\Stream\CategoryService;
+use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\User\UserRepository;
+use XcVm\Infrastructure\Cache\CacheReader;
+
+/**
+ * PlayerApiController — player api controller
+ *
+ * @package XC_VM_Public_Controllers_Api
+ * @author  Divarion_D <https://github.com/Divarion-D>
+ * @copyright 2025-2026 Vateron Media
+ * @link    https://github.com/Vateron-Media/XC_VM
+ * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
+ */
+
+class PlayerApiController {
+	private $deny = true;
+
+	private array|false|null $userInfo = null;
+
+	private $domainName;
+
+	private $domain;
+
+	private $panelAPI = false;
+
+	private $offset = 0;
+
+	private $limit = 0;
+
+	/**
+	 * Read and igbinary-unserialize a stream cache file.
+	 *
+	 * Cache files under STREAMS_TMP_PATH are transient — a stream can be
+	 * deleted, or not yet warmed, while a client is requesting it — so a
+	 * missing or corrupt file is expected and must not raise
+	 * file_get_contents()/"offset on bool" warnings. Returns null when the
+	 * file is absent or does not unserialize to an array.
+	 *
+	 * @param string $rPath Absolute cache file path
+	 * @return array|null Decoded cache payload, or null when unavailable
+	 */
+	private function readStreamCache(string $rPath): ?array {
+		if (!is_file($rPath)) {
+			return null;
+		}
+		$rRaw = @file_get_contents($rPath);
+		if ($rRaw === false) {
+			return null;
+		}
+		$rData = @igbinary_unserialize($rRaw);
+		return is_array($rData) ? $rData : null;
+	}
+
+	/**
+	 * The stream ids an EPG action asks for: one id, or a comma-separated list
+	 * (or any id with `multi` set), whose answer is then keyed by stream id.
+	 * A non-scalar stream_id (stream_id[]=…) asks for nothing instead of raising
+	 * a TypeError from explode().
+	 *
+	 * @return array{0: int[], 1: bool} The stream ids, and whether the answer is keyed by id.
+	 */
+	private function requestedStreamIds(): array {
+		global $rRequest;
+
+		$rValue = $rRequest['stream_id'] ?? '';
+		if (!is_scalar($rValue) || empty($rValue)) {
+			return [[], false];
+		}
+		if (is_numeric($rValue) && !isset($rRequest['multi'])) {
+			return [[intval($rValue)], false];
+		}
+		return [array_map('intval', explode(',', (string) $rValue)), true];
+	}
+
+	public function index() {
+		global $rSettings, $rCached, $rRequest, $rServers, $db;
+
+		set_time_limit(0);
+
+		if ($rSettings['force_epg_timezone']) {
+			date_default_timezone_set('UTC');
+		}
+
+		if ($rSettings['disable_player_api']) {
+			$this->deny = false;
+			$this->sendAuthError('Disabled', 'Player API has been disabled.');
+		}
+
+		// Maintenance mode: apps show user_info.message.
+		if (Maintenance::active($rSettings)) {
+			$this->deny = false;
+			$this->sendAuthError('Maintenance', Maintenance::message($rSettings));
+		}
+
+		if (strtolower(explode('.', ltrim(parse_url($_SERVER['REQUEST_URI'])['path'] ?? '', '/'))[0]) == 'panel_api') {
+			if (!$rSettings['legacy_panel_api']) {
+				$this->deny = false;
+				$this->sendAuthError('Disabled', 'Legacy panel_api access has been disabled.');
+			} else {
+				$this->panelAPI = true;
+			}
+		}
+
+		// Parse JSON POST payload if present
+		if (empty($rRequest['username'])) {
+			$rawBody = @file_get_contents('php://input');
+			if ($rawBody) {
+				$jsonData = @json_decode($rawBody, true);
+				if (is_array($jsonData)) {
+					$rRequest = array_merge($rRequest ?? [], $jsonData);
+				}
+			}
+		}
+
+		$rIP = $_SERVER['REMOTE_ADDR'];
+		$rUserAgent = trim($_SERVER['HTTP_USER_AGENT'] ?? '');
+		$this->offset = (empty($rRequest['params']['offset']) ? 0 : abs(intval($rRequest['params']['offset'])));
+		$this->limit = (empty($rRequest['params']['items_per_page']) ? 0 : abs(intval($rRequest['params']['items_per_page'])));
+		$this->domainName = DomainResolver::resolve(SERVER_ID);
+		$this->domain = parse_url($this->domainName)['host'] ?? '';
+
+		$rValidActions = ['get_epg', 200 => 'get_vod_categories', 201 => 'get_live_categories', 202 => 'get_live_streams', 203 => 'get_vod_streams', 204 => 'get_series_info', 205 => 'get_short_epg', 206 => 'get_series_categories', 207 => 'get_simple_data_table', 208 => 'get_series', 209 => 'get_vod_info'];
+		// action[]=… (or a JSON array) is no action, not a TypeError from array_key_exists().
+		$rRequestedAction = $rRequest['action'] ?? '';
+		$rAction = ((is_string($rRequestedAction) || is_int($rRequestedAction)) && $rRequestedAction !== '' && (in_array($rRequestedAction, $rValidActions) || array_key_exists($rRequestedAction, $rValidActions)) ? $rRequestedAction : '');
+
+		if (isset($rValidActions[$rAction])) {
+			$rAction = $rValidActions[$rAction];
+		}
+
+		if ($this->panelAPI && empty($rAction)) {
+			$rGetChannels = true;
+		} else {
+			// The info actions need the line's ids too: they only answer for
+			// content the line's bouquets include.
+			$rGetChannels = in_array($rAction, ['get_series', 'get_vod_streams', 'get_live_streams', 'get_series_info', 'get_vod_info']);
+		}
+
+		// Only the sign-in answer (no action) reports the line's active connections.
+		$rGetConnections = ($rAction === '');
+
+		$rBouquets = $rGetChannels ? CacheReader::get('bouquets') : null;
+
+		$rCategories = null;
+
+		if ($this->panelAPI && empty($rAction) || in_array($rAction, ['get_vod_categories', 'get_series_categories', 'get_live_categories'])) {
+			// A missing cache file reads as null; filterLoaded() takes an array.
+			$rCategories = CacheReader::get('categories') ?: [];
+		}
+		$rUserInfo = null;
+
+		if (isset($rRequest['username'])) {
+			$rUsername = trim((string) $rRequest['username']);
+			$rPassword = (string) ($rRequest['password'] ?? '');
+
+			if (!empty($rUsername) && !empty($rPassword)) {
+				$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rUsername, $rPassword, $rGetChannels, $rGetConnections);
+			}
+
+			// Active Code transparent auto-activation fallback
+			if (!$rUserInfo && !empty($rUsername) && class_exists(ActiveCodeService::class)) {
+				$candidateCode = strtoupper(trim($rUsername));
+				$codeRow = ActiveCodeService::getByCode($candidateCode);
+				if ($codeRow) {
+					$deviceInfo = [
+						'mac' => $rRequest['mac'] ?? '',
+						'device_id' => $rRequest['device_id'] ?? '',
+						'ip' => $rIP,
+						'user_agent' => $rUserAgent
+					];
+					$actRes = ActiveCodeService::activateCode($candidateCode, $deviceInfo);
+					if ($actRes['status'] === 'SUCCESS' && !empty($actRes['line'])) {
+						$lineUser = $actRes['line']['username'];
+						$linePass = $actRes['line']['password'];
+						$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, false, $rBouquets, null, $lineUser, $linePass, $rGetChannels, $rGetConnections);
+						if ($rUserInfo && !empty($actRes['line']['exp_date'])) {
+							$rUserInfo['exp_date'] = $actRes['line']['exp_date'];
+						}
+					}
+				}
+			}
+
+			if (!$rUserInfo && empty($rUsername)) {
+				$this->sendAuthError('', 'No credentials provided.');
+			}
+		} else {
+			if (isset($rRequest['token'])) {
+				$rToken = trim((string) $rRequest['token']);
+
+				if (empty($rToken)) {
+					$this->sendAuthError('', 'No credentials provided.');
+				}
+
+				$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rToken, null, $rGetChannels, $rGetConnections);
+
+				if (!$rUserInfo && class_exists(ActiveCodeService::class)) {
+					$candidateCode = strtoupper(trim($rToken));
+					$codeRow = ActiveCodeService::getByCode($candidateCode);
+					if ($codeRow) {
+						$deviceInfo = [
+							'mac' => $rRequest['mac'] ?? '',
+							'device_id' => $rRequest['device_id'] ?? '',
+							'ip' => $rIP,
+							'user_agent' => $rUserAgent
+						];
+						$actRes = ActiveCodeService::activateCode($candidateCode, $deviceInfo);
+						if ($actRes['status'] === 'SUCCESS' && !empty($actRes['line'])) {
+							$lineUser = $actRes['line']['username'];
+							$linePass = $actRes['line']['password'];
+							$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, false, $rBouquets, null, $lineUser, $linePass, $rGetChannels, $rGetConnections);
+							if ($rUserInfo && !empty($actRes['line']['exp_date'])) {
+								$rUserInfo['exp_date'] = $actRes['line']['exp_date'];
+							}
+						}
+					}
+				}
+			}
+		}
+
+		ini_set('memory_limit', -1);
+
+		if ($rUserInfo) {
+			$this->deny = false;
+			$this->userInfo = $rUserInfo;
+			$rValidUser = false;
+
+			if ($rUserInfo['admin_enabled'] == 1 && $rUserInfo['enabled'] == 1 && (is_null($rUserInfo['exp_date']) || time() < $rUserInfo['exp_date'])) {
+				$rValidUser = true;
+			} elseif (!$rUserInfo['admin_enabled']) {
+				$this->sendAuthError('Banned', 'Account has been banned.');
+			} elseif (!$rUserInfo['enabled']) {
+				$this->sendAuthError('Disabled', 'Account has been disabled.');
+			} else {
+				$this->sendAuthError('Expired', 'Account has expired.');
+			}
+
+			BruteforceGuard::checkAuthFlood($rUserInfo);
+			header('Content-Type: application/json; charset=utf-8');
+
+			// Token/credential-authenticated API (not cookie-based): never reflect
+			// the Origin together with credentials, or any site could read
+			// authenticated responses. A wildcard origin without credentials is
+			// the correct posture here.
+			header('Access-Control-Allow-Origin: *');
+
+			$output = $this->dispatch($rAction, $rCategories);
+
+			echo json_encode($output);
+			exit();
+		}
+		// A known activation code that has run out or been suspended is its
+		// subscriber's own: it is answered as such a line is, and not counted.
+		if (($actRes['status'] ?? '') === 'EXPIRED') {
+			$this->sendAuthError('Expired', 'Account has expired.');
+		}
+		if (($actRes['status'] ?? '') === 'DISABLED') {
+			$this->sendAuthError('Disabled', 'Account has been disabled.');
+		}
+
+		// A token nothing answers to is a guess, as a username is; so is the
+		// password a username came with (a token comes with none).
+		BruteforceGuard::checkBruteforce(null, null, $rUsername ?? $rToken ?? '', false, $rPassword ?? null);
+		// A refused sign-in counts against the address, as on the other client
+		// APIs (sendAuthError() leaves shutdown() nothing to count).
+		BruteforceGuard::checkFlood();
+		RefusalLog::record('INVALID_CREDENTIALS');
+		$this->sendAuthError('', 'Username or password is invalid.');
+	}
+
+	public function shutdown() {
+		global $db;
+
+		if ($this->deny) {
+			BruteforceGuard::checkFlood();
+		}
+
+		if (is_object($db)) {
+			$db->close_mysql();
+		}
+	}
+
+	private function dispatch($rAction, $rCategories) {
+		switch ($rAction) {
+			case 'get_epg':
+				return $this->getEpg();
+			case 'get_series_info':
+				return $this->getSeriesInfo();
+			case 'get_series':
+				return $this->getSeries();
+			case 'get_vod_categories':
+				return $this->getVodCategories($rCategories);
+			case 'get_series_categories':
+				return $this->getSeriesCategories($rCategories);
+			case 'get_live_categories':
+				return $this->getLiveCategories($rCategories);
+			case 'get_simple_data_table':
+				return $this->getSimpleDataTable();
+			case 'get_short_epg':
+				return $this->getShortEpg();
+			case 'get_live_streams':
+				return $this->getLiveStreams();
+			case 'get_vod_info':
+				return $this->getVodInfo();
+			case 'get_vod_streams':
+				return $this->getVodStreams();
+			default:
+				return $this->getDefaultInfo() + ($this->panelAPI ? $this->getLegacyLists($rCategories) : []);
+		}
+	}
+
+	/**
+	 * What the legacy panel_api.php answers after the sign-in data: the line's
+	 * categories by type, and its channels, radios and movies by stream id.
+	 * Built from the lists player_api serves, so both follow the same bouquets,
+	 * order and category templates.
+	 *
+	 * @param array $rCategories The loaded categories.
+	 * @return array ['categories' => [type => rows], 'available_channels' => [stream id => row]]
+	 */
+	private function getLegacyLists(array $rCategories): array {
+		$rLists = ['series' => $this->getSeriesCategories($rCategories), 'movie' => $this->getVodCategories($rCategories), 'live' => $this->getLiveCategories($rCategories)];
+		$rNames = array_column(array_merge(...array_values($rLists)), 'category_name', 'category_id');
+		$rTypeNames = ['live' => 'Live Streams', 'movie' => 'Movies', 'created_live' => 'Created Live Channels', 'radio_streams' => 'Radio'];
+		$rChannels = [];
+
+		foreach (array_merge($this->getLiveStreams(), $this->getVodStreams()) as $rRow) {
+			// A stream listed under several categories is given once, under the first.
+			$rChannels[$rRow['stream_id']] ??= [
+				'num' => $rRow['num'],
+				'name' => $rRow['name'],
+				'stream_type' => $rRow['stream_type'],
+				'type_name' => $rTypeNames[$rRow['stream_type']] ?? '',
+				'stream_id' => strval($rRow['stream_id']),
+				'stream_icon' => $rRow['stream_icon'],
+				'epg_channel_id' => $rRow['epg_channel_id'] ?? null,
+				'added' => strval($rRow['added']),
+				'category_name' => $rNames[$rRow['category_id']] ?? null,
+				'category_id' => $rRow['category_id'],
+				'series_no' => null,
+				'live' => $rRow['stream_type'] === 'movie' ? '0' : '1',
+				'container_extension' => $rRow['container_extension'] ?? null,
+				'custom_sid' => $rRow['custom_sid'],
+				'tv_archive' => $rRow['tv_archive'] ?? 0,
+				'direct_source' => $rRow['direct_source'],
+				'tv_archive_duration' => $rRow['tv_archive_duration'] ?? 0,
+			];
+		}
+
+		return ['categories' => $rLists, 'available_channels' => $rChannels];
+	}
+
+	private function getEpg() {
+		global $rRequest;
+
+		[$rStreamIDs, $rMulti] = $this->requestedStreamIds();
+
+		if ($rStreamIDs !== [] && (is_null($this->userInfo['exp_date']) || time() < $this->userInfo['exp_date'])) {
+			$rFromNow = !empty($rRequest['from_now']) && 0 < $rRequest['from_now'];
+			$rEPGs = [];
+
+			foreach ($rStreamIDs as $rStreamID) {
+				$rRows = $this->readStreamCache(EPG_PATH . 'stream_' . $rStreamID);
+				if ($rRows === null) {
+					continue;
+				}
+
+				foreach ($rRows as $rRow) {
+					if ($rFromNow && $rRow['end'] < time()) {
+						continue;
+					}
+
+					$rRow['title'] = base64_encode($rRow['title']);
+					$rRow['description'] = base64_encode($rRow['description']);
+					$rRow['start'] = intval($rRow['start']);
+					$rRow['end'] = intval($rRow['end']);
+
+					if ($rMulti) {
+						$rEPGs[$rStreamID][] = $rRow;
+					} else {
+						$rEPGs[] = $rRow;
+					}
+				}
+			}
+
+			echo json_encode($rEPGs);
+			exit();
+		}
+
+		echo json_encode([]);
+		exit();
+	}
+
+	private function getSeriesInfo() {
+		global $rSettings, $rCached, $rRequest, $db;
+
+		$rSeriesID = (empty($rRequest['series_id']) || !is_scalar($rRequest['series_id']) ? 0 : intval($rRequest['series_id']));
+		$output = [];
+
+		// Only series the line's bouquets include: otherwise any line could read
+		// the catalogue, and a playable episode URL, of any series by id.
+		if (!in_array($rSeriesID, $this->userInfo['series_ids'] ?? [], true)) {
+			return $output;
+		}
+
+		if ($rCached) {
+			$rSeriesInfo = $this->readStreamCache(SERIES_TMP_PATH . 'series_' . $rSeriesID);
+			$rRows = $this->readStreamCache(SERIES_TMP_PATH . 'episodes_' . $rSeriesID);
+		} else {
+			$db->query('SELECT * FROM `streams_episodes` t1 INNER JOIN `streams` t2 ON t2.id=t1.stream_id WHERE t1.series_id = ? ORDER BY t1.season_num ASC, t1.episode_num ASC', $rSeriesID);
+			$rRows = $db->get_rows(true, 'season_num', false);
+			$db->query('SELECT * FROM `streams_series` WHERE `id` = ?', $rSeriesID);
+			$rSeriesInfo = $db->get_row();
+		}
+
+		// Series not found / cache not warmed: return an empty payload instead of
+		// building it from a missing value, which cascaded into undefined-key /
+		// offset-on-bool / foreach-on-null warnings. A valid series is unaffected.
+		if (empty($rSeriesInfo)) {
+			return $output;
+		}
+		if (!is_array($rRows)) {
+			$rRows = [];
+		}
+
+		// Older cache entries / DB rows may lack newer columns; default them so
+		// the info block below does not raise undefined-key warnings. += only
+		// fills absent keys, leaving present values untouched.
+		$rSeriesInfo += ['title' => '', 'year' => '', 'cover' => '', 'plot' => '', 'cast' => '', 'director' => '', 'genre' => '', 'release_date' => '', 'last_modified' => '', 'youtube_trailer' => '', 'episode_run_time' => '', 'rating' => 0, 'seasons' => '', 'backdrop_path' => '', 'category_id' => '[]'];
+
+		$output['seasons'] = [];
+
+		foreach ((!empty($rSeriesInfo['seasons']) ? array_values(json_decode($rSeriesInfo['seasons'], true)) : []) as $rSeason) {
+			$rSeason['cover'] = ImageUtils::validateURL($rSeason['cover']);
+			$rSeason['cover_big'] = ImageUtils::validateURL($rSeason['cover_big']);
+			$output['seasons'][] = $rSeason;
+		}
+
+		$rBackdrops = json_decode($rSeriesInfo['backdrop_path'], true);
+
+		if (!empty($rBackdrops) && is_array($rBackdrops)) {
+			foreach ($rBackdrops as $i => $rBackdrop) {
+				$rBackdrops[$i] = ImageUtils::validateURL($rBackdrop);
+			}
+		}
+
+		$rating = is_numeric($rSeriesInfo['rating']) ? floatval($rSeriesInfo['rating']) : 0.0;
+
+		$output['info'] = ['name' => StreamSorter::formatTitle($rSeriesInfo['title'], $rSeriesInfo['year']), 'title' => $rSeriesInfo['title'], 'year' => strval($rSeriesInfo['year']), 'cover' => ImageUtils::validateURL($rSeriesInfo['cover']), 'plot' => $rSeriesInfo['plot'], 'cast' => $rSeriesInfo['cast'], 'director' => $rSeriesInfo['director'], 'genre' => $rSeriesInfo['genre'], 'release_date' => $rSeriesInfo['release_date'], 'releaseDate' => $rSeriesInfo['release_date'], 'last_modified' => $rSeriesInfo['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesInfo['youtube_trailer'], 'episode_run_time' => strval($rSeriesInfo['episode_run_time']), 'category_id' => strval(json_decode($rSeriesInfo['category_id'], true)[0] ?? ''), 'category_ids' => json_decode($rSeriesInfo['category_id'], true)];
+
+		foreach ($rRows as $rSeason => $rEpisodes) {
+			foreach ($rEpisodes as $rEpisode) {
+				if ($rCached) {
+					$rEpisodeData = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rEpisode['stream_id']))['info'] ?? null;
+
+					if (!$rEpisodeData) {
+						continue;
+					}
+				} else {
+					$rEpisodeData = $rEpisode;
+				}
+
+				if ($rSettings['api_redirect']) {
+					$rEncData = 'series/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rEpisodeData['id'] . '/' . $rEpisodeData['target_container'];
+					$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+					$rURL = $this->domainName . 'play/' . $rToken;
+				} else {
+					$rURL = '';
+				}
+
+				$rProperties = (!empty($rEpisodeData['movie_properties']) ? json_decode($rEpisodeData['movie_properties'], true) : []);
+				if (!is_array($rProperties)) {
+					$rProperties = [];
+				}
+				$rProperties['cover_big'] = ImageUtils::validateURL($rProperties['cover_big'] ?? '');
+				$rProperties['movie_image'] = ImageUtils::validateURL($rProperties['movie_image'] ?? '');
+
+				if (!$rProperties['cover_big']) {
+					$rProperties['cover_big'] = $rProperties['movie_image'];
+				}
+
+				if (is_array($rProperties['backdrop_path'] ?? null) && count($rProperties['backdrop_path']) > 0) {
+					foreach ($rProperties['backdrop_path'] as $key => $backdrop) {
+						if (!empty($backdrop)) {
+							$rProperties['backdrop_path'][$key] = ImageUtils::validateURL($backdrop);
+						}
+					}
+				}
+
+				$rSubtitles = [];
+
+				if (is_array($rProperties['subtitle'] ?? null)) {
+					$i = 0;
+
+					foreach ($rProperties['subtitle'] as $rSubtitle) {
+						$rSubtitles[] = ['index' => $i, 'language' => (($rSubtitle['tags']['language'] ?? '') ?: null), 'title' => (($rSubtitle['tags']['title'] ?? '') ?: null)];
+						$i++;
+					}
+				}
+
+				foreach (['audio', 'video', 'subtitle'] as $rKey) {
+					if (isset($rProperties[$rKey])) {
+						unset($rProperties[$rKey]);
+					}
+				}
+
+				$output['episodes'][$rSeason][] = ['id' => $rEpisode['stream_id'], 'episode_num' => $rEpisode['episode_num'], 'title' => $rEpisodeData['stream_display_name'], 'container_extension' => $rEpisodeData['target_container'], 'info' => $rProperties, 'subtitles' => $rSubtitles, 'custom_sid' => strval($rEpisodeData['custom_sid']), 'added' => ($rEpisodeData['added'] ?: ''), 'season' => $rSeason, 'direct_source' => $rURL];
+			}
+		}
+
+		return $output;
+	}
+
+	private function getSeries() {
+		global $rSettings, $rCached, $rRequest, $db;
+
+		$rCategoryIDSearch = (empty($rRequest['category_id']) ? null : intval($rRequest['category_id']));
+		$rMovieNum = 0;
+		$output = [];
+
+		$seriesCfg = \XcVm\Domain\Stream\CategoryTemplateService::getCustomCategoryConfig($this->userInfo['custom_data'] ?? null, 'series');
+		if (!empty($rCategoryIDSearch) && in_array((int) $rCategoryIDSearch, $seriesCfg['hide_ids'], true)) {
+			return $output;
+		}
+
+		if (count($this->userInfo['series_ids']) > 0) {
+			if ($rCached) {
+				if ($rSettings['vod_sort_newest']) {
+					$this->userInfo['series_ids'] = StreamSorter::sortSeries($this->userInfo['series_ids'], $this->userInfo);
+				}
+
+				foreach ($this->userInfo['series_ids'] as $rSeriesID) {
+					$rSeriesItem = $this->readStreamCache(SERIES_TMP_PATH . 'series_' . $rSeriesID);
+					if ($rSeriesItem === null) {
+						// Cache not warmed for this series — it would contribute
+						// nothing (foreach over a null category_id), so skip it.
+						continue;
+					}
+					$rBackdrops = json_decode($rSeriesItem['backdrop_path'], true);
+
+					if (is_array($rBackdrops)) {
+						foreach ($rBackdrops as $i => $path) {
+							$rBackdrops[$i] = ImageUtils::validateURL($path);
+						}
+					}
+
+					$rCategoryIDs = json_decode($rSeriesItem['category_id'], true);
+
+					foreach ($rCategoryIDs as $rCategoryID) {
+						if (!empty($seriesCfg['hide_ids']) && in_array((int) $rCategoryID, $seriesCfg['hide_ids'], true)) {
+							continue;
+						}
+						if (!$rCategoryIDSearch || $rCategoryIDSearch == $rCategoryID) {
+							$rating = is_numeric($rSeriesItem['rating']) ? floatval($rSeriesItem['rating']) : 0.0;
+							$output[] = ['num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rSeriesItem['title'], $rSeriesItem['year']), 'title' => $rSeriesItem['title'], 'year' => strval($rSeriesItem['year']), 'stream_type' => 'series', 'series_id' => (int) $rSeriesItem['id'], 'cover' => ImageUtils::validateURL($rSeriesItem['cover']), 'plot' => $rSeriesItem['plot'], 'cast' => $rSeriesItem['cast'], 'director' => $rSeriesItem['director'], 'genre' => $rSeriesItem['genre'], 'release_date' => $rSeriesItem['release_date'], 'releaseDate' => $rSeriesItem['release_date'], 'last_modified' => $rSeriesItem['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesItem['youtube_trailer'], 'episode_run_time' => strval($rSeriesItem['episode_run_time']), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs];
+						}
+
+						if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
+							break;
+						}
+					}
+				}
+			} else {
+				if (!empty($this->userInfo['series_ids'])) {
+					if ($rSettings['vod_sort_newest']) {
+						$db->query('SELECT *, (SELECT MAX(`streams`.`added`) FROM `streams_episodes` LEFT JOIN `streams` ON `streams`.`id` = `streams_episodes`.`stream_id` WHERE `streams_episodes`.`series_id` = `streams_series`.`id`) AS `last_modified_stream` FROM `streams_series` WHERE `id` IN (' . implode(',', array_map('intval', $this->userInfo['series_ids'])) . ') ORDER BY `last_modified_stream` DESC, `last_modified` DESC;');
+					} else {
+						$db->query('SELECT * FROM `streams_series` WHERE `id` IN (' . implode(',', array_map('intval', $this->userInfo['series_ids'])) . ') ORDER BY FIELD(`id`,' . implode(',', $this->userInfo['series_ids']) . ') ASC;');
+					}
+
+					$rSeries = $db->get_rows(true, 'id');
+
+					foreach ($rSeries as $rSeriesItem) {
+						if (isset($rSeriesItem['last_modified_stream']) && !empty($rSeriesItem['last_modified_stream'])) {
+							$rSeriesItem['last_modified'] = $rSeriesItem['last_modified_stream'];
+						}
+
+						$rBackdrops = json_decode($rSeriesItem['backdrop_path'], true);
+
+						if (!empty($rBackdrops)) {
+							foreach (range(0, count($rBackdrops) - 1) as $i) {
+								$rBackdrops[$i] = ImageUtils::validateURL($rBackdrops[$i]);
+							}
+						}
+
+						$rCategoryIDs = json_decode($rSeriesItem['category_id'], true);
+
+						foreach ($rCategoryIDs as $rCategoryID) {
+							if (!empty($seriesCfg['hide_ids']) && in_array((int) $rCategoryID, $seriesCfg['hide_ids'], true)) {
+								continue;
+							}
+							if (!$rCategoryIDSearch || $rCategoryIDSearch == $rCategoryID) {
+								$rating = is_numeric($rSeriesItem['rating']) ? floatval($rSeriesItem['rating']) : 0.0;
+								$output[] = ['num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rSeriesItem['title'], $rSeriesItem['year']), 'title' => $rSeriesItem['title'], 'year' => $rSeriesItem['year'], 'stream_type' => 'series', 'series_id' => (int) $rSeriesItem['id'], 'cover' => ImageUtils::validateURL($rSeriesItem['cover']), 'plot' => $rSeriesItem['plot'], 'cast' => $rSeriesItem['cast'], 'director' => $rSeriesItem['director'], 'genre' => $rSeriesItem['genre'], 'release_date' => $rSeriesItem['release_date'], 'releaseDate' => $rSeriesItem['release_date'], 'last_modified' => $rSeriesItem['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesItem['youtube_trailer'], 'episode_run_time' => $rSeriesItem['episode_run_time'], 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs];
+							}
+
+							if (!$rCategoryIDSearch && !$rSettings['show_category_duplicates']) {
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		return $output;
+	}
+
+	private function getVodCategories($rCategories) {
+		$rCategories = CategoryService::filterLoaded($rCategories, 'movie');
+		$output = [];
+
+		foreach ($rCategories as $rCategory) {
+			if (in_array($rCategory['id'], $this->userInfo['category_ids'])) {
+				$output[] = ['category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0];
+			}
+		}
+
+		return \XcVm\Domain\Stream\CategoryTemplateService::applyCustomDataToCategories($output, $this->userInfo['custom_data'] ?? null, 'vod_cat');
+	}
+
+	private function getSeriesCategories($rCategories) {
+		$rCategories = CategoryService::filterLoaded($rCategories, 'series');
+		$output = [];
+
+		foreach ($rCategories as $rCategory) {
+			if (in_array($rCategory['id'], $this->userInfo['category_ids'])) {
+				$output[] = ['category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0];
+			}
+		}
+
+		return \XcVm\Domain\Stream\CategoryTemplateService::applyCustomDataToCategories($output, $this->userInfo['custom_data'] ?? null, 'series_cat');
+	}
+
+	private function getLiveCategories($rCategories) {
+		$rCategories = array_merge(CategoryService::filterLoaded($rCategories, 'live'), CategoryService::filterLoaded($rCategories, 'radio'));
+		$output = [];
+
+		foreach ($rCategories as $rCategory) {
+			if (in_array($rCategory['id'], $this->userInfo['category_ids'])) {
+				$output[] = ['category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0];
+			}
+		}
+
+		return \XcVm\Domain\Stream\CategoryTemplateService::applyCustomDataToCategories($output, $this->userInfo['custom_data'] ?? null, 'live_cat');
+	}
+
+	private function getSimpleDataTable() {
+		global $rSettings, $rCached, $rRequest, $db;
+
+		$output = ['epg_listings' => []];
+
+		[$rStreamIDs, $rMulti] = $this->requestedStreamIds();
+
+		if (count($rStreamIDs) <= 0) {
+			return $output;
+		}
+
+		$rArchiveInfo = [];
+
+		if ($rCached) {
+			foreach ($rStreamIDs as $rStreamID) {
+				$rRow = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . $rStreamID)['info'] ?? null;
+				if (!is_array($rRow)) {
+					continue;
+				}
+				$rArchiveInfo[$rStreamID] = intval($rRow['tv_archive_duration'] ?? 0);
+			}
+		} else {
+			$db->query('SELECT `id`, `tv_archive_duration` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
+
+			if ($db->num_rows() > 0) {
+				foreach ($db->get_rows() as $rRow) {
+					$rArchiveInfo[$rRow['id']] = intval($rRow['tv_archive_duration']);
+				}
+			}
+		}
+
+		foreach ($rStreamIDs as $rStreamID) {
+			$rRows = $this->readStreamCache(EPG_PATH . 'stream_' . $rStreamID);
+			if ($rRows === null) {
+				continue;
+			}
+
+			foreach ($rRows as $rEPGData) {
+				$rNowPlaying = $rHasArchive = 0;
+				$rEPGData['start_timestamp'] = $rEPGData['start'];
+				$rEPGData['stop_timestamp'] = $rEPGData['end'];
+
+				if ($rEPGData['start_timestamp'] <= time() && time() <= $rEPGData['stop_timestamp']) {
+					$rNowPlaying = 1;
+				}
+
+				if (!empty($rArchiveInfo[$rStreamID]) && $rEPGData['stop_timestamp'] < time() && strtotime('-' . $rArchiveInfo[$rStreamID] . ' days') <= $rEPGData['stop_timestamp']) {
+					$rHasArchive = 1;
+				}
+
+				$rEPGData['now_playing'] = $rNowPlaying;
+				$rEPGData['has_archive'] = $rHasArchive;
+				$rEPGData['title'] = base64_encode($rEPGData['title']);
+				$rEPGData['description'] = base64_encode($rEPGData['description']);
+				$rEPGData['start'] = date('Y-m-d H:i:s', $rEPGData['start_timestamp']);
+				$rEPGData['end'] = date('Y-m-d H:i:s', $rEPGData['stop_timestamp']);
+
+				if ($rMulti) {
+					$output['epg_listings'][$rStreamID][] = $rEPGData;
+				} else {
+					$output['epg_listings'][] = $rEPGData;
+				}
+			}
+		}
+
+		return $output;
+	}
+
+	private function getShortEpg() {
+		global $rRequest;
+
+		$output = ['epg_listings' => []];
+
+		$rLimit = (empty($rRequest['limit']) || !is_scalar($rRequest['limit']) ? 4 : intval($rRequest['limit']));
+
+		[$rStreamIDs, $rMulti] = $this->requestedStreamIds();
+
+		if (count($rStreamIDs) <= 0) {
+			return $output;
+		}
+
+		$rTime = time();
+
+		foreach ($rStreamIDs as $rStreamID) {
+			$rRows = $this->readStreamCache(EPG_PATH . 'stream_' . $rStreamID);
+			if ($rRows === null) {
+				continue;
+			}
+
+			foreach ($rRows as $rRow) {
+				if (!($rRow['start'] <= $rTime && $rTime <= $rRow['end'] || $rTime <= $rRow['start'])) {
+					continue;
+				}
+
+				$rRow['start_timestamp'] = $rRow['start'];
+				$rRow['stop_timestamp'] = $rRow['end'];
+				$rRow['end_timestamp'] = $rRow['end'];
+				$rRow['title'] = base64_encode($rRow['title']);
+				$rRow['description'] = base64_encode($rRow['description']);
+				$rRow['start'] = date('Y-m-d H:i:s', $rRow['start']);
+				$rRow['stop'] = date('Y-m-d H:i:s', $rRow['end']);
+				$rRow['end'] = date('Y-m-d H:i:s', $rRow['end']);
+
+				if ($rMulti) {
+					$output['epg_listings'][$rStreamID][] = $rRow;
+				} else {
+					$output['epg_listings'][] = $rRow;
+				}
+
+				// The limit is per stream: keyed by stream id (multi), counting the
+				// outer array counted streams, so a multi request was never limited.
+				if (count($rMulti ? $output['epg_listings'][$rStreamID] : $output['epg_listings']) >= $rLimit) {
+					break;
+				}
+			}
+		}
+
+		return $output;
+	}
+
+	private function getLiveStreams() {
+		global $rSettings, $rCached, $rRequest, $db;
+
+		$rCategoryIDSearch = (empty($rRequest['category_id']) ? null : intval($rRequest['category_id']));
+		$rLiveNum = 0;
+		$output = [];
+
+		$liveCfg = \XcVm\Domain\Stream\CategoryTemplateService::getCustomCategoryConfig($this->userInfo['custom_data'] ?? null, 'live');
+		if (!empty($rCategoryIDSearch) && in_array((int) $rCategoryIDSearch, $liveCfg['hide_ids'], true)) {
+			return $output;
+		}
+
+		$this->userInfo['live_ids'] = array_merge($this->userInfo['live_ids'], $this->userInfo['radio_ids']);
+
+		// Sort the whole list, then take the page: slicing first paged the
+		// unsorted ids, so a page did not follow the channel order.
+		$this->userInfo['live_ids'] = StreamSorter::sortChannels($this->userInfo['live_ids'], $this->userInfo);
+
+		if (!empty($this->limit)) {
+			$this->userInfo['live_ids'] = array_slice($this->userInfo['live_ids'], $this->offset, $this->limit);
+		}
+
+		if (!$rCached) {
+			$rChannels = [];
+
+			if (count($this->userInfo['live_ids']) > 0) {
+				$rWhereV = $rWhere = [];
+
+				if (!empty($rCategoryIDSearch)) {
+					$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
+					$rWhereV[] = $rCategoryIDSearch;
+				}
+
+				$rWhere[] = '`t1`.`id` IN (' . implode(',', $this->userInfo['live_ids']) . ')';
+				$rWhereString = 'WHERE ' . implode(' AND ', $rWhere);
+
+				$rManual = ($rSettings['channel_number_type'] == 'manual');
+
+				$db->query('SELECT t1.id,t1.epg_id,t1.added,t1.allow_record,t1.year,t1.channel_id,t1.movie_properties,t1.stream_source,t1.tv_archive_server_id,t1.vframes_server_id,t1.tv_archive_duration,t1.stream_icon,t1.custom_sid,t1.category_id,t1.stream_display_name,t1.series_no,t1.direct_source,t2.type_output,t1.target_container,t2.live,t1.rtmp_output,t1.order,t2.type_key FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type ' . $rWhereString . ($rManual ? ' ORDER BY `order`' : '') . ';', ...$rWhereV);
+				$rChannels = $db->get_rows();
+				// The line's order, as FIELD(id, every id) gave it (each row once, at its first
+				// place) without MariaDB evaluating that list for every row.
+				if (!$rManual && $rChannels) {
+					$rRows = array_column($rChannels, null, 'id');
+					$rChannels = [];
+					foreach ($this->userInfo['live_ids'] as $rID) {
+						if (isset($rRows[$rID])) {
+							$rChannels[] = $rRows[$rID];
+							unset($rRows[$rID]);
+						}
+					}
+				}
+			}
+		} else {
+			$rChannels = $this->userInfo['live_ids'];
+		}
+
+		foreach ($rChannels as $rChannel) {
+			if ($rCached) {
+				$rChannelData = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rChannel));
+				if ($rChannelData === null) {
+					continue;
+				}
+				$rChannel = $rChannelData['info'] ?? null;
+				if (!is_array($rChannel)) {
+					continue;
+				}
+			}
+
+			if (in_array($rChannel['type_key'], ['live', 'created_live', 'radio_streams'])) {
+				$rCategoryIDs = json_decode($rChannel['category_id'], true);
+
+				if (empty($rCategoryIDs)) {
+					$rCategoryIDs = [0];
+				}
+
+				foreach ($rCategoryIDs as $rCategoryID) {
+					if (!empty($liveCfg['hide_ids']) && in_array((int) $rCategoryID, $liveCfg['hide_ids'], true)) {
+						continue;
+					}
+					if (!$rCategoryIDSearch || $rCategoryIDSearch == $rCategoryID) {
+						$rStreamIcon = (ImageUtils::validateURL($rChannel['stream_icon']) ?: '');
+						$rTVArchive = (!empty($rChannel['tv_archive_server_id']) && !empty($rChannel['tv_archive_duration']) ? 1 : 0);
+
+						if ($rSettings['api_redirect']) {
+							$rEncData = 'live/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rChannel['id'];
+							$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+
+							if ($rSettings['cloudflare'] && $rSettings['api_container'] == 'ts') {
+								$rURL = $this->domainName . 'play/' . $rToken;
+							} else {
+								$rURL = $this->domainName . 'play/' . $rToken . '/' . $rSettings['api_container'];
+							}
+						} else {
+							$rURL = '';
+						}
+
+						if ($rChannel['vframes_server_id']) {
+							$rEncData = 'thumb/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rChannel['id'];
+							$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+							$rThumbURL = $this->domainName . 'play/' . $rToken;
+						} else {
+							$rThumbURL = '';
+						}
+
+						$output[] = ['num' => ++$rLiveNum, 'name' => $rChannel['stream_display_name'], 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => $rStreamIcon, 'epg_channel_id' => $rChannel['channel_id'], 'added' => strval($rChannel['added'] ?: ''), 'custom_sid' => strval($rChannel['custom_sid']), 'tv_archive' => $rTVArchive, 'direct_source' => $rURL, 'tv_archive_duration' => ($rTVArchive ? intval($rChannel['tv_archive_duration']) : 0), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'thumbnail' => $rThumbURL];
+					}
+
+					if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
+						break;
+					}
+				}
+			}
+		}
+
+		return $output;
+	}
+
+	private function getVodInfo() {
+		global $rSettings, $rCached, $rRequest, $db;
+
+		$output = ['info' => []];
+
+		$rVODID = (empty($rRequest['vod_id']) || !is_scalar($rRequest['vod_id']) ? 0 : intval($rRequest['vod_id']));
+
+		// Only movies the line's bouquets include (see getSeriesInfo()).
+		if ($rVODID > 0 && in_array($rVODID, $this->userInfo['vod_ids'] ?? [], true)) {
+			if ($rCached) {
+				$rRowData = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rVODID));
+				$rRow = $rRowData !== null ? ($rRowData['info'] ?? null) : null;
+			} else {
+				$db->query('SELECT * FROM `streams` WHERE `id` = ?', $rVODID);
+				$rRow = $db->get_row();
+			}
+
+			if ($rRow) {
+				if ($rSettings['api_redirect']) {
+					$rEncData = 'movie/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rRow['id'] . '/' . $rRow['target_container'];
+					$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+					$rURL = $this->domainName . 'play/' . $rToken;
+				} else {
+					$rURL = '';
+				}
+
+				$output['info'] = json_decode($rRow['movie_properties'] ?? '', true) ?: [];
+				// Read after the properties are loaded — read before, it was always 0.
+				$rating = is_numeric($output['info']['rating'] ?? null) ? floatval($output['info']['rating']) : 0.0;
+				$output['info']['tmdb_id'] = intval($output['info']['tmdb_id'] ?? 0);
+				$output['info']['episode_run_time'] = intval($output['info']['episode_run_time'] ?? 0);
+				$output['info']['releasedate'] = $output['info']['release_date'] ?? '';
+				$output['info']['cover_big'] = ImageUtils::validateURL($output['info']['cover_big'] ?? '');
+				$output['info']['movie_image'] = ImageUtils::validateURL($output['info']['movie_image'] ?? '');
+				$output['info']['rating'] = number_format($rating, 2) + 0;
+
+				if (!empty($output['info']['backdrop_path']) && is_array($output['info']['backdrop_path'])) {
+					foreach ($output['info']['backdrop_path'] as $i => $path) {
+						$output['info']['backdrop_path'][$i] = ImageUtils::validateURL($path);
+					}
+				}
+
+				$output['info']['subtitles'] = [];
+
+				if (isset($output['info']['subtitle']) && is_array($output['info']['subtitle'])) {
+					$i = 0;
+
+					foreach ($output['info']['subtitle'] as $rSubtitle) {
+						$output['info']['subtitles'][] = ['index' => $i, 'language' => (($rSubtitle['tags']['language'] ?? '') ?: null), 'title' => (($rSubtitle['tags']['title'] ?? '') ?: null)];
+						$i++;
+					}
+				}
+
+				foreach (['audio', 'video', 'subtitle'] as $rKey) {
+					if (isset($output['info'][$rKey])) {
+						unset($output['info'][$rKey]);
+					}
+				}
+
+				$output['movie_data'] = ['stream_id' => (int) $rRow['id'], 'name' => StreamSorter::formatTitle($rRow['stream_display_name'], $rRow['year']), 'title' => $rRow['stream_display_name'], 'year' => $rRow['year'], 'added' => ($rRow['added'] ?: ''), 'category_id' => strval(json_decode($rRow['category_id'], true)[0] ?? ''), 'category_ids' => json_decode($rRow['category_id'], true), 'container_extension' => $rRow['target_container'], 'custom_sid' => strval($rRow['custom_sid']), 'direct_source' => $rURL];
+			}
+		}
+
+		return $output;
+	}
+
+	private function getVodStreams() {
+		global $rSettings, $rCached, $rRequest, $db;
+
+		$rCategoryIDSearch = (empty($rRequest['category_id']) ? null : intval($rRequest['category_id']));
+		$rMovieNum = 0;
+		$output = [];
+
+		$vodCfg = \XcVm\Domain\Stream\CategoryTemplateService::getCustomCategoryConfig($this->userInfo['custom_data'] ?? null, 'movie');
+		if (!empty($rCategoryIDSearch) && in_array((int) $rCategoryIDSearch, $vodCfg['hide_ids'], true)) {
+			return $output;
+		}
+
+		// Sort the whole list, then take the page: slicing first paged the
+		// unsorted ids, so a page did not follow the channel order.
+		$this->userInfo['vod_ids'] = StreamSorter::sortChannels($this->userInfo['vod_ids'], $this->userInfo);
+
+		if (!empty($this->limit)) {
+			$this->userInfo['vod_ids'] = array_slice($this->userInfo['vod_ids'], $this->offset, $this->limit);
+		}
+
+		if (!$rCached) {
+			$rChannels = [];
+
+			if (count($this->userInfo['vod_ids']) > 0) {
+				$rWhereV = $rWhere = [];
+
+				if (!empty($rCategoryIDSearch)) {
+					$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
+					$rWhereV[] = $rCategoryIDSearch;
+				}
+
+				$rWhere[] = '`t1`.`id` IN (' . implode(',', $this->userInfo['vod_ids']) . ')';
+				$rWhereString = 'WHERE ' . implode(' AND ', $rWhere);
+
+				$rManual = ($rSettings['channel_number_type'] == 'manual');
+
+				$db->query('SELECT t1.id,t1.epg_id,t1.added,t1.allow_record,t1.year,t1.channel_id,t1.movie_properties,t1.stream_source,t1.tv_archive_server_id,t1.vframes_server_id,t1.tv_archive_duration,t1.stream_icon,t1.custom_sid,t1.category_id,t1.stream_display_name,t1.series_no,t1.direct_source,t2.type_output,t1.target_container,t2.live,t1.rtmp_output,t1.order,t2.type_key FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type ' . $rWhereString . ($rManual ? ' ORDER BY `order`' : '') . ';', ...$rWhereV);
+				$rChannels = $db->get_rows();
+				// The line's order, as FIELD(id, every id) gave it (each row once, at its first
+				// place) without MariaDB evaluating that list for every row.
+				if (!$rManual && $rChannels) {
+					$rRows = array_column($rChannels, null, 'id');
+					$rChannels = [];
+					foreach ($this->userInfo['vod_ids'] as $rID) {
+						if (isset($rRows[$rID])) {
+							$rChannels[] = $rRows[$rID];
+							unset($rRows[$rID]);
+						}
+					}
+				}
+			}
+		} else {
+			$rChannels = $this->userInfo['vod_ids'];
+		}
+
+		foreach ($rChannels as $rChannel) {
+			if ($rCached) {
+				$rChannel = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rChannel))['info'] ?? null;
+
+				if (!$rChannel) {
+					continue;
+				}
+			}
+
+			if ($rChannel['type_key'] == 'movie') {
+				// Decoded once the movie is listed: a category filter skips most of them.
+				$rProperties = null;
+				$rCategoryIDs = json_decode($rChannel['category_id'], true);
+
+				foreach ($rCategoryIDs as $rCategoryID) {
+					if (!empty($vodCfg['hide_ids']) && in_array((int) $rCategoryID, $vodCfg['hide_ids'], true)) {
+						continue;
+					}
+					if (!$rCategoryIDSearch || $rCategoryIDSearch == $rCategoryID) {
+						if ($rProperties === null) {
+							$rProperties = json_decode((string) $rChannel['movie_properties'], true);
+							if (!is_array($rProperties)) {
+								$rProperties = [];
+							}
+						}
+						if ($rSettings['api_redirect']) {
+							$rEncData = 'movie/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rChannel['id'] . '/' . $rChannel['target_container'];
+							$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+							$rURL = $this->domainName . 'play/' . $rToken;
+						} else {
+							$rURL = '';
+						}
+
+						$rating = is_numeric($rProperties['rating'] ?? null) ? floatval($rProperties['rating']) : 0.0;
+						$output[] = ['num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rChannel['stream_display_name'], $rChannel['year']), 'title' => $rChannel['stream_display_name'], 'year' => strval($rChannel['year']), 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => (ImageUtils::validateURL($rProperties['movie_image'] ?? '') ?: ''), 'rating' => number_format($rating, 1) + 0, 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'added' => strval(($rChannel['added'] ?: '')), 'plot' => $rProperties['plot'] ?? null, 'cast' => $rProperties['cast'] ?? null, 'director' => $rProperties['director'] ?? null, 'genre' => $rProperties['genre'] ?? null, 'release_date' => $rProperties['release_date'] ?? null, 'youtube_trailer' => $rProperties['youtube_trailer'] ?? null, 'episode_run_time' => $rProperties['episode_run_time'] ?? null, 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'container_extension' => $rChannel['target_container'], 'custom_sid' => strval($rChannel['custom_sid']), 'direct_source' => $rURL];
+					}
+
+					if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
+						break;
+					}
+				}
+			}
+		}
+
+		return $output;
+	}
+
+	private function getDefaultInfo() {
+		global $rSettings, $rServers;
+
+		$output = [];
+
+		$output['user_info'] = [
+			'username' => $this->userInfo['username'],
+			'password' => $this->userInfo['password'],
+			'message' => $rSettings['message_of_day'] ?? '',
+			'auth' => 1,
+			'status' => 'Active',
+			'exp_date' => $this->userInfo['exp_date'] !== null ? strval($this->userInfo['exp_date']) : null,
+			'is_trial' => strval($this->userInfo['is_trial'] ?? '0'),
+			'active_cons' => strval($this->userInfo['active_cons'] ?? '0'),
+			'created_at' => strval($this->userInfo['created_at'] ?? ''),
+			'max_connections' => strval($this->userInfo['max_connections'] ?? '1'),
+			'allowed_output_formats' => $this->getOutputFormats($this->userInfo['allowed_outputs'])
+		];
+
+		$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+			|| (!empty($_SERVER['REQUEST_SCHEME']) && strtolower($_SERVER['REQUEST_SCHEME']) === 'https')
+			|| (isset($_SERVER['SERVER_PORT']) && in_array((int) $_SERVER['SERVER_PORT'], [443, 3434], true))
+			|| (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+		$currentProtocol = $isHttps ? 'https' : ($rServers[SERVER_ID]['server_protocol'] ?? 'http');
+		$hostHeader = !empty($_SERVER['HTTP_HOST']) ? explode(':', $_SERVER['HTTP_HOST'])[0] : '';
+		$serverUrl = !empty($hostHeader) && !in_array($hostHeader, ['localhost', '127.0.0.1'], true) ? $hostHeader : $this->domain;
+
+		$output['server_info'] = [
+			'version' => XC_VM_VERSION,
+			'url' => $serverUrl,
+			'port' => strval($rServers[SERVER_ID]['http_broadcast_port'] ?? 80),
+			'https_port' => strval($rServers[SERVER_ID]['https_broadcast_port'] ?? 443),
+			'server_protocol' => $currentProtocol,
+			'rtmp_port' => strval($rServers[SERVER_ID]['rtmp_port'] ?? 8880),
+			'timestamp_now' => time(),
+			'time_now' => date('Y-m-d H:i:s'),
+			'timezone' => $rSettings['force_epg_timezone'] ? 'UTC' : ($rSettings['default_timezone'] ?? 'UTC'),
+			'process' => true
+		];
+
+		return $output;
+	}
+
+	/**
+	 * Send standardized Xtream Codes JSON auth error response.
+	 */
+	private function sendAuthError(string $status = '', string $message = ''): void {
+		$this->deny = false;
+		header('Content-Type: application/json; charset=utf-8');
+		// Token/credential-authenticated API (not cookie-based): do not reflect
+		// the Origin with credentials.
+		header('Access-Control-Allow-Origin: *');
+		$payload = [
+			'user_info' => [
+				'auth' => 0
+			]
+		];
+		if ($status !== '') {
+			$payload['user_info']['status'] = $status;
+		}
+		if ($message !== '') {
+			$payload['user_info']['message'] = $message;
+		}
+		echo json_encode($payload);
+		exit();
+	}
+
+	private function getOutputFormats($rFormats) {
+		$rFormatArray = [1 => 'm3u8', 2 => 'ts', 3 => 'rtmp'];
+		$rReturn = [];
+
+		if (is_iterable($rFormats)) {
+			foreach ($rFormats as $rFormat) {
+				if (isset($rFormatArray[$rFormat])) {
+					$rReturn[] = $rFormatArray[$rFormat];
+				}
+			}
+		}
+
+		return $rReturn !== [] ? $rReturn : ['m3u8', 'ts', 'rtmp'];
+	}
+}

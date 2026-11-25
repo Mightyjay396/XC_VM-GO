@@ -1,0 +1,10 @@
+--- a/Domain/Cluster/HeartbeatService.php
++++ b/Domain/Cluster/HeartbeatService.php
+@@ -619,6 +619,7 @@
+ 		$rHistory[] = $rOut['cpu'];
+ 		$rOut['cpu_average_array'] = array_slice($rHistory, -self::CPU_HISTORY);
+ 		$rOut['fanout'] = is_array($rLocal['fanout'] ?? null) ? $rLocal['fanout'] : ($rPrev['fanout'] ?? null);
++		$rOut['qc_go'] = (int) ($rLocal['qc_go'] ?? 0); // QC-GO-DELIVERY
+ 		return $rOut;
+ 	}
+ 

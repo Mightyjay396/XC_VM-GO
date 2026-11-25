@@ -1,0 +1,14 @@
+{
+    "name": "providerimport",
+    "title": "ProviderImport",
+    "hash_id": "1fe3700156be4c6fa82207c14bd95021",
+    "description": "Import depuis les providers : chaînes live et 24/7, films, séries et épisodes (TMDB, genres, doublons ignorés, lecture Direct ou stockée). Administrateurs seulement. Aucune table ajoutée.",
+    "version": "1.1.2",
+    "requires_core": ">=2.7",
+    "environment": "main",
+    "dependencies": [],
+    "optional_dependencies": [],
+    "has_navbar": true,
+    "has_settings": false,
+    "priority": 100
+}

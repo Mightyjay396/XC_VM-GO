@@ -1,0 +1,19 @@
+--- a/Streaming/Fanout/FanoutClient.php
++++ b/Streaming/Fanout/FanoutClient.php
+@@ -715,6 +715,16 @@
+ 	 * @param int $rIndex    Index into the stream's source list.
+ 	 * @return bool True when the daemon queued the switch.
+ 	 */
++	// od_v2: one supervised stream's state (GET /monitor/<id>), null when unknown.
++	public static function monitorState(int $rStreamID): ?array {
++		$rRes = self::request('GET', '/monitor/' . $rStreamID, null, 1, 2);
++		if ($rRes['errno'] !== 0 || $rRes['code'] !== 200 || !is_string($rRes['body'])) {
++			return null;
++		}
++		$rData = json_decode($rRes['body'], true);
++		return is_array($rData) ? $rData : null;
++	}
++
+ 	public static function forceSource(int $rStreamID, int $rIndex): bool {
+ 		$rCode = self::request('POST', '/monitor/' . $rStreamID . '/source', json_encode(['index' => $rIndex]), 1, 3)['code'];
+ 		return $rCode >= 200 && $rCode < 300;

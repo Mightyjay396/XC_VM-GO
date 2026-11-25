@@ -1,0 +1,25 @@
+[Unit]
+Description=livehold - keeps XC_VM 24/7 viewers connected across ffmpeg restarts (TS+HLS)
+After=network.target
+
+[Service]
+User=xc_vm
+Group=xc_vm
+ExecStart=/opt/livehold/livehold
+Environment=LH_ADDR=127.0.0.1:8150
+Environment=LH_SLATE=/opt/livehold/offline.ts
+Environment=LH_FROZEN_SEC=35
+Environment=LH_HOLD_SEC=300
+Environment=LH_STALL_KILL_SEC=36
+Environment=LH_RECV_MAX_SEC=90
+Environment=LH_CLIENT_SLATE_SEC=60
+Environment=LH_DRAIN_SEC=14400
+Environment=GOMEMLIMIT=1GiB
+KillMode=mixed
+TimeoutStopSec=4h10min
+Restart=always
+RestartSec=1
+LimitNOFILE=200000
+
+[Install]
+WantedBy=multi-user.target

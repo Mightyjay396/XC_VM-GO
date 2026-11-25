@@ -1,0 +1,59 @@
+--- a/Public/stream/segment.php
++++ b/Public/stream/segment.php
+@@ -118,6 +118,30 @@
+ 				$rVideoCodec = ($rTokenArray[7] ?: 'h264');
+ 				$rOnDemand = ($rTokenArray[8] ?: 0);
+ 
++				// QC-LIVEHOLD: livehold segment "<id>_d<seq>.ts" = an on-disk ffmpeg file, served by the legacy path below (signals, X-Accel)
++				if (!$rOnDemand && FanoutMode::legacyDelivery($rSettings) && preg_match('/^' . intval($rStreamID) . '_d(\d+)\.ts$/', $rSegmentID, $rLHSeg) && is_readable("/home/xc_vm/config/livehold_streams.txt")) {
++					$rLHName = @file_get_contents('http://127.0.0.1:8150/name/' . intval($rStreamID) . '/' . $rLHSeg[1], false, stream_context_create(['http' => ['timeout' => 5]]));
++					if ($rLHName === 'slate') {
++						$rIPMatch = NetworkUtils::ipMatches((bool) $rSettings['ip_subnet_match'], $rUserIP, getuserip());
++						if (!file_exists(CONS_TMP_PATH . $rUUID) || (!$rIPMatch && $rSettings['restrict_same_ip'])) {
++							generate404();
++						}
++						$rLHData = @file_get_contents('http://127.0.0.1:8150/hls/' . intval($rStreamID) . '/' . $rLHSeg[1] . '.ts', false, stream_context_create(['http' => ['timeout' => 10]]));
++						if (!$rLHData) {
++							generate404();
++						}
++						header('Access-Control-Allow-Origin: *');
++						header('Content-Type: video/mp2t');
++						header('Content-Length: ' . strlen($rLHData));
++						echo $rLHData;
++						exit();
++					}
++					if (!is_string($rLHName) || !preg_match('/^' . intval($rStreamID) . '_\d+\.ts$/', $rLHName)) {
++						generate404();
++					}
++					$rSegmentID = $rLHName;
++				}
++
+ 				// Phase B (ADR 0003): daemon in-RAM HLS segment — name is
+ 				// "<id>_d<seq>.ts", no on-disk file. Auth lives in the token; run
+ 				// the same uuid + IP checks, then proxy the segment from the
+@@ -127,7 +151,8 @@
+ 					// Fanout switched off (or the licence denies it): the daemon is
+ 					// stopped and serves nothing; a player still holding a daemon
+ 					// playlist gets a 404 and reloads the on-disk one from live.php.
+-					if (FanoutMode::legacyDelivery($rSettings) || !file_exists(CONS_TMP_PATH . $rUUID)) {
++					$rODSeg = FanoutMode::legacyDelivery($rSettings) && is_readable("/home/xc_vm/config/odrelay_streams.txt"); // QC-ODRELAY2
++					if ((FanoutMode::legacyDelivery($rSettings) && !$rODSeg) || !file_exists(CONS_TMP_PATH . $rUUID)) {
+ 						generate404();
+ 					}
+ 					$rIPMatch = NetworkUtils::ipMatches((bool) $rSettings['ip_subnet_match'], $rUserIP, getuserip());
+@@ -136,6 +161,15 @@
+ 					}
+ 					header('Access-Control-Allow-Origin: *');
+ 					header('Content-Type: video/mp2t');
++					if ($rODSeg) { // QC-ODRELAY2: segment from odrelay's RAM
++						$rODData = @file_get_contents('http://127.0.0.1:8147/hls/' . intval($rStreamID) . '/' . $rDSeg[1] . '.ts', false, stream_context_create(['http' => ['timeout' => 10]]));
++						if ($rODData === false || $rODData === '') {
++							generate404();
++						}
++						header('Content-Length: ' . strlen($rODData));
++						echo $rODData;
++						exit();
++					}
+ 					// Pass the viewer uuid + video codec so the daemon can apply a
+ 					// pending "send message" overlay to this segment (else no-op).
+ 					header('X-Accel-Redirect: /xc_fanout_hls/' . intval($rStreamID) . '_' . $rDSeg[1] . '?c=' . rawurlencode($rUUID) . '&vc=' . rawurlencode($rVideoCodec));

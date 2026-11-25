@@ -1,0 +1,7 @@
+{
+  "token": "",
+  "ips": [],
+  "write_enabled": false,
+  "server_id": 0,
+  "log": "/home/xc_vm/logs/xaccel_compat_api.log"
+}

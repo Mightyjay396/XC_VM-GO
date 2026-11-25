@@ -1,0 +1,21 @@
+[Unit]
+Description=QC mpdproxy shard on port %i (DASH live -> static manifest for ffmpeg ClearKey sources)
+After=network.target
+Requires=mpdproxy@%i.socket
+
+[Service]
+ExecStart=/opt/mpdproxy/mpdproxy %i
+Restart=always
+RestartSec=1
+TimeoutStopSec=15
+Environment=MPDPROXY_CACHE_MB=1536
+Environment=MPDPROXY_FETCH_WORKERS=48
+Environment=MPDPROXY_HTTP_WORKERS=192
+Environment=GOGC=200
+User=xc_vm
+NoNewPrivileges=true
+StateDirectory=mpdproxy-%i
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

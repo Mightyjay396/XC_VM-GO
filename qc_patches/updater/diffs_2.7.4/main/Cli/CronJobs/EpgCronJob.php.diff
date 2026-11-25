@@ -1,0 +1,23 @@
+--- a/Cli/CronJobs/EpgCronJob.php
++++ b/Cli/CronJobs/EpgCronJob.php
+@@ -244,7 +244,7 @@
+ 		global $db;
+ 
+ 		$this->printLog("[CACHE] Building per-stream EPG cache...");
+-		$db->query('SELECT `id`, `epg_id`, `channel_id` FROM `streams` WHERE `type` IN (1, 3) AND `epg_id` IS NOT NULL AND `channel_id` IS NOT NULL;');
++		$db->query('SELECT `id`, `epg_id`, `channel_id`, `epg_offset` FROM `streams` WHERE `type` IN (1, 3) AND `epg_id` IS NOT NULL AND `channel_id` IS NOT NULL;');
+ 		$streams = $db->get_rows();
+ 		$this->printLog("[CACHE] Caching EPG for " . count($streams) . " streams");
+ 
+@@ -256,6 +256,11 @@
+ 			foreach ($db->get_rows() as $prog) {
+ 				if (!in_array($prog['start'], $seen)) {
+ 					$seen[] = $prog['start'];
++					$rShift = intval($rRow['epg_offset']) * 60;
++					if ($rShift) {
++						$prog['start'] += $rShift;
++						$prog['end'] += $rShift;
++					}
+ 					$rEPGData[] = $prog;
+ 				}
+ 			}

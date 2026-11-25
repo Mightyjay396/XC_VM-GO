@@ -1,0 +1,18 @@
+--- a/Cli/CronJobs/ServersCronJob.php
++++ b/Cli/CronJobs/ServersCronJob.php
+@@ -119,6 +119,15 @@
+ 			}
+ 		}
+ 
++		// QC: each node drops its own ghost viewers from its agent registry.
++		if (!$rServers[SERVER_ID]['is_main'] && class_exists(\XcVm\Core\Cluster\QcGhostReaper::class)) {
++			try {
++				\XcVm\Core\Cluster\QcGhostReaper::run();
++			} catch (\Throwable $rE) {
++				echo 'QcGhostReaper: ' . $rE->getMessage() . "\n";
++			}
++		}
++
+ 		// Daemon liveness checks read /proc via ProcessManager: the old
+ 		// "ps | grep <word>" pipelines matched unrelated processes — e.g.
+ 		// ffmpeg's -thread_queue_size satisfied the "queue" check, so the

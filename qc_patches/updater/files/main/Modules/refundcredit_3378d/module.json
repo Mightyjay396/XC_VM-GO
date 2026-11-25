@@ -1,0 +1,13 @@
+{
+    "name": "refundcredit",
+    "hash_id": "3378dc08a591d3401219bfc9d72823ba",
+    "description": "Module de remboursement de credits pour resellers.",
+    "version": "1.1.0",
+    "requires_core": ">=2.0",
+    "environment": "any",
+    "dependencies": [],
+    "optional_dependencies": [],
+    "has_navbar": false,
+    "has_settings": false,
+    "priority": 100
+}

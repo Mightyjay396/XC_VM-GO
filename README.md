@@ -430,3 +430,11 @@ channel** are ever involved. Full detail:
 > We take no responsibility for misuse or illegal deployments.
 
 ---
+
+---
+
+## QC patches — moteur de diffusion Go pour XC_VM 2.7.2 / 2.7.4
+
+Corrections (dont la coupure des clients TS actifs), modules revendeurs/essais, API XAccel et moteur de
+diffusion Go (odrelay, livehold, ckts, mpdproxy) avec un outil d'installation qui met à jour le Main et
+tous ses LB en une commande : voir [`qc_patches/README.md`](qc_patches/README.md).

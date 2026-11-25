@@ -1,0 +1,16 @@
+[Unit]
+Description=mpdproxy ad-break (SSAI) shard on port %i, used by ckts
+After=network.target
+Requires=mpdproxy-ads@%i.socket
+
+[Service]
+User=xc_vm
+ExecStart=/opt/ckts/mpdproxy-ads %i
+Environment=MPDPROXY_CACHE_MB=1024
+StateDirectory=mpdproxy-ads-%i
+Restart=always
+RestartSec=1
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

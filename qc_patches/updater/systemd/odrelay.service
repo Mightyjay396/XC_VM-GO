@@ -1,0 +1,18 @@
+[Unit]
+Description=QC odrelay - fast-start relay for XC_VM on-demand channels (TS+HLS)
+After=network-online.target
+
+[Service]
+Environment=ODRELAY_ADDR=127.0.0.1:8147
+Environment=ODRELAY_IDLE_SEC=60
+Environment=ODRELAY_RING_MB=16
+Environment=ODRELAY_START_SEC=18
+Environment=GOMEMLIMIT=4GiB
+ExecStart=/opt/odrelay/odrelay
+Restart=always
+RestartSec=2
+User=xc_vm
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

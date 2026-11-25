@@ -1,0 +1,11 @@
+--- a/Public/stream/auth.php
++++ b/Public/stream/auth.php
+@@ -200,7 +200,7 @@
+ 						$rAvailableServers[] = $rServerID;
+ 					}
+ 				} else {
+-					if ((($serverStream['on_demand'] == 1 && $serverStream['stream_status'] != 1) || ((int) $serverStream['pid'] > 0 && $serverStream['stream_status'] == 0)) && $serverStream['to_analyze'] == 0 && (int) $serverStream['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || ($rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1)) {
++					if ((($serverStream['on_demand'] == 1) || ((int) $serverStream['pid'] > 0 && $serverStream['stream_status'] == 0)) && $serverStream['to_analyze'] == 0 && (int) $serverStream['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || ($rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1)) {
+ 						$rAvailableServers[] = $rServerID;
+ 					}
+ 				}

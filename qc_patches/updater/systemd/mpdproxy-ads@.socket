@@ -1,0 +1,10 @@
+[Unit]
+Description=mpdproxy ad-break socket on port %i (held by systemd: restarts never drop connections)
+
+[Socket]
+ListenStream=127.0.0.1:%i
+Backlog=1024
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

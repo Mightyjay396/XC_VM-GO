@@ -1,0 +1,15 @@
+--- a/Domain/Cluster/ConnectionSnapshot.php
++++ b/Domain/Cluster/ConnectionSnapshot.php
+@@ -102,6 +102,12 @@
+ 				if (is_array($rRecord) && is_scalar($rRecord['uuid'] ?? null)) {
+ 					$rSeen[(string) $rRecord['uuid']] = true; // the node holds it, whether MAIN takes it or not
+ 				}
++				// QC_GHOST: an HLS viewer ended and unread for cluster_orphan_conn_ttl_sec is not put back; the node drops it from its registry.
++				if (is_array($rRecord) && !empty($rRecord['hls_end']) && is_string($rRecord['uuid'] ?? null) && time() - max((int) ($rRecord['hls_last_read'] ?? 0), (int) ($rRecord['date_start'] ?? 0)) >= \XcVm\Core\Cluster\ClusterSettings::int('cluster_orphan_conn_ttl_sec', SettingsManager::get('cluster_orphan_conn_ttl_sec'))) {
++					ClusterRoute::closeConnection($rServerID, $rRecord['uuid'], true);
++					$rDropped++;
++					continue;
++				}
+ 				if (is_array($rRecord) && ConnectionIngest::upsert($rServerID, $rRecord)) {
+ 					$rApplied++;
+ 				} else {

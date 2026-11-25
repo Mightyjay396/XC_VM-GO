@@ -1,0 +1,10 @@
+--- a/Domain/Cluster/HeartbeatService.php
++++ b/Domain/Cluster/HeartbeatService.php
+@@ -623,6 +623,7 @@
+ 		// value: a serve-only node kept the one PHP left at install time for good,
+ 		// and ReleaseCanary held the release back on it.
+ 		$rOut['fanout'] = is_array($rTel['fanout'] ?? null) ? $rTel['fanout'] : (is_array($rLocal['fanout'] ?? null) ? $rLocal['fanout'] : null);
++		$rOut['qc_go'] = (int) ($rLocal['qc_go'] ?? 0); // QC-GO-DELIVERY
+ 		return $rOut;
+ 	}
+ 

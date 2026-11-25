@@ -1,0 +1,1165 @@
+<?php
+
+namespace XcVm\Domain\Stream;
+
+use InvalidArgumentException;
+use RuntimeException;
+use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Cluster\NodeRpc;
+use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamSavedEvent;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
+use XcVm\Core\Http\ApiClient;
+use XcVm\Core\Module\SourceDriverRegistry;
+use XcVm\Core\Module\StreamFormRegistry;
+use XcVm\Core\Util\AdminHelpers;
+use XcVm\Core\Util\ImageUtils;
+use XcVm\Domain\Bouquet\BouquetService;
+use XcVm\Domain\Epg\EpgService;
+use XcVm\Domain\Epg\EpgConfiguration;
+use XcVm\Domain\Epg\EpgSelectionGuide;
+use XcVm\Domain\Epg\EpgBindingSelection;
+use XcVm\Domain\Epg\EpgMerge;
+use XcVm\Domain\Epg\EpgReload;
+use XcVm\Domain\Server\ServerRepository;
+use XcVm\Infrastructure\Database\DatabaseAware;
+
+/**
+ * StreamService — stream service
+ *
+ * @package XC_VM_Domain_Stream
+ * @author  Divarion_D <https://github.com/Divarion-D>
+ * @copyright 2025-2026 Vateron Media
+ * @link    https://github.com/Vateron-Media/XC_VM
+ * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
+ */
+
+class StreamService {
+	use DatabaseAware;
+
+	/**
+	 * Create or update a stream from admin form data.
+	 *
+	 * @param array $rData Submitted form data (includes `edit` id when updating).
+	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
+	 */
+	public static function process(array $rData) {
+		return array_key_exists('epg_pick_enabled', $rData)
+			? EpgConfiguration::locked(static fn() => self::processLocked($rData))
+			: self::processLocked($rData);
+	}
+
+	private static function processLocked(array $rData) {
+		$rData = Authorization::dropFfmpegArguments($rData);
+		unset($rData['epg_bindings']);
+		global $rSettings;
+		$db = self::db();
+		set_time_limit(0);
+		ini_set('mysql.connect_timeout', 0);
+		ini_set('max_execution_time', 0);
+		ini_set('default_socket_timeout', 0);
+
+		if (isset($rData['edit'])) {
+			if (Authorization::check('adv', 'edit_stream')) {
+				// The edit starts from the stream as stored: the row cleaner's
+				// escaping would be written back into every field not sent.
+				$db->query('SELECT * FROM `streams` WHERE `id` = ?;', intval($rData['edit']));
+				$rArray = AdminHelpers::overwriteData($db->get_raw_row(), $rData);
+			} else {
+				exit();
+			}
+		} else {
+			if (Authorization::check('adv', 'add_stream')) {
+				$rArray = QueryHelper::verifyPostTable('streams', $rData);
+				$rArray['type'] = 1;
+				$rArray['added'] = time();
+				unset($rArray['id']);
+			} else {
+				exit();
+			}
+		}
+
+		$rSelectionSources = null;
+		if (!empty($rData['epg_pick_enabled'])) {
+			$db->query('SELECT * FROM `epg`;');
+			$sources = array_column($db->get_raw_rows(), null, 'id');
+			try {
+				$picks = EpgBindingSelection::validate((string) ($rData['epg_picks'] ?? ''), $sources);
+				$rArray['epg_bindings'] = json_encode($picks);
+				$rSelectionSources = EpgSelectionGuide::selected(array_column($picks, 'source'), $sources);
+			} catch (InvalidArgumentException $e) {
+				return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			}
+		} elseif (array_key_exists('epg_pick_enabled', $rData)) {
+			$rArray['epg_bindings'] = null;
+		}
+
+		if (isset($rData['days_to_restart']) && preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', $rData['time_to_restart'])) {
+			$rTimeArray = ['days' => [], 'at' => $rData['time_to_restart']];
+
+			foreach ($rData['days_to_restart'] as $rDay) {
+				$rTimeArray['days'][] = $rDay;
+			}
+			$rArray['auto_restart'] = $rTimeArray;
+		} else {
+			$rArray['auto_restart'] = '';
+		}
+
+		foreach (['fps_restart', 'gen_timestamps', 'allow_record', 'rtmp_output', 'stream_all', 'direct_source', 'direct_proxy', 'read_native', 'force_ffmpeg'] as $rKey) {
+			$rArray[$rKey] = (int) isset($rData[$rKey]);
+		}
+
+		if (!$rArray['transcode_profile_id']) {
+			$rArray['transcode_profile_id'] = 0;
+		}
+
+		if ($rArray['transcode_profile_id'] > 0) {
+			$rArray['enable_transcode'] = 1;
+		}
+
+		$rRestart = isset($rData['restart_on_edit']);
+
+		$rReview = false;
+		$rImportStreams = [];
+		$rBackupSources = [];
+
+		if (isset($rData['review'])) {
+			$rReview = true;
+
+			foreach ($rData['review'] as $rImportStream) {
+				// A review row need not carry channel_id or tvg_id (a plain m3u row
+				// has neither), so read both defensively — empty() covers a missing key.
+				if (empty($rImportStream['channel_id']) && !empty($rImportStream['tvg_id'])) {
+					$rEPG = EpgService::findByName($rImportStream['tvg_id']);
+
+					if (isset($rEPG)) {
+						$rImportStream['epg_id'] = $rEPG['epg_id'];
+						$rImportStream['channel_id'] = $rEPG['channel_id'];
+
+						if (!empty($rEPG['epg_lang'])) {
+							$rImportStream['epg_lang'] = $rEPG['epg_lang'];
+						}
+					}
+				}
+
+				$rImportStreams[] = $rImportStream;
+			}
+		} else {
+			if (isset($_FILES['m3u_file'])) {
+				if (Authorization::check('adv', 'import_streams')) {
+					if (!empty($_FILES['m3u_file']['tmp_name']) && in_array(strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)), ['m3u', 'm3u8'])) {
+						$rResults = self::parseM3U($_FILES['m3u_file']['tmp_name']);
+
+						if (count($rResults) > 0) {
+							$rEPGDatabase = $rSourceDatabase = $rStreamDatabase = [];
+							$db->query('SELECT `id`, `stream_display_name`, `stream_source`, `channel_id` FROM `streams` WHERE `type` = 1;');
+
+							foreach ($db->get_rows() as $rRow) {
+								$rName = self::nameKey($rRow['stream_display_name']);
+
+								if (!empty($rName)) {
+									$rStreamDatabase[$rName] = $rRow['id'];
+								}
+
+								$rEPGDatabase[$rRow['channel_id']] = $rRow['id'];
+
+								foreach (json_decode($rRow['stream_source'], true) as $rSource) {
+									if (!empty($rSource)) {
+										$rSourceDatabase[md5(preg_replace('(^https?://)', '', str_replace(' ', '%20', $rSource)))] = $rRow['id'];
+									}
+								}
+							}
+							$rEPGMatch = $rEPGScan = [];
+							$i = 0;
+
+							foreach ($rResults as $rResult) {
+								$rTags = $rResult->getExtTags();
+								$rTag = $rTags[0] ?? null;
+								$rTag = ($rTag instanceof \M3uParser\Tag\ExtInf) ? $rTag : null;
+
+								if ($rTag && $rTag->getAttribute('tvg-id')) {
+									$rID = $rTag->getAttribute('tvg-id');
+									$rEPGScan[$rID][] = $i;
+								}
+
+								$i++;
+							}
+
+							if (count($rEPGScan) > 0) {
+								$db->query('SELECT `id`, `data` FROM `epg`;');
+
+								if ($db->num_rows() > 0) {
+									foreach ($db->get_rows() as $rRow) {
+										foreach (json_decode($rRow['data'], true) as $rChannelID => $rChannelData) {
+											if (isset($rEPGScan[$rChannelID])) {
+												if (0 < count($rChannelData['langs'])) {
+													$rEPGLang = $rChannelData['langs'][0];
+												} else {
+													$rEPGLang = '';
+												}
+
+												foreach ($rEPGScan[$rChannelID] as $i) {
+													$rEPGMatch[$i] = ['channel_id' => $rChannelID, 'epg_lang' => $rEPGLang, 'epg_id' => intval($rRow['id'])];
+												}
+											}
+										}
+									}
+								}
+							}
+
+							$i = 0;
+
+							foreach ($rResults as $rResult) {
+								$rTags = $rResult->getExtTags();
+								$rTag = $rTags[0] ?? null;
+								$rTag = ($rTag instanceof \M3uParser\Tag\ExtInf) ? $rTag : null;
+								$rURL = $rResult->getPath();
+
+								if ($rURL) {
+									$rImportArray = ['stream_source' => [$rURL], 'stream_icon' => ($rTag instanceof \M3uParser\Tag\ExtInf ? ($rTag->getAttribute('tvg-logo') ?: ($rTag->getAttribute('logo') ?: '')) : ''), 'stream_display_name' => ($rTag instanceof \M3uParser\Tag\ExtInf ? ($rTag->getTitle() ?: basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)) : basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)), 'epg_id' => null, 'epg_lang' => null, 'channel_id' => null];
+
+									if ($rTag && $rTag->getAttribute('tvg-id')) {
+										$rEPG = ($rEPGMatch[$i] ?? null);
+
+										if (isset($rEPG)) {
+											$rImportArray['epg_id'] = $rEPG['epg_id'];
+											$rImportArray['channel_id'] = $rEPG['channel_id'];
+
+											if (!empty($rEPG['epg_lang'])) {
+												$rImportArray['epg_lang'] = $rEPG['epg_lang'];
+											}
+										}
+									}
+
+									$rBackupID = $rExistsID = null;
+									$rSourceID = md5(preg_replace('(^https?://)', '', str_replace(' ', '%20', $rURL)));
+
+									if (isset($rSourceDatabase[$rSourceID])) {
+										$rExistsID = $rSourceDatabase[$rSourceID];
+									}
+
+									$rName = self::nameKey($rImportArray['stream_display_name']);
+
+									if (!empty($rName) && isset($rStreamDatabase[$rName])) {
+										$rBackupID = $rStreamDatabase[$rName];
+									} else {
+										if (!empty($rImportArray['channel_id']) && isset($rEPGDatabase[$rImportArray['channel_id']])) {
+											$rBackupID = $rEPGDatabase[$rImportArray['channel_id']];
+										}
+									}
+
+									if ($rBackupID && !$rExistsID && isset($rData['add_source_as_backup'])) {
+										// Its source is written once the import is known not to be refused (below).
+										$rBackupSources[] = [$rBackupID, $rURL];
+										$rImportStreams[] = ['update' => true, 'id' => $rBackupID];
+									} else {
+										if ($rExistsID && isset($rData['update_existing'])) {
+											$rImportArray['id'] = $rExistsID;
+											$rImportStreams[] = $rImportArray;
+										} else {
+											if (!$rExistsID) {
+												$rImportStreams[] = $rImportArray;
+											}
+										}
+									}
+								}
+
+								$i++;
+							}
+						} else {
+							return ['status' => STATUS_INVALID_FILE, 'data' => $rData];
+						}
+					} else {
+						return ['status' => STATUS_INVALID_FILE, 'data' => $rData];
+					}
+				} else {
+					exit();
+				}
+			} else {
+				$rImportArray = ['stream_source' => [], 'stream_icon' => $rArray['stream_icon'], 'stream_display_name' => $rArray['stream_display_name'], 'epg_id' => $rArray['epg_id'], 'epg_lang' => $rArray['epg_lang'], 'channel_id' => $rArray['channel_id']];
+
+				if (isset($rData['stream_source'])) {
+					foreach ($rData['stream_source'] as $rURL) {
+						if ((string) $rURL !== '') {
+							$rImportArray['stream_source'][] = $rURL;
+						}
+					}
+				}
+
+				$rImportStreams[] = $rImportArray;
+			}
+		}
+
+		$rModuleFields = StreamFormRegistry::posted($rData);
+		$rRefusal = self::saveRefusal($rImportStreams, $rArray, $rData, $rModuleFields);
+		if ($rRefusal !== null) {
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rRefusal];
+		}
+
+		// The backup sources an import gives existing streams, in the playlist's order.
+		foreach ($rBackupSources as [$rBackupID, $rURL]) {
+			$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?;', $rBackupID);
+
+			if ($db->num_rows() > 0) {
+				$rSources = (json_decode($db->get_row()['stream_source'], true) ?: []);
+				$rSources[] = $rURL;
+				$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode($rSources), $rBackupID);
+				EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rBackupID]));
+			}
+		}
+
+		if (0 < count($rImportStreams)) {
+			$rBouquetCreate = [];
+			$rCategoryCreate = [];
+
+			if (!$rReview) {
+				$rBouquetList = json_decode($rData['bouquet_create_list'] ?? '[]', true) ?: [];
+				foreach ($rBouquetList as $rBouquet) {
+					$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
+					$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
+
+					if ($db->query($rQuery, ...$rPrepare['data'])) {
+						$rBouquetID = $db->last_insert_id();
+						$rBouquetCreate[$rBouquet] = $rBouquetID;
+					}
+				}
+
+				$rCategoryList = json_decode($rData['category_create_list'] ?? '[]', true) ?: [];
+				foreach ($rCategoryList as $rCategory) {
+					$rPrepare = QueryHelper::prepareArray(['category_type' => 'live', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
+					$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
+
+					if ($db->query($rQuery, ...$rPrepare['data'])) {
+						$rCategoryID = $db->last_insert_id();
+						$rCategoryCreate[$rCategory] = $rCategoryID;
+					}
+				}
+			}
+
+			$rInsertID = 0;
+			$rSavedIDs = [];
+			try {
+				$rSelectionGroup = $rSelectionSources ? EpgSelectionGuide::group($rSelectionSources) : null;
+			} catch (RuntimeException $e) {
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
+			}
+			// The new rows' icons, several at a time, before the first row is written.
+			$rIcons = $rSettings['download_images'] ? ImageUtils::downloadImages(array_column(array_filter($rImportStreams, static fn(array $rRow): bool => !($rRow['update'] ?? false)), 'stream_icon')) : [];
+
+			foreach ($rImportStreams as $rImportStream) {
+				if (!($rImportStream['update'] ?? false)) {
+					$rImportArray = $rArray;
+
+					if ($rSettings['download_images']) {
+						$rIcon = $rImportStream['stream_icon'] ?? null;
+						$rImportStream['stream_icon'] = is_string($rIcon) ? ($rIcons[$rIcon] ?? $rIcon) : $rIcon;
+					}
+
+					if ($rReview) {
+						$rImportArray['category_id'] = '[' . implode(',', array_map('intval', $rImportStream['category_id'])) . ']';
+						$rBouquets = array_map('intval', $rImportStream['bouquets']);
+						unset($rImportStream['bouquets']);
+					} else {
+						$rBouquets = [];
+
+						foreach (($rData['bouquets'] ?? []) as $rBouquet) {
+							if (isset($rBouquetCreate[$rBouquet])) {
+								$rBouquets[] = $rBouquetCreate[$rBouquet];
+							} else {
+								if (is_numeric($rBouquet)) {
+									$rBouquets[] = intval($rBouquet);
+								}
+							}
+						}
+						$rCategories = [];
+
+						foreach (($rData['category_id'] ?? []) as $rCategory) {
+							if (isset($rCategoryCreate[$rCategory])) {
+								$rCategories[] = $rCategoryCreate[$rCategory];
+							} else {
+								if (is_numeric($rCategory)) {
+									$rCategories[] = intval($rCategory);
+								}
+							}
+						}
+						$rImportArray['category_id'] = '[' . implode(',', array_map('intval', $rCategories)) . ']';
+
+						if (isset($rData['adaptive_link']) && 0 < count($rData['adaptive_link'])) {
+							$rImportArray['adaptive_link'] = '[' . implode(',', array_map('intval', $rData['adaptive_link'])) . ']';
+						} else {
+							$rImportArray['adaptive_link'] = null;
+						}
+					}
+
+					// Only `streams` columns (and the id of a stream being updated): a review
+					// row's form-only keys (epg_api) used to reach the REPLACE and fail it.
+					unset($rImportStream['epg_bindings']);
+					$rImportArray = array_replace($rImportArray, array_intersect_key($rImportStream, $rArray + ['id' => null]));
+
+					if (!isset($rData['edit']) && !isset($rImportStream['id'])) {
+						$rImportArray['order'] = StreamRepository::getNextOrder();
+					}
+
+					$rImportArray['title_sync'] = ($rData['title_sync'] ?? null);
+
+					if ($rImportArray['title_sync']) {
+						list($rSyncID, $rSyncStream) = array_map('intval', explode('_', $rImportArray['title_sync']));
+						$db->query('SELECT `stream_display_name` FROM `providers_streams` WHERE `provider_id` = ? AND `stream_id` = ?;', $rSyncID, $rSyncStream);
+
+						if ($db->num_rows() == 1) {
+							$rImportArray['stream_display_name'] = $db->get_row()['stream_display_name'];
+						}
+					}
+
+					if ($rSelectionGroup !== null) {
+						$rImportArray['epg_id'] = $rSelectionGroup;
+						$rImportArray['channel_id'] = EpgMerge::channelId($rSelectionGroup, EpgSelectionGuide::target((int) ($rImportArray['id'] ?? 0)));
+					}
+
+					$rSelectionTx = $rSelectionGroup !== null && !$db->isInTransaction();
+					$rSelectionSavepoint = $rSelectionGroup !== null && !$rSelectionTx;
+					if (($rSelectionTx && !$db->beginTransaction()) || ($rSelectionSavepoint && !$db->query('SAVEPOINT xcvm_stream_selection;'))) {
+						return ['status' => STATUS_FAILURE, 'data' => $rData];
+					}
+					$rPrepare = QueryHelper::prepareArray($rImportArray);
+					$rQuery = 'REPLACE INTO `streams`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
+					try {
+						$rWritten = $db->query($rQuery, ...$rPrepare['data']);
+						$rNewID = $rWritten ? (int) $db->last_insert_id() : 0;
+						if ($rSelectionGroup !== null && (!$rWritten || !$db->query('UPDATE `streams` SET `channel_id` = ? WHERE `id` = ?;', EpgMerge::channelId($rSelectionGroup, EpgSelectionGuide::target($rNewID)), $rNewID))) {
+							throw new RuntimeException('Cannot save stream EPG selection.');
+						}
+						if (($rSelectionTx && !$db->commit()) || ($rSelectionSavepoint && !$db->query('RELEASE SAVEPOINT xcvm_stream_selection;'))) {
+							throw new RuntimeException('Cannot commit stream EPG selection.');
+						}
+					} catch (\Throwable $rError) {
+						if ($rSelectionTx) {
+							$db->rollback();
+						} elseif ($rSelectionSavepoint) {
+							$db->query('ROLLBACK TO SAVEPOINT xcvm_stream_selection;');
+						}
+						throw $rError;
+					}
+					if ($rWritten) {
+						$rInsertID = $rNewID;
+						$rStreamExists = [];
+
+						if (isset($rData['edit']) || isset($rImportStream['id'])) {
+							$db->query('SELECT `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rInsertID);
+
+							foreach ($db->get_rows() as $rRow) {
+								$rStreamExists[intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
+							}
+						}
+
+						$rStreamsAdded = [];
+						$rServerTree = json_decode($rData['server_tree_data'], true);
+
+						foreach ($rServerTree as $rServer) {
+							if ($rServer['parent'] != '#') {
+								$rServerID = intval($rServer['id']);
+								$rStreamsAdded[] = $rServerID;
+								$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? [])));
+
+								if ($rServer['parent'] == 'source') {
+									$rParent = null;
+								} else {
+									$rParent = intval($rServer['parent']);
+								}
+
+								if (isset($rStreamExists[$rServerID])) {
+									$db->query('UPDATE `streams_servers` SET `parent_id` = ?, `on_demand` = ? WHERE `server_stream_id` = ?;', $rParent, $rOD, $rStreamExists[$rServerID]);
+								} else {
+									$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `on_demand`) VALUES(?, ?, ?, ?);', $rInsertID, $rServerID, $rParent, $rOD);
+								}
+							}
+						}
+
+						foreach ($rStreamExists as $rServerID => $rDBID) {
+							if (!in_array($rServerID, $rStreamsAdded)) {
+								StreamRepository::deleteStream($rInsertID, $rServerID, false, false);
+							}
+						}
+						$db->query('DELETE FROM `streams_options` WHERE `stream_id` = ?;', $rInsertID);
+
+						if (isset($rData['user_agent']) && (string) $rData['user_agent'] !== '') {
+							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 1, ?);', $rInsertID, $rData['user_agent']);
+						}
+
+						if (isset($rData['http_proxy']) && (string) $rData['http_proxy'] !== '') {
+							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 2, ?);', $rInsertID, $rData['http_proxy']);
+						}
+						if ((int) ($rData['proxy_id'] ?? 0) > 0) { // srcproxy : proxy de la liste → proxy_id + URL résolue dans l'argument 2
+							\XcVm\Domain\Stream\ProxyService::applyToStream((int) $rInsertID, (int) $rData['proxy_id']);
+						}
+
+						if (isset($rData['cookie']) && (string) $rData['cookie'] !== '') {
+							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 17, ?);', $rInsertID, $rData['cookie']);
+						}
+
+						if (isset($rData['headers']) && (string) $rData['headers'] !== '') {
+							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 19, ?);', $rInsertID, $rData['headers']);
+						}
+
+						if (isset($rData['skip_ffprobe']) && ($rData['skip_ffprobe'] == 'on' || $rData['skip_ffprobe'] == 1)) {
+							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 21, ?);', $rInsertID, '1');
+						}
+
+						if (isset($rData['force_input_acodec']) && trim($rData['force_input_acodec']) !== '') {
+							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 20, ?);', $rInsertID, trim($rData['force_input_acodec']));
+						}
+
+						if (isset($rData['max_height']) && (int) $rData['max_height'] > 0) {
+							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 22, ?);', $rInsertID, (string) (int) $rData['max_height']);
+						}
+
+						if ($rRestart) {
+							ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID], 'async' => true]);
+						}
+
+						foreach ($rBouquets as $rBouquet) {
+							BouquetService::addItems('stream', $rBouquet, $rInsertID);
+						}
+
+						if (isset($rData['edit']) || isset($rImportStream['id'])) {
+							foreach (BouquetService::getAllSimple() as $rBouquet) {
+								if (!in_array($rBouquet['id'], $rBouquets)) {
+									BouquetService::removeItems('stream', $rBouquet['id'], $rInsertID);
+								}
+							}
+						}
+
+						StreamProcess::updateStream($rInsertID);
+						EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rInsertID]));
+						$rSavedIDs[] = (int) $rInsertID;
+					} else {
+						foreach ($rBouquetCreate as $rID) {
+							$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
+						}
+
+						foreach ($rCategoryCreate as $rID) {
+							$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
+						}
+
+						return ['status' => STATUS_FAILURE, 'data' => $rData];
+					}
+				}
+			}
+
+			self::dispatchSaved($rSavedIDs, $rData, $rReview, $rModuleFields);
+			if ($rSelectionGroup !== null && $rSavedIDs) {
+				if (!EpgReload::start($rSelectionGroup)) {
+					error_log('EPG selection saved, but its immediate reload could not start; the scheduled EPG refresh will retry.');
+				}
+			}
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
+		}
+		return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
+	}
+
+	/**
+	 * The key an imported channel is matched to an existing one by: the
+	 * letters, digits and spaces of its name, lower-cased, in any script.
+	 * Empty for a name with no letter or digit, which is matched to nothing.
+	 *
+	 * @param string|null $rName Channel name.
+	 * @return string
+	 */
+	private static function nameKey(?string $rName): string {
+		$rKey = (string) preg_replace('/[^\p{L}\p{M}\p{N} ]/u', '', mb_strtolower((string) $rName, 'UTF-8'));
+
+		return trim($rKey) === '' ? '' : $rKey;
+	}
+
+	/**
+	 * Why a save must not be written, as response data, or null: a core rule
+	 * (`error`, a language key) or a module tab's validator (`message`, shown
+	 * as the module wrote it).
+	 *
+	 * @param array                $rImportStreams Streams about to be written.
+	 * @param array                $rArray         The settings they are written with.
+	 * @param array                $rData          The posted form.
+	 * @param array<string, array> $rModuleFields  StreamFormRegistry::posted().
+	 * @return array{error: string}|array{message: string}|null
+	 */
+	private static function saveRefusal(array $rImportStreams, array $rArray, array $rData, array $rModuleFields): ?array {
+		$rConflict = self::importDriverConflict($rImportStreams, $rArray, self::postedServerTree($rData, false), self::mainServerIDs(...));
+		if ($rConflict !== null) {
+			return ['error' => $rConflict];
+		}
+		$rMessage = StreamFormRegistry::validate($rModuleFields, isset($rData['edit']) ? $rArray : null);
+		return $rMessage === null ? null : ['message' => $rMessage];
+	}
+
+	/**
+	 * Tell modules which streams a save wrote (StreamSavedEvent). The rows are
+	 * already committed, so a failing listener is logged, not surfaced: the
+	 * save itself succeeded.
+	 *
+	 * @param int[]                $rSavedIDs     Streams written.
+	 * @param array                $rData         The posted form.
+	 * @param array<string, array> $rModuleFields StreamFormRegistry::posted().
+	 */
+	private static function dispatchSaved(array $rSavedIDs, array $rData, bool $rReview, array $rModuleFields): void {
+		$rSource = $rReview ? 'review' : (isset($_FILES['m3u_file']) ? 'import' : 'form');
+		try {
+			EventDispatcher::dispatch(new StreamSavedEvent($rSavedIDs, !isset($rData['edit']), $rSource, $rModuleFields));
+		} catch (\Throwable $e) {
+			error_log('StreamSavedEvent listener failed: ' . $e->getMessage());
+		}
+	}
+
+	/**
+	 * Apply bulk edits to a set of selected streams.
+	 *
+	 * @param array $rData Selected ids plus the fields/values to apply.
+	 * @return array ['status' => STATUS_* constant, ...].
+	 */
+	public static function massEdit(array $rData) {
+		$db = self::db();
+		set_time_limit(0);
+		ini_set('mysql.connect_timeout', 0);
+		ini_set('max_execution_time', 0);
+		ini_set('default_socket_timeout', 0);
+
+		$rArray = [];
+
+		if (isset($rData['c_days_to_restart'])) {
+			if (isset($rData['days_to_restart']) && preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', $rData['time_to_restart'])) {
+				$rTimeArray = ['days' => [], 'at' => $rData['time_to_restart']];
+
+				foreach ($rData['days_to_restart'] as $rDay) {
+					$rTimeArray['days'][] = $rDay;
+				}
+				$rArray['auto_restart'] = json_encode($rTimeArray);
+			} else {
+				$rArray['auto_restart'] = '';
+			}
+		}
+
+		foreach (['gen_timestamps', 'allow_record', 'rtmp_output', 'fps_restart', 'stream_all', 'read_native', 'force_ffmpeg'] as $rKey) {
+			if (isset($rData['c_' . $rKey])) {
+				$rArray[$rKey] = (int) isset($rData[$rKey]);
+			}
+		}
+
+		if (isset($rData['c_direct_source'])) {
+			if (isset($rData['direct_source'])) {
+				$rArray['direct_source'] = 1;
+			} else {
+				$rArray['direct_source'] = 0;
+				$rArray['direct_proxy'] = 0;
+			}
+		}
+
+		if (isset($rData['c_direct_proxy'])) {
+			if (isset($rData['direct_proxy'])) {
+				$rArray['direct_proxy'] = 1;
+				$rArray['direct_source'] = 1;
+			} else {
+				$rArray['direct_proxy'] = 0;
+			}
+		}
+
+		foreach (['tv_archive_server_id', 'vframes_server_id', 'tv_archive_duration', 'delay_minutes', 'probesize_ondemand', 'fps_threshold', 'llod'] as $rKey) {
+			if (isset($rData['c_' . $rKey])) {
+				$rArray[$rKey] = intval($rData[$rKey]);
+			}
+		}
+
+		if (isset($rData['c_custom_sid'])) {
+			$rArray['custom_sid'] = $rData['custom_sid'];
+		}
+
+		if (isset($rData['c_transcode_profile_id'])) {
+			$rArray['transcode_profile_id'] = $rData['transcode_profile_id'];
+			$rArray['enable_transcode'] = (int) (0 < $rArray['transcode_profile_id']);
+		}
+
+		$rStreamIDs = AdminHelpers::confirmIDs(json_decode($rData['streams'], true));
+
+		$rConflict = self::massEditDriverConflict((array) $rStreamIDs, $rArray, self::postedServerTree($rData, true), self::mainServerIDs(...));
+		if ($rConflict !== null) {
+			return ['status' => STATUS_INVALID_INPUT, 'data' => ['error' => $rConflict]];
+		}
+
+		if (count($rStreamIDs) > 0) {
+			$rCategoryMap = [];
+
+			if (isset($rData['c_category_id']) && in_array($rData['category_id_type'], ['ADD', 'DEL'])) {
+				$db->query('SELECT `id`, `category_id` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
+
+				foreach ($db->get_rows() as $rRow) {
+					$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: []);
+				}
+			}
+
+			$rDeleteServers = $rStreamExists = [];
+			$db->query('SELECT `stream_id`, `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
+
+			foreach ($db->get_rows() as $rRow) {
+				$rStreamExists[intval($rRow['stream_id'])][intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
+			}
+			$rBouquets = BouquetService::getAllSimple();
+			$rDelOptions = $rAddBouquet = $rDelBouquet = [];
+			$rOptQuery = $rAddQuery = '';
+
+			foreach ($rStreamIDs as $rStreamID) {
+				if (isset($rData['c_category_id'])) {
+					$rCategories = array_map('intval', $rData['category_id']);
+
+					if ($rData['category_id_type'] == 'ADD') {
+						foreach (($rCategoryMap[$rStreamID] ?: []) as $rCategoryID) {
+							if (!in_array($rCategoryID, $rCategories)) {
+								$rCategories[] = $rCategoryID;
+							}
+						}
+					} else {
+						if ($rData['category_id_type'] == 'DEL') {
+							$rNewCategories = $rCategoryMap[$rStreamID];
+
+							foreach ($rCategories as $rCategoryID) {
+								if (($rKey = array_search($rCategoryID, $rNewCategories)) !== false) {
+									unset($rNewCategories[$rKey]);
+								}
+							}
+							$rCategories = $rNewCategories;
+						}
+					}
+
+					$rArray['category_id'] = '[' . implode(',', $rCategories) . ']';
+				}
+
+				$rPrepare = QueryHelper::prepareArray($rArray);
+
+				if (count($rPrepare['data']) > 0) {
+					$rPrepare['data'][] = $rStreamID;
+					$rQuery = 'UPDATE `streams` SET ' . $rPrepare['update'] . ' WHERE `id` = ?;';
+					$db->query($rQuery, ...$rPrepare['data']);
+				}
+
+				if (isset($rData['c_server_tree'])) {
+					$rStreamsAdded = [];
+					$rServerTree = json_decode($rData['server_tree_data'], true);
+
+					foreach ($rServerTree as $rServer) {
+						if ($rServer['parent'] != '#') {
+							$rServerID = intval($rServer['id']);
+
+							if (in_array($rData['server_type'] ?? null, ['ADD', 'SET'])) {
+								$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? [])));
+								if ($rServer['parent'] == 'source') {
+									$rParent = null;
+								} else {
+									$rParent = intval($rServer['parent']);
+								}
+
+								$rStreamsAdded[] = $rServerID;
+
+								if (isset($rStreamExists[$rStreamID][$rServerID])) {
+									$db->query('UPDATE `streams_servers` SET `parent_id` = ?, `on_demand` = ? WHERE `server_stream_id` = ?;', $rParent, $rOD, $rStreamExists[$rStreamID][$rServerID]);
+								} else {
+									$rAddQuery .= '(' . intval($rStreamID) . ', ' . intval($rServerID) . ', ' . (($rParent ?: 'NULL')) . ', ' . $rOD . '),';
+								}
+							} else {
+								if (isset($rStreamExists[$rStreamID][$rServerID])) {
+									$rDeleteServers[$rServerID][] = $rStreamID;
+								}
+							}
+						}
+					}
+
+					if (($rData['server_type'] ?? null) == 'SET') {
+						// A stream with no existing streams_servers rows is absent from
+						// the map; ?? [] avoids the undefined-key + foreach-on-null warnings.
+						foreach (($rStreamExists[$rStreamID] ?? []) as $rServerID => $rDBID) {
+							if (!in_array($rServerID, $rStreamsAdded)) {
+								$rDeleteServers[$rServerID][] = $rStreamID;
+							}
+						}
+					}
+				}
+
+				if (isset($rData['c_user_agent'])) {
+					if (isset($rData['user_agent']) && (string) $rData['user_agent'] !== '') {
+						$rDelOptions[1][] = $rStreamID;
+						$rOptQuery .= '(' . intval($rStreamID) . ', 1, ' . $db->escape($rData['user_agent']) . '),';
+					}
+				}
+
+				if (isset($rData['c_http_proxy'])) {
+					if (isset($rData['http_proxy']) && (string) $rData['http_proxy'] !== '') {
+						$rDelOptions[2][] = $rStreamID;
+						$rOptQuery .= '(' . intval($rStreamID) . ', 2, ' . $db->escape($rData['http_proxy']) . '),';
+					}
+				}
+
+				if (isset($rData['c_cookie'])) {
+					if (isset($rData['cookie']) && (string) $rData['cookie'] !== '') {
+						$rDelOptions[17][] = $rStreamID;
+						$rOptQuery .= '(' . intval($rStreamID) . ', 17, ' . $db->escape($rData['cookie']) . '),';
+					}
+				}
+
+				if (isset($rData['c_headers'])) {
+					if (isset($rData['headers']) && (string) $rData['headers'] !== '') {
+						$rDelOptions[19][] = $rStreamID;
+						$rOptQuery .= '(' . intval($rStreamID) . ', 19, ' . $db->escape($rData['headers']) . '),';
+					}
+				}
+
+				if (isset($rData['c_bouquets'])) {
+					if ($rData['bouquets_type'] == 'SET') {
+						foreach ($rData['bouquets'] as $rBouquet) {
+							$rAddBouquet[$rBouquet][] = $rStreamID;
+						}
+
+						foreach ($rBouquets as $rBouquet) {
+							if (!in_array($rBouquet['id'], $rData['bouquets'])) {
+								$rDelBouquet[$rBouquet['id']][] = $rStreamID;
+							}
+						}
+					} else {
+						if ($rData['bouquets_type'] == 'ADD') {
+							foreach ($rData['bouquets'] as $rBouquet) {
+								$rAddBouquet[$rBouquet][] = $rStreamID;
+							}
+						} else {
+							if ($rData['bouquets_type'] == 'DEL') {
+								foreach ($rData['bouquets'] as $rBouquet) {
+									$rDelBouquet[$rBouquet][] = $rStreamID;
+								}
+							}
+						}
+					}
+				}
+			}
+
+			foreach ($rDeleteServers as $rServerID => $rDeleteIDs) {
+				StreamRepository::deleteStreamsByServer($rDeleteIDs, $rServerID, false);
+			}
+
+			foreach ($rDelOptions as $rOptionID => $rDelIDs) {
+				$rDelIDs = array_unique(array_map('intval', $rDelIDs));
+				if (count($rDelIDs) > 0) {
+					$db->query('DELETE FROM `streams_options` WHERE `stream_id` IN (' . implode(',', $rDelIDs) . ') AND `argument_id` = ?;', intval($rOptionID));
+				}
+			}
+
+			if (!empty($rOptQuery)) {
+				$rOptQuery = rtrim($rOptQuery, ',');
+				$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES ' . $rOptQuery . ';');
+			}
+
+			foreach ($rAddBouquet as $rBouquetID => $rAddIDs) {
+				BouquetService::addItems('stream', $rBouquetID, $rAddIDs);
+			}
+
+			foreach ($rDelBouquet as $rBouquetID => $rRemIDs) {
+				BouquetService::removeItems('stream', $rBouquetID, $rRemIDs);
+			}
+
+			if (!empty($rAddQuery)) {
+				$rAddQuery = rtrim($rAddQuery, ',');
+				$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `on_demand`) VALUES ' . $rAddQuery . ';');
+			}
+
+			StreamProcess::updateStreams($rStreamIDs);
+			EventDispatcher::dispatch(new StreamsChangedEvent(array_values(array_map('intval', $rStreamIDs))));
+
+			if (isset($rData['restart_on_edit'])) {
+				ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs), 'async' => true]);
+			}
+		}
+
+		return ['status' => STATUS_SUCCESS];
+	}
+
+	/**
+	 * Move selected streams (e.g. to another category).
+	 *
+	 * @param array $rData Selected ids and target destination.
+	 * @return array ['status' => STATUS_* constant, ...].
+	 */
+	public static function move(array $rData) {
+		$db = self::db();
+		$rType = intval($rData['content_type']);
+		$rSource = intval($rData['source_server']);
+		$rReplacement = intval($rData['replacement_server']);
+
+		if ($rSource > 0 && $rReplacement > 0 && $rSource != $rReplacement) {
+			$rExisting = [];
+
+			if ($rType == 0) {
+				$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `server_id` = ?;', $rReplacement);
+
+				foreach ($db->get_rows() as $rRow) {
+					$rExisting[] = intval($rRow['stream_id']);
+				}
+			} else {
+				$db->query('SELECT `streams_servers`.`stream_id` FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `streams_servers`.`server_id` = ? AND `streams`.`type` = ?;', $rReplacement, $rType);
+
+				foreach ($db->get_rows() as $rRow) {
+					$rExisting[] = intval($rRow['stream_id']);
+				}
+			}
+
+			$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `server_id` = ?;', $rSource);
+			$rMoved = [];
+
+			foreach ($db->get_rows() as $rRow) {
+				$rMoved[] = intval($rRow['stream_id']);
+				if (in_array(intval($rRow['stream_id']), $rExisting)) {
+					$db->query('DELETE FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` = ?;', $rRow['stream_id'], $rSource);
+				}
+			}
+
+			if ($rType == 0) {
+				$db->query('UPDATE `streams_servers` SET `server_id` = ? WHERE `server_id` = ?;', $rReplacement, $rSource);
+			} else {
+				$db->query('UPDATE `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` SET `streams_servers`.`server_id` = ? WHERE `streams_servers`.`server_id` = ? AND `streams`.`type` = ?;', $rReplacement, $rSource, $rType);
+			}
+			// Both servers' replicas follow: the source's drops them, the replacement's takes them.
+			EventDispatcher::dispatch(new StreamsChangedEvent($rMoved));
+		}
+
+		return ['status' => STATUS_SUCCESS];
+	}
+
+	/**
+	 * Replace the DNS/host portion of stream source URLs in bulk.
+	 *
+	 * @param array $rData Search/replace host values and target scope.
+	 * @return array ['status' => STATUS_* constant, ...].
+	 */
+	public static function replaceDNS(array $rData) {
+		$db = self::db();
+		$rOldDNS = str_replace('/', '\\/', $rData['old_dns']);
+		$rNewDNS = str_replace('/', '\\/', $rData['new_dns']);
+		$db->query('UPDATE `streams` SET `stream_source` = REPLACE(`stream_source`, ?, ?);', $rOldDNS, $rNewDNS);
+		// Any stream may have changed: every node checks all it holds.
+		EventDispatcher::dispatch(StreamsChangedEvent::all());
+
+		return ['status' => STATUS_SUCCESS];
+	}
+
+	/**
+	 * Bulk delete a set of selected streams.
+	 *
+	 * @param array $rData Selected stream ids.
+	 * @return array ['status' => STATUS_* constant, ...].
+	 */
+	public static function massDelete(array $rData) {
+		set_time_limit(0);
+		ini_set('mysql.connect_timeout', 0);
+		ini_set('max_execution_time', 0);
+		ini_set('default_socket_timeout', 0);
+
+		$rStreams = json_decode($rData['streams'], true);
+		StreamRepository::deleteStreams($rStreams, false);
+
+		return ['status' => STATUS_SUCCESS];
+	}
+
+	/**
+	 * Parse an M3U playlist (file or raw content) into stream entries.
+	 *
+	 * @param mixed $rData Playlist file path or raw M3U content.
+	 * @param bool  $rFile Treat $rData as a file path (true) or content (false).
+	 * @return list<\M3uParser\M3uEntry> Parsed entries that carry a URL (path-less ones dropped).
+	 */
+	public static function parseM3U(mixed $rData, bool $rFile = true) {
+		$rParser = new \M3uParser\M3uParser();
+		$rParser->addDefaultTags();
+		$rEntries = $rFile ? $rParser->parseFile($rData) : $rParser->parse($rData);
+
+		// The parser emits an entry for an #EXTINF with no following URL line, with
+		// an empty path (m3u-parser >= 6.2; older versions threw a TypeError instead).
+		$rValid = [];
+		foreach ($rEntries as $rEntry) {
+			if ($rEntry->getPath() !== '') {
+				$rValid[] = $rEntry;
+			}
+		}
+
+		return $rValid;
+	}
+
+	/**
+	 * List archive (catch-up) files for a stream on a server.
+	 *
+	 * @param int $rServerID Server id.
+	 * @param int $rStreamID Stream id.
+	 * @return array Archive file list.
+	 */
+	public static function getArchiveFiles(int $rServerID, int $rStreamID) {
+		// A node that does not answer in time yields a null decode; return no
+		// files rather than "array offset on null".
+		$rResult = json_decode(NodeRpc::request($rServerID, ['action' => 'get_archive_files', 'stream_id' => $rStreamID]), true);
+		return is_array($rResult) && isset($rResult['data']) ? $rResult['data'] : [];
+	}
+
+	/**
+	 * Get archive (catch-up) information for a stream.
+	 *
+	 * @param int $rStreamID Stream id.
+	 * @return array Archive information.
+	 */
+	public static function getArchive(int $rStreamID) {
+		/** @var array<int, array<string, mixed>> $rReturn Archive ranges keyed by EPG index, accumulated across $rFiles. */
+		$rReturn = [];
+		$rStream = StreamRepository::getById($rStreamID);
+		$rEPG = EpgService::getChannelEpg($rStream, true);
+		$rFiles = self::getArchiveFiles($rStream['tv_archive_server_id'], $rStreamID);
+
+		if (!empty($rFiles) && !empty($rEPG)) {
+			foreach ($rFiles as $rFile) {
+				$rFilename = pathinfo($rFile)['filename'];
+				$rTimestamp = strtotime(explode(':', $rFilename)[0] . 'T' . implode(':', explode('-', explode(':', $rFilename)[1])) . ':00Z ' . str_replace(':', '', gmdate('P')));
+				$rEPGID = null;
+				$rI = 0;
+
+				foreach ($rEPG as $rEPGItem) {
+					if (!filter_var($rTimestamp, FILTER_VALIDATE_INT, ['options' => ['min_range' => $rEPGItem['start'], 'max_range' => $rEPGItem['end'] - 1]])) {
+						$rI++;
+					} else {
+						$rEPGID = $rI;
+
+						break;
+					}
+				}
+
+				if ($rEPGID) {
+					if (!isset($rReturn[$rEPGID])) {
+						$rReturn[$rEPGID] = $rEPG[$rEPGID];
+						$rReturn[$rEPGID]['archive_stop'] = null;
+						$rReturn[$rEPGID]['archive_start'] = $rReturn[$rEPGID]['archive_stop'];
+					}
+
+					if ($rTimestamp - 60 < $rReturn[$rEPGID]['archive_start'] || !$rReturn[$rEPGID]['archive_start']) {
+						$rReturn[$rEPGID]['archive_start'] = $rTimestamp - 60;
+					}
+
+					if ($rReturn[$rEPGID]['archive_stop'] < $rTimestamp || !$rReturn[$rEPGID]['archive_stop']) {
+						$rReturn[$rEPGID]['archive_stop'] = $rTimestamp;
+					}
+				}
+			}
+		}
+
+		foreach ($rReturn as $rKey => $rItem) {
+			if (time() < $rItem['end']) {
+				$rReturn[$rKey]['in_progress'] = true;
+			} else {
+				$rReturn[$rKey]['in_progress'] = false;
+			}
+
+			if (!$rReturn[$rKey]['in_progress'] && filter_var($rItem['start'], FILTER_VALIDATE_INT, ['options' => ['min_range' => $rItem['archive_start'] - 60, 'max_range' => $rItem['archive_start'] + 60]]) && filter_var($rItem['end'], FILTER_VALIDATE_INT, ['options' => ['min_range' => $rItem['archive_stop'] - 60, 'max_range' => $rItem['archive_stop'] + 60]])) {
+				$rReturn[$rKey]['complete'] = true;
+			} else {
+				$rReturn[$rKey]['complete'] = false;
+			}
+		}
+
+		return $rReturn;
+	}
+
+	/**
+	 * The language key of why a stream save can't carry a module source-driver
+	 * URL, or null. A driver's engine runs on each assigned producer node as the stream's
+	 * producer, so the URL must never reach a client (direct source / proxy),
+	 * the PHP LLOD v2 reader, or an LB without an opted-in driver.
+	 *
+	 * @param string[]   $rSources    The stream's source URLs.
+	 * @param array      $rStream     direct_source / direct_proxy / llod as saved.
+	 * @param array|null $rServerTree Posted jstree nodes; null when servers don't change.
+	 * @param callable $rMainIDs    Ids of the main server(s), asked only when a driver source is fed to a server directly.
+	 */
+	public static function driverSourceConflict(array $rSources, array $rStream, ?array $rServerTree, callable $rMainIDs): ?string {
+		$rDriven = array_filter($rSources, static fn($rURL): bool => SourceDriverRegistry::for((string) $rURL) !== null);
+		if ($rDriven === []) {
+			return null;
+		}
+		return self::driverSettingsConflict($rStream) ?? self::driverTreeConflict($rServerTree ?? [], $rMainIDs, $rDriven);
+	}
+
+	private static function driverSettingsConflict(array $rStream): ?string {
+		if (!empty($rStream['direct_source']) || !empty($rStream['direct_proxy'])) {
+			return 'source_driver_no_direct';
+		}
+		return intval($rStream['llod'] ?? 0) === 2 ? 'source_driver_no_llod2' : null;
+	}
+
+	private static function driverTreeConflict(array $rServerTree, callable $rMainIDs, array $rDriven): ?string {
+		foreach ($rServerTree as $rNode) {
+			if (($rNode['parent'] ?? '') === 'source' && !in_array(intval($rNode['id'] ?? 0), $rMainIDs(), true)
+				&& count(array_filter($rDriven, static fn($rURL): bool => !SourceDriverRegistry::supportsLoadBalancer((string) $rURL))) > 0
+			) {
+				return 'source_driver_main_only';
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The posted server tree, or null when this save doesn't change servers
+	 * (a mass edit without the servers box ticked, or one that only removes).
+	 */
+	private static function postedServerTree(array $rData, bool $rMass): ?array {
+		if ($rMass && (!isset($rData['c_server_tree']) || !in_array($rData['server_type'] ?? null, ['ADD', 'SET'], true))) {
+			return null;
+		}
+		return json_decode((string) ($rData['server_tree_data'] ?? ''), true) ?: null;
+	}
+
+	/** @return int[] */
+	private static function mainServerIDs(): array {
+		return array_map('intval', array_keys(array_filter(ServerRepository::getAll(), static fn(array $rServer): bool => !empty($rServer['is_main']))));
+	}
+
+	/**
+	 * driverSourceConflict() for every stream a form save or an import writes.
+	 *
+	 * @param array $rImportStreams Streams about to be written (each with stream_source).
+	 * @param array $rArray         The settings they are written with.
+	 * @param callable $rMainIDs       Ids of the main server(s), asked only when a driver source is fed to a server directly.
+	 */
+	private static function importDriverConflict(array $rImportStreams, array $rArray, ?array $rServerTree, callable $rMainIDs): ?string {
+		foreach ($rImportStreams as $rImportStream) {
+			$rConflict = self::driverSourceConflict((array) ($rImportStream['stream_source'] ?? []), array_merge($rArray, $rImportStream), $rServerTree, $rMainIDs);
+			if ($rConflict !== null) {
+				return $rConflict;
+			}
+		}
+		return null;
+	}
+
+	/** Whether a mass edit sets anything driverSourceConflict() looks at. */
+	private static function massEditTouchesDriverRules(array $rArray, ?array $rServerTree): bool {
+		return $rServerTree !== null || array_intersect_key($rArray, array_flip(['direct_source', 'direct_proxy', 'llod'])) !== [];
+	}
+
+	/**
+	 * driverSourceConflict() for a mass edit: each selected stream's sources
+	 * against its settings after the edit. Skipped when the edit touches none of
+	 * the settings that matter.
+	 *
+	 * @param int[] $rStreamIDs Selected stream ids.
+	 * @param array $rArray     The columns the edit sets.
+	 * @param callable $rMainIDs   Ids of the main server(s), asked only when a driver source is fed to a server directly.
+	 */
+	private static function massEditDriverConflict(array $rStreamIDs, array $rArray, ?array $rServerTree, callable $rMainIDs): ?string {
+		if ($rStreamIDs === [] || !self::massEditTouchesDriverRules($rArray, $rServerTree)) {
+			return null;
+		}
+		$rRows = self::db()->fetchAll('SELECT `stream_source`, `direct_source`, `direct_proxy`, `llod` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');') ?: [];
+		return self::importDriverConflict(
+			// The edit's values win over the row's: they are what the streams will have.
+			array_map(static fn(array $rRow): array => ['stream_source' => json_decode((string) $rRow['stream_source'], true) ?: []] + $rArray + $rRow, $rRows),
+			$rArray,
+			$rServerTree,
+			$rMainIDs
+		);
+	}
+}

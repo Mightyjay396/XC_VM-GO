@@ -1,0 +1,358 @@
+--- a/Domain/Stream/StreamProcess.php
++++ b/Domain/Stream/StreamProcess.php
+@@ -695,7 +695,7 @@
+ 	 * @return string The `-f tee …` output fragment.
+ 	 */
+ 	private static function buildHlsTeeOutput($rOptions, $rSegmentSettings, $rKeyFrames, $rInitTime, $rStreamID, string $rIngestSock) {
+-		$rHls = '[f=hls'
++		$rHls = '[f=hls:onfail=ignore' // résilience : un paquet fautif (DTS, discontinuité SSAI) ne doit jamais abattre tout l''encodeur (QC)
+ 			. ':hls_init_time=' . $rInitTime
+ 			. ':hls_time=' . intval($rSegmentSettings['seg_time'])
+ 			. ':hls_list_size=' . intval($rSegmentSettings['seg_list_size'])
+@@ -767,7 +767,7 @@
+ 	private static function resolveProbeSettings(mixed $rOnDemand, mixed $rProbesizeOndemand, bool $rLLOD, array $rSettings) {
+ 		if ($rOnDemand == 1) {
+ 			$rProbesize = intval($rProbesizeOndemand) ?: 1000000;
+-			$rAnalyseDuration = ($rLLOD ? '500000' : '10000000');
++			$rAnalyseDuration = ($rLLOD ? '500000' : '2000000'); // QC-OD-FASTPROBE
+ 		} else {
+ 			$rAnalyseDuration = abs(intval($rSettings['stream_max_analyze']));
+ 			$rProbesize = abs(intval($rSettings['probesize']));
+@@ -1026,6 +1026,22 @@
+ 	 * @param array $data Prepared assembly inputs (see startStream call site).
+ 	 * @return string The full shell command (ffmpeg + outputs + redirects + pid).
+ 	 */
++	/** QC-SEAMLESS : redémarrage invisible (fichiers HLS gardés + numérotation continue) pour les chaînes servies par livehold. */
++	public static function qcSeamless(int $rStreamID): bool {
++		$rList = preg_split('/\s+/', trim((string) @file_get_contents('/home/xc_vm/config/livehold_streams.txt')));
++		return in_array('*', $rList, true) || in_array((string) $rStreamID, $rList, true);
++	}
++
++	/** QC-SEAMLESS : nettoyage avant relance — garde playlist + segments si qcSeamless, sinon tout effacer (comportement XC_VM). */
++	public static function qcRestartCleanup(int $rStreamID): void {
++		$rID = intval($rStreamID);
++		if (self::qcSeamless($rID) && file_exists(STREAMS_PATH . $rID . '_.m3u8')) {
++			shell_exec('find ' . escapeshellarg(rtrim(STREAMS_PATH, '/')) . ' -maxdepth 1 -name ' . escapeshellarg($rID . '_*') . ' ! -name ' . escapeshellarg($rID . '_.m3u8') . ' ! -regex ' . escapeshellarg('.*/' . $rID . '_[0-9]+\.ts') . ' -delete');
++			return;
++		}
++		shell_exec('rm -f ' . STREAMS_PATH . $rID . '_*');
++	}
++
+ 	private static function buildLive(array $data): string {
+ 		$rStream = $data['stream'];
+ 		$rSettings = $data['settings'];
+@@ -1062,14 +1078,14 @@
+ 		// on-demand. Guarded to HTTP(S): these options are http-protocol-only and a
+ 		// fatal "Option not found" error on udp/rtmp/file inputs.
+ 		$rReconnect = (!$rLoopback && is_string($rSource) && preg_match('#^https?://#i', $rSource))
+-			? '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
++			? '-rw_timeout 10000000 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 3 -reconnect_max_retries 9999 -reconnect_on_network_error 1 -reconnect_on_http_error 4xx,5xx ' // QC-RW-TIMEOUT : une source qui se fige sans erreur (proxy) se reconnecte après 10 s au lieu d'attendre la relance du moniteur
+ 			: '';
+ 		// LLOD input flags: +discardcorrupt tolerates corrupt packets from the
+ 		// source, +nobuffer stops the demuxer holding back what it read during
+ 		// stream analysis. Both are demuxer (input) flags — +nobuffer used to sit
+ 		// among the output options, where it does nothing. Scoped to the on-demand
+ 		// (LLOD) path where they shipped.
+-		$rLLODInputFlags = $rReconnect . (($rLLOD && !$rLoopback) ? '-fflags +discardcorrupt+nobuffer ' : '');
++		$rLLODInputFlags = $rReconnect . '-fflags +discardcorrupt ' . (($rLLOD && !$rLoopback) ? '-fflags +nobuffer ' : '');
+ 
+ 		// Command-template defaults: only the non-custom_ffmpeg branch below
+ 		// assigns these, yet the {MAP}/{GEN_PTS}/{READ_NATIVE} substitution and
+@@ -1102,8 +1118,9 @@
+ 			if (($rStream['stream_info']['gen_timestamps'] == 1 || empty($rProtocol)) && $rStream['stream_info']['type_key'] != 'created_live') {
+ 				$rGenPTS = '-fflags +genpts -async 1';
+ 			} else {
+-				if (is_array($rFFProbeOutput) && isset($rFFProbeOutput['codecs']['audio']['codec_name']) && in_array($rFFProbeOutput['codecs']['audio']['codec_name'], ['ac3', 'eac3']) && $rSettings['dts_legacy_ffmpeg']) {
++				if (is_array($rFFProbeOutput) && isset($rFFProbeOutput['codecs']['audio']['codec_name']) && in_array($rFFProbeOutput['codecs']['audio']['codec_name'], ['ac3', 'eac3']) && $rSettings['dts_legacy_ffmpeg'] && !preg_match('/cenc_decryption|readrate_catchup|reconnect_max_retries|extension_picky/', (string) $rFetchOptions)) { // QC-CK-NOLEGACY v2
+ 					$rFFMPEG_CPU = FfmpegPaths::legacy();
++					$rLLODInputFlags = str_replace('-reconnect_max_retries 9999 ', '', $rLLODInputFlags); // QC-LEGACY-NORETRY
+ 				}
+ 
+ 				// Portable: the command keeps the {ffmpeg_cpu} token, so decide
+@@ -1117,9 +1134,16 @@
+ 			$container = (isset($rFFProbeOutput) && is_array($rFFProbeOutput)) ? ($rFFProbeOutput['container'] ?? null) : null;
+ 			if (empty($rStream['server_info']['parent_id']) && (($rStream['stream_info']['read_native'] == 1) || ($container && stristr($container, 'hls') && $rSettings['read_native_hls']) || empty($rProtocol) || ($container && stristr($container, 'mp4')) || ($container && stristr($container, 'matroska')))) {
+ 				$rReadNative = '-re';
++				if (@is_file('/etc/qc_nore_ids') && in_array((string) $rStreamID, preg_split('/\s+/', trim(@file_get_contents('/etc/qc_nore_ids')), -1, PREG_SPLIT_NO_EMPTY), true)) { $rReadNative = ''; } // QC-NORE-IDS : test sans -re
++				if (!preg_match('#/ffmpeg_bin/[47]\.#', (string) $rFFMPEG_CPU) && strpos((string) $rFetchOptions, 'readrate_catchup') === false) { // QC-HLS-CATCHUP QC-CATCHUP-BIN
++					$rReadNative .= ' -readrate_catchup 1.5';
++				}
+ 			} else {
+ 				$rReadNative = '';
+ 			}
++			if (!empty($rProtocol)) { $rReadNative = ''; } // QC-NORE-ALL : jamais -re sur un flux reseau (fichier local seulement)
++			if (in_array((string) intval($rStream['stream_info']['id'] ?? 0), preg_split('/\s+/', trim((string) @file_get_contents('/etc/qc_hls_nore_ids'))), true)) { $rReadNative = ''; } // QC-HLS-NORE : HLS suivi au rythme de la playlist (sans -re ni rattrapage)
++			if (in_array((string) intval($rStream['stream_info']['id'] ?? 0), preg_split('/\s+/', trim((string) @file_get_contents('/etc/qc_ck_test_ids'))), true)) { $rReadNative = ''; $rGenPTS = str_replace(' -max_interleave_delta 0', '', $rGenPTS); $rFetchOptions = preg_replace('/(?<!\S)-re(?!\S)|-readrate_catchup\s+\S+/', '', (string) $rFetchOptions); } // QC-CK-TEST : sans cadence forcee ni attente audio+video
+ 
+ 			if (!$rStream['server_info']['parent_id'] && $rStream['stream_info']['enable_transcode'] == 1 && $rStream['stream_info']['type_key'] != 'created_live') {
+ 				if ($rStream['stream_info']['transcode_profile_id'] == -1) {
+@@ -1132,6 +1156,7 @@
+ 			}
+ 
+ 			$rFFMPEG = ((isset($rStream['stream_info']['transcode_attributes']['gpu']) ? $rFFMPEG_GPU : $rFFMPEG_CPU)) . ' -y -nostdin -hide_banner -loglevel ' . (($rSettings['ffmpeg_warnings'] ? 'warning' : 'error')) . ' -err_detect ignore_err -thread_queue_size 1024 ' . $rOptions . ' {GEN_PTS} {READ_NATIVE} ' . $rLLODInputFlags . '-probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' -progress "' . $rProgressFile . '" {CONCAT} -i {STREAM_SOURCE} {LOGO} -max_muxing_queue_size 1024 ';
++			if (preg_match('#/ffmpeg_bin/8\.#', (string) ($data['ffmpegReal'] ?? $rFFMPEG_CPU))) { $rFFMPEG = preg_replace('# -loglevel (error|warning) #', ' -loglevel datetime+$1 ', $rFFMPEG, 1); } // QC-ERRLOG-TIME : erreurs ffmpeg horodatées dans <id>.errors
+ 
+ 			self::applyDefaultCopyCodecs($rStream['stream_info']['transcode_attributes']);
+ 
+@@ -1155,7 +1180,8 @@
+ 			$rFLVOptions = '{MAP} {AAC_FILTER}';
+ 		}
+ 
+-		$rKeyFrames = ($rSettings['ignore_keyframes'] ? '+split_by_time' : '');
++		$rKeyFrames = ($rSettings['ignore_keyframes'] && strpos((string) $rFetchOptions, 'cenc_decryption') === false ? '+split_by_time' : ''); // QC-CK-KEYFRAME
++		if (self::qcSeamless(intval($rStreamID))) { $rKeyFrames .= '+append_list'; } // QC-SEAMLESS
+ 		// Fast start: shorten the first segment so players can begin sooner.
+ 		// Capped at seg_time so a small seg_time never produces a longer first segment.
+ 		$rInitTime = min(2, intval($rSegmentSettings['seg_time']));
+@@ -1240,6 +1266,19 @@
+ 			$rFFMPEG .= ' >/dev/null 2>>' . STREAMS_PATH . intval($rStreamID) . '.errors & echo $! > ' . STREAMS_PATH . intval($rStreamID) . '_.pid';
+ 		}
+ 
++		// QC-CKTS : ClearKey DASH -> moteur ckts (MPEG-TS continu) pour les ids de /etc/qc_ckts_ids ; sinon DASH inchangé
++		if (empty($rStream['stream_info']['custom_ffmpeg']) && preg_match('#^http://127\.0\.0\.1:\d+/mpd\?#', (string) $rStreamSource)
++			&& array_intersect(['*', (string) intval($rStreamID)], preg_split('/\s+/', trim((string) @file_get_contents('/etc/qc_ckts_ids'))))
++			&& preg_match('/-cenc_decryption_keys\s+(\S+)/', (string) $rFetchOptions, $rCkK)
++			&& preg_match_all('/-map\s+0:(\d+)/', (string) $rMap, $rCkM) && count($rCkM[1]) == 2
++			&& @file_get_contents('http://127.0.0.1:' . (in_array(intval($rStreamID), array_map('intval', @file('/etc/qc_ckts_canary', FILE_IGNORE_NEW_LINES) ?: []), true) ? 8161 : 8160) . '/ok?id=' . intval($rStreamID), false, stream_context_create(['http' => ['timeout' => 2]])) === 'ok') {
++			preg_match('/-cenc_decryption_key\s+(\S+)/', (string) $rFetchOptions, $rCkD);
++			$rStreamSource = 'http://127.0.0.1:' . (in_array(intval($rStreamID), array_map('intval', @file('/etc/qc_ckts_canary', FILE_IGNORE_NEW_LINES) ?: []), true) ? 8161 : 8160) . '/ts?' . http_build_query(['src' => $rStreamSource, 'keys' => trim($rCkK[1], "'\""), 'key' => trim($rCkD[1] ?? '', "'\""), 'v' => $rCkM[1][0], 'a' => $rCkM[1][1], 'id' => intval($rStreamID)]);
++			$rFetchOptions = preg_replace('/(?<!\S)-re(?!\S)|-readrate_catchup\s+\S+|-cenc_decryption_keys?\s+\S+|-rw_timeout\s+\S+|-reconnect\S*\s+\S+/', '', (string) $rFetchOptions) . ' -rw_timeout 10000000 -reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_delay_max 2';
++			$rMap = '-map 0:v:0 -map 0:a:0';
++			$rReadNative = '';
++		}
++
+ 		$ffprobeContainer = (isset($rFFProbeOutput['container']) && is_string($rFFProbeOutput['container'])) ? $rFFProbeOutput['container'] : '';
+ 
+ 		$audioCodec = (isset($rFFProbeOutput['codecs']['audio']['codec_name']) && is_array($rFFProbeOutput['codecs']['audio'])) ? $rFFProbeOutput['codecs']['audio']['codec_name'] : '';
+@@ -1583,7 +1622,7 @@
+ 		}
+ 		$rStreamSource = StreamUtils::parseStreamURL($rSource, (string) (array_column($rStreamArguments, 'value', 'argument_key')['proxy'] ?? ''), (int) (array_column($rStreamArguments, 'value', 'argument_key')['max_height'] ?? 0));
+ 		$rProtocol = strtolower(substr($rStreamSource, 0, (int) strpos($rStreamSource, '://')));
+-		return (bool) FFprobeRunner::probeStream($rStreamSource, implode(' ', StreamUtils::getArguments($rStreamArguments, $rProtocol, 'fetch')));
++		return (bool) FFprobeRunner::probeStream($rStreamSource, trim(implode(' ', StreamUtils::getArguments($rStreamArguments, $rProtocol, 'fetch')) . ' ' . StreamUtils::drmOptions($rStreamSource)));
+ 	}
+ 
+ 	/**
+@@ -1682,8 +1721,12 @@
+ 	 */
+ 	private static function supervisorHealth(array $rStreamInfo, array $rSettings): array {
+ 		$rSegTime = max(1, intval($rSettings['seg_time'] ?? 10));
++		$rStallSec = $rSegTime * 6; // the monitor's "playlist unchanged for seg_time × 6"
++		if (stripos((string) ($rStreamInfo['stream_source'] ?? ''), '.mpd') !== false) {
++			$rStallSec = max($rStallSec, 150); // DASH via mpdproxy : CDN lent ou pause pub SSAI ne doit pas tuer la chaîne (QC)
++		}
+ 		$rHealth = [
+-			'stall_sec'      => $rSegTime * 6, // the monitor's "playlist unchanged for seg_time × 6"
++			'stall_sec'      => $rStallSec,
+ 			'audio_loss_sec' => !empty($rSettings['audio_restart_loss']) ? 30 : 0,
+ 			'fps_threshold'  => 0,
+ 			'fps_grace_sec'  => max(0, intval($rSettings['fps_delay'] ?? 0)),
+@@ -1899,6 +1942,38 @@
+ 			}
+ 			$rFetchOptions = implode(' ', StreamUtils::getArguments($rArguments, $rProtocol, 'fetch'));
+ 
++			// QC ClearKey (chemin supervisé par le fanout) : clé dans l'URL → options avant -i + build « -dash » pour cette source
++			$rDrmOptions = StreamUtils::drmOptions($rStreamSource);
++			$rEntryFfmpegCpu = $rFFMPEGCpu;
++			$rEntryFfmpegGpu = $rFFMPEGGpu;
++			$rEntryProbeBin = $rFFProbeBin;
++			if ($rDrmOptions !== '') {
++				// manifeste statique via mpdproxy + -re : lecture stable sur des heures (pas de rechargement du manifeste)
++				$rStaticSource = StreamUtils::dashStaticSource($rStreamSource, (string) ($rArgsByKey['proxy']['value'] ?? ''));
++				if ($rStaticSource !== null) {
++					$rStreamSource = $rStaticSource;
++					$rProtocol = 'http';
++					$rArguments = StreamUtils::withoutProxyArgument($rArguments);
++					$rProbeArguments = StreamUtils::withoutProxyArgument($rProbeArguments);
++					$rDashRead = StreamUtils::DASH_STATIC_READ_OPTIONS;
++					if (@is_file('/etc/qc_nore_ids') && in_array((string) $rStreamID, preg_split('/\s+/', trim(@file_get_contents('/etc/qc_nore_ids')), -1, PREG_SPLIT_NO_EMPTY), true)) { $rDashRead = preg_replace('/(?<!\S)-re(?!\S)|-readrate_catchup\s+\S+/', '', $rDashRead); } // QC-NORE-DASH : reprise rapide apres accroc source
++					$rFetchOptions = trim(implode(' ', StreamUtils::getArguments($rArguments, $rProtocol, 'fetch')) . ' ' . $rDashRead);
++				}
++				$rFetchOptions = trim($rFetchOptions . ' ' . $rDrmOptions);
++				// même chemin bin/ffmpeg_bin/<ver>-dash/ sur tous les nœuds (portable inclus : le jeton {ffmpeg_cpu} donnerait un build sans DASH)
++				$rEntryFfmpegCpu = FfmpegPaths::dash('ffmpeg') ?? $rFFMPEGCpu;
++				$rEntryFfmpegGpu = $rEntryFfmpegCpu;
++				$rEntryProbeBin = FfmpegPaths::dash('ffprobe') ?? $rFFProbeBin;
++				if (empty($rStream['stream_info']['custom_map'])) {
++					$rDrmMap = self::drmDefaultMap($rStreamSource, $rDrmOptions, $rEntryProbeBin); $rDrmMap = self::qcRemuxBsf($rDrmMap, intval($rStreamID)); // QC-REMUX-V2
++					if ($rDrmMap !== '') {
++						$rStream['stream_info']['custom_map'] = $rDrmMap;
++						$rStream['stream_info']['stream_all'] = 0; // « Stream all » = toutes les représentations DASH (6 vidéos) : jamais voulu
++					}
++				}
++				self::noteProducer($rStreamID, 'ClearKey source #' . $i . ': ' . $rDrmOptions . ' via ' . $rEntryFfmpegCpu . ' map=' . ($rStream['stream_info']['custom_map'] ?? 'auto'));
++			}
++
+ 			$rFFMPEG = self::buildLive([
+ 				// Portable: force dts_legacy_ffmpeg off so buildLive does not swap the
+ 				// {ffmpeg_cpu} token for MAIN's legacy binary path (FfmpegPaths::legacy)
+@@ -1911,7 +1986,7 @@
+ 				'probesize' => $rProbesize, 'analyseDuration' => $rAnalyseDuration,
+ 				'llod' => $rLLOD, 'loopback' => $rLoopback,
+ 				'segmentStart' => 0, 'delayActive' => false,
+-				'ffmpegCpu' => $rFFMPEGCpu, 'ffmpegGpu' => $rFFMPEGGpu,
++				'ffmpegCpu' => $rEntryFfmpegCpu, 'ffmpegGpu' => $rEntryFfmpegGpu,
+ 				// Portable: the command carries the {ffmpeg_cpu} token, but -nofix_dts
+ 				// is a property of the ffmpeg version/build (cluster-wide), so decide
+ 				// it from MAIN's real binary of that version — the same build the
+@@ -1922,7 +1997,8 @@
+ 			]);
+ 
+ 			$rEntry = ['label' => $rLabels[$i], 'cmd' => $rFFMPEG];
+-			if ($rNativeStream && self::isNativeSource($rStreamSource)) {
++			// QC ClearKey : le remuxeur Go ne déchiffre pas → toujours ffmpeg (build -dash) pour une source avec clé
++			if ($rNativeStream && $rDrmOptions === '' && self::isNativeSource($rStreamSource)) {
+ 				$rNative = [
+ 					'streamID' => $rStreamID, 'source' => $rStreamSource, 'arguments' => array_column($rArguments, null, 'argument_key'),
+ 					'segmentSettings' => $rSegmentSettings, 'ingestSock' => $rIngestSock,
+@@ -1937,12 +2013,12 @@
+ 				if ($rBackend === 'auto') {
+ 					$rEntry['fallback_cmd'] = $rFFMPEG;
+ 				}
+-			} elseif ($rNativeStream && !$rPortableMode) {
++			} elseif ($rNativeStream && !$rPortableMode && $rDrmOptions === '') {
+ 				self::noteProducer($rStreamID, 'ffmpeg runs source #' . $i . ': ' . strtolower((string) parse_url($rStreamSource, PHP_URL_SCHEME)) . ':// is not a scheme the remuxer reads');
+ 			}
+ 			if ($rPriority) {
+-				$rProbeOptions = implode(' ', StreamUtils::getArguments($rProbeArguments, $rProtocol, 'fetch'));
+-				$rEntry['probe_cmd'] = 'timeout ' . intval($rTimeout) . ' ' . $rFFProbeBin . ' ' . $rProbeOptions . ' -probesize ' . intval($rProbesize) . ' -analyzeduration ' . intval($rAnalyseDuration) . ' -i ' . escapeshellarg($rStreamSource) . ' -v quiet -print_format json -show_streams -show_format';
++				$rProbeOptions = trim(implode(' ', StreamUtils::getArguments($rProbeArguments, $rProtocol, 'fetch')) . ' ' . $rDrmOptions);
++				$rEntry['probe_cmd'] = 'timeout ' . ($rDrmOptions !== '' ? max(45, intval($rTimeout)) : (!empty($rArgsByKey['proxy']['value']) ? max(120, intval($rTimeout)) : intval($rTimeout))) /* QC-PROXY-PROBE45 */ . ' ' . $rEntryProbeBin /* QC-DASH-PROBE45 */ . ' ' . $rProbeOptions . ' -probesize ' . intval($rProbesize) . ' -analyzeduration ' . intval($rAnalyseDuration) . ' -i ' . escapeshellarg($rStreamSource) . ' -v quiet -print_format json -show_streams -show_format';
+ 			}
+ 			$rSpecSources[] = $rEntry;
+ 		}
+@@ -2031,6 +2107,73 @@
+ 	 * and probing each one on the hand-over path would cost seconds per source,
+ 	 * so a source with nothing cached gets the minimum buildLive() needs.
+ 	 */
++	/** QC-REMUX-V2 : setts explicite (ordre d'affichage B + DTS corrects) + lissage des sauts SSAI (>1 s ou recul) ; ids dans /etc/qc_remux_v2_ids ou « all ». */
++	private static function qcRemuxBsf(string $rMap, int $rStreamID): string {
++		$rIds = preg_split('/\s+/', trim((string) @file_get_contents('/etc/qc_remux_v2_ids')));
++		if (!in_array('all', $rIds, true) && !in_array((string) $rStreamID, $rIds, true)) {
++			return $rMap;
++		}
++		$rJ = '(DTS-PREV_INDTS)';
++		$rS = function (int $rFb) use ($rJ): string {
++			$rE = 'if(eq(PREV_INDTS\,NOPTS)+eq(PREV_OUTDTS\,NOPTS)\,DTS\,PREV_OUTDTS+if(gt(' . $rJ . '\,0)*lt(' . $rJ . '\,90000)\,' . $rJ . '\,if(gt(DURATION\,0)\,DURATION\,' . $rFb . ')))';
++			return 'setts=pts=PTS:dts=DTS:time_base=1/90000,setts=dts=if(eq(DTS\,NOPTS)\,NOPTS\,' . $rE . '):pts=if(eq(PTS\,NOPTS)\,NOPTS\,if(eq(DTS\,NOPTS)\,PTS\,' . $rE . '+PTS-DTS))';
++		};
++		return str_replace('-bsf:v setts=time_base=1/90000 -bsf:a setts=time_base=1/90000', '-bsf:v ' . $rS(3000) . ' -bsf:a ' . $rS(1920), $rMap);
++	}
++
++	/** QC ClearKey : -map par défaut d'une source DASH multi-représentations = meilleure vidéo + toutes les pistes audio (sonde ffprobe, cache 6 h). */
++	private static function drmDefaultMap(string $rStreamSource, string $rDrmOptions, string $rProbeBin): string {
++		$rCache = CACHE_TMP_PATH . md5($rStreamSource) . '_drmmap2';
++		if (file_exists($rCache) && filemtime($rCache) > time() - 21600) {
++			return (string) file_get_contents($rCache);
++		}
++		$rJSON = shell_exec('timeout 60 ' . $rProbeBin . ' ' . $rDrmOptions . ' -probesize 5000000 -analyzeduration 5000000 -i ' . escapeshellarg($rStreamSource) . ' -v quiet -print_format json -show_streams 2>/dev/null');
++		// QC-DRMMAP-BEST1 : 1 seule vidéo = meilleure résolution puis meilleur débit (hors pistes d'aperçu trk_*), 1 seule piste audio = AAC au meilleur débit
++		$rBest = null;
++		$rBestKey = [-1, -1];
++		$rAud = null;
++		$rAudKey = [-1, -1];
++		$rVideos = 0;
++		foreach ((json_decode((string) $rJSON, true)['streams'] ?? []) as $rS) {
++			$rTags = $rS['tags'] ?? [];
++			$rBr = intval($rTags['variant_bitrate'] ?? 0) ?: intval($rS['bit_rate'] ?? 0);
++			if (($rS['codec_type'] ?? '') === 'video') {
++				$rVideos++;
++				if (strpos((string) ($rTags['id'] ?? ''), 'trk_') === 0) {
++					continue;
++				}
++				$rKey = [intval($rS['width'] ?? 0) * intval($rS['height'] ?? 0), $rBr];
++				if ($rKey > $rBestKey) {
++					$rBestKey = $rKey;
++					$rBest = intval($rS['index']);
++				}
++			} elseif (($rS['codec_type'] ?? '') === 'audio') {
++				$rKey = [($rS['codec_name'] ?? '') === 'aac' ? 1 : 0, $rBr];
++				if ($rKey > $rAudKey) {
++					$rAudKey = $rKey;
++					$rAud = intval($rS['index']);
++				}
++			}
++		}
++		$rMap = '';
++		if ($rVideos > 0) {
++			$rMap = ($rBest !== null ? '-map 0:' . $rBest : '-map 0:v:0') . ($rAud !== null ? ' -map 0:' . $rAud : '');
++		}
++		if ($rMap === '') { // QC-DRMMAP-V0 : sonde en échec → dernier choix connu (même expiré), sinon 1re vidéo seule (jamais toutes les qualités)
++			if (file_exists($rCache) && strpos((string) file_get_contents($rCache), '-map 0:') === 0) {
++				return (string) file_get_contents($rCache);
++			}
++			$rMap = '-map 0:v:0 -map 0:a';
++		}
++		// DASH : tbn 10 MHz côté tee ; le +1 anti « Non-monotonic DTS » de fftools disparaît au rescale 90 kHz des esclaves hls/mpegts
++		// → « non monotonically increasing dts » → tee abort → exit 234. Sortie forcée en 1/90000 (QC).
++		$rMap .= ' -bsf:v setts=time_base=1/90000 -bsf:a setts=time_base=1/90000';
++		if ($rJSON && $rVideos > 0) { // ne pas mettre en cache une sonde tronquée (timeout)
++			@file_put_contents($rCache, $rMap);
++		}
++		return $rMap;
++	}
++
+ 	private static function cachedProbe(string $rSource, string $rStreamSource): array {
+ 		$rCache = CACHE_TMP_PATH . md5($rSource);
+ 		if (file_exists($rCache)) {
+@@ -2942,6 +3085,42 @@
+ 					$rProtocol = strtolower(substr($rStreamSource, 0, strpos($rStreamSource, '://')));
+ 					$rProbeOptions = implode(' ', StreamUtils::getArguments($rProbeArguments, $rProtocol, 'fetch'));
+ 					$rFetchOptions = implode(' ', StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'fetch'));
++					if (!empty($rArgsByKey['proxy']['value'])) { $rFFProbee = preg_replace('/^timeout \d+ /', 'timeout 120 ', $rFFProbee); } // QC-PROXY-PROBE45
++					if (stripos($rStreamSource, '.m3u8') !== false) { // QC-HLS-PICKY
++						$rProbeOptions = trim($rProbeOptions . ' -extension_picky 0');
++						$rFetchOptions = trim($rFetchOptions . ' -extension_picky 0');
++					}
++
++					// QC ClearKey : clé dans l'URL → options de déchiffrement avant -i et build ffmpeg « -dash » (démuxeur DASH)
++					$rDrmOptions = StreamUtils::drmOptions($rStreamSource);
++					if ($rDrmOptions !== '') {
++						$rStaticSource = StreamUtils::dashStaticSource($rStreamSource, (string) ($rArgsByKey['proxy']['value'] ?? ''));
++						if ($rStaticSource !== null) {
++							$rStreamSource = $rStaticSource;
++							$rURLInfo = parse_url($rStreamSource);
++							$rProtocol = 'http';
++							$rStream['stream_arguments'] = StreamUtils::withoutProxyArgument($rStream['stream_arguments']);
++							$rProbeArguments = StreamUtils::withoutProxyArgument($rProbeArguments);
++							$rProbeOptions = implode(' ', StreamUtils::getArguments($rProbeArguments, $rProtocol, 'fetch'));
++							$rDashRead2 = StreamUtils::DASH_STATIC_READ_OPTIONS;
++							if (@is_file('/etc/qc_nore_ids') && in_array((string) $rStreamID, preg_split('/\s+/', trim(@file_get_contents('/etc/qc_nore_ids')), -1, PREG_SPLIT_NO_EMPTY), true)) { $rDashRead2 = preg_replace('/(?<!\S)-re(?!\S)|-readrate_catchup\s+\S+/', '', $rDashRead2); } // QC-NORE-DASH2
++							$rFetchOptions = trim(implode(' ', StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'fetch')) . ' ' . $rDashRead2);
++						}
++						$rProbeOptions = trim($rProbeOptions . ' ' . $rDrmOptions);
++						$rFetchOptions = trim($rFetchOptions . ' ' . $rDrmOptions);
++						$rFFMPEG_CPU = FfmpegPaths::dash('ffmpeg') ?? $rFFMPEG_CPU;
++						$rFFMPEG_GPU = $rFFMPEG_CPU;
++						$rFFPROBE = FfmpegPaths::dash('ffprobe') ?? $rFFPROBE;
++						$rFFProbee = preg_replace('/^timeout (\d+) \S+ /', 'timeout 45 ' . $rFFPROBE . ' ', $rFFProbee); // QC-DASH-PROBE45
++						if (empty($rStream['stream_info']['custom_map'])) {
++							$rDrmMap = self::drmDefaultMap($rStreamSource, $rDrmOptions, $rFFPROBE); $rDrmMap = self::qcRemuxBsf($rDrmMap, intval($rStreamID)); // QC-REMUX-V2
++							if ($rDrmMap !== '') {
++								$rStream['stream_info']['custom_map'] = $rDrmMap;
++								$rStream['stream_info']['stream_all'] = 0;
++							}
++						}
++						echo 'ClearKey: ' . $rDrmOptions . ' via ' . $rFFMPEG_CPU . ' map=' . ($rStream['stream_info']['custom_map'] ?? 'auto') . "\n";
++					}
+ 
+ 					$rSkipFFProbe = self::hasSkipFFProbe($rStream['stream_arguments']);
+ 
+@@ -2956,7 +3135,7 @@
+ 						break;
+ 					}
+ 
+-					if ($rFromCache && file_exists(CACHE_TMP_PATH . md5($rSource)) && time() - filemtime(CACHE_TMP_PATH . md5($rSource)) <= 300) {
++					if ($rFromCache && file_exists(CACHE_TMP_PATH . md5($rSource)) && time() - filemtime(CACHE_TMP_PATH . md5($rSource)) <= ($rDrmOptions !== '' ? 21600 : 300)) { // QC-SEAMLESS cache sonde 6 h ClearKey
+ 						// Cache key must match the write below and the existence check
+ 						// above (both md5($rSource)); reading md5($rStreamSource) here
+ 						// fetched a different file, so the cache always missed.
+@@ -3013,7 +3192,7 @@
+ 						return 0;
+ 					}
+ 
+-					if (!$rFromCache) {
++					if (!$rFromCache || !file_exists(CACHE_TMP_PATH . md5($rSource))) { // QC-CK-PROBECACHE
+ 						// md5() only names the probe's cache file, as every reader above does; it protects nothing.
+ 						// nosemgrep: php.lang.security.weak-crypto.weak-crypto
+ 						FileCache::writeAtomic(CACHE_TMP_PATH . md5($rSource), igbinary_serialize($rFFProbeOutput));

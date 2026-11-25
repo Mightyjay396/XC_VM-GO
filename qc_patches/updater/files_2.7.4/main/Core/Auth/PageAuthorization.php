@@ -1,0 +1,505 @@
+<?php
+
+namespace XcVm\Core\Auth;
+
+use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\AdminHelpers;
+
+/**
+ * PageAuthorization — page-level permission checks for admin/reseller panels.
+ *
+ * @package XC_VM_Core_Auth
+ * @author  Divarion_D <https://github.com/Divarion-D>
+ * @copyright 2025-2026 Vateron Media
+ * @link    https://github.com/Vateron-Media/XC_VM
+ * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
+ */
+
+class PageAuthorization {
+	/**
+	 * The requested page under the name its rule is written for. The router
+	 * takes `line/mass` for `line_mass`, each with or without a trailing `.php`
+	 * (Router::normalizePage), and a page has one rule whichever way it was asked for.
+	 */
+	private static function requestedPage(): string {
+		return str_replace('/', '_', (string) preg_replace('/\.php$/', '', AdminHelpers::getPageName()));
+	}
+
+	/**
+	 * Check whether the current reseller may access a given page.
+	 *
+	 * Maps the page name to the reseller permission flag that gates it; defaults
+	 * the page to the current script name when not supplied.
+	 *
+	 * @param string|null $rPage Page key, or null to derive from the request.
+	 * @return bool True if access is allowed (true for ungated pages).
+	 */
+	public static function checkResellerPermissions(?string $rPage = null): bool {
+		global $rPermissions;
+
+		if (!$rPage) {
+			$rPage = self::requestedPage();
+		}
+
+		switch ($rPage) {
+			case 'user':
+			case 'users':
+				return $rPermissions['create_sub_resellers'];
+
+			case 'line':
+			case 'lines':
+				return $rPermissions['create_line'];
+
+			case 'mag':
+			case 'mags':
+				return $rPermissions['create_mag'];
+
+			case 'enigma':
+			case 'enigmas':
+				return $rPermissions['create_enigma'];
+
+			case 'epg_view':
+			case 'streams':
+			case 'created_channels':
+			case 'movies':
+			case 'episodes':
+			case 'radios':
+				return $rPermissions['can_view_vod'];
+
+			case 'live_connections':
+			case 'line_activity':
+				return $rPermissions['reseller_client_connection_logs'];
+		}
+
+		return true;
+	}
+
+	/**
+	 * Resolve and enforce page-level access for the current request.
+	 *
+	 * Maps the requested page to the required admin/reseller capability and
+	 * returns whether the current user/access-code is permitted.
+	 *
+	 * @param string|null $rPage    Page key, or null to derive from the current script.
+	 * @param bool        $rDefault The answer for a page no rule names: pages stay open,
+	 *                              post.php save actions (checkPostAction) are refused.
+	 * @return bool True if the current user may access the page.
+	 */
+	public static function checkPermissions(?string $rPage = null, ?bool $rIsEdit = null, bool $rDefault = true): bool {
+		if (!$rPage) {
+			// Under the front controller SCRIPT_FILENAME is always Public/index.php,
+			// so deriving the page from it checked "index" — a page no rule names —
+			// and every page opened for every administrator.
+			$rPage = self::requestedPage();
+		}
+		// Editing an existing record needs edit_*, creating one add_*. A page tells
+		// them apart by ?id=; post.php passes whether the form carries `edit`.
+		$rHasID = $rIsEdit ?? RequestManager::has('id');
+
+		switch ($rPage) {
+			case 'isps':
+			case 'isp':
+			case 'asns':
+				return Authorization::check('adv', 'block_isps');
+
+			case 'bouquet':
+				if ($rHasID && Authorization::check('adv', 'edit_bouquet')) {
+					return true;
+				}
+
+				if (!$rHasID && Authorization::check('adv', 'add_bouquet')) {
+					return true;
+				}
+
+				// no break
+			case 'bouquet_order':
+			case 'bouquet_sort':
+				return Authorization::check('adv', 'edit_bouquet');
+
+			case 'bouquets':
+				return Authorization::check('adv', 'bouquets');
+
+			case 'channel_order':
+				return Authorization::check('adv', 'channel_order');
+
+			case 'client_logs':
+				return Authorization::check('adv', 'client_request_log');
+
+			case 'created_channel':
+				if ($rHasID && Authorization::check('adv', 'edit_cchannel')) {
+					return true;
+				}
+
+				if (!$rHasID && Authorization::check('adv', 'create_channel')) {
+					return true;
+				}
+
+				break;
+
+			case 'code':
+			case 'codes':
+				return Authorization::check('adv', 'add_code');
+
+			case 'hmac':
+			case 'hmacs':
+				return Authorization::check('adv', 'add_hmac');
+
+			case 'credit_logs':
+				return Authorization::check('adv', 'credits_log');
+
+			case 'enigmas':
+				return Authorization::check('adv', 'manage_e2');
+
+			case 'epg':
+				if ($rHasID && Authorization::check('adv', 'epg_edit')) {
+					return true;
+				}
+
+				if (!$rHasID && Authorization::check('adv', 'add_epg')) {
+					return true;
+				}
+
+				// no break
+			case 'epgs':
+				return Authorization::check('adv', 'epg');
+
+			case 'episode':
+				if ($rHasID && Authorization::check('adv', 'edit_episode')) {
+					return true;
+				}
+
+				if (!$rHasID && Authorization::check('adv', 'add_episode')) {
+					return true;
+				}
+
+				break;
+
+			case 'episodes':
+				return Authorization::check('adv', 'episodes');
+
+			case 'series_mass':
+			case 'episodes_mass':
+				return Authorization::check('adv', 'mass_sedits');
+
+			case 'fingerprint':
+				return Authorization::check('adv', 'fingerprint');
+
+			case 'group':
+				if ($rHasID && Authorization::check('adv', 'edit_group')) {
+					return true;
+				}
+
+				if (!$rHasID && Authorization::check('adv', 'add_group')) {
+					return true;
+				}
+
+				// no break
+			case 'groups':
+				return Authorization::check('adv', 'mng_groups');
+
+			case 'ip':
+			case 'ips':
+				return Authorization::check('adv', 'block_ips');
+
+			case 'live_connections':
+				return Authorization::check('adv', 'live_connections');
+
+			case 'mag':
+				if ($rHasID && Authorization::check('adv', 'edit_mag')) {
+					return true;
+				}
+				if ($rHasID || !Authorization::check('adv', 'add_mag')) {
+					break;
+				}
+				return true;
+			case 'enigma':
+				if ($rHasID && Authorization::check('adv', 'edit_e2')) {
+					return true;
+				}
+				if ($rHasID || !Authorization::check('adv', 'add_e2')) {
+					break;
+				}
+				return true;
+
+			case 'mag_events':
+				return Authorization::check('adv', 'manage_events');
+			case 'mags':
+				return Authorization::check('adv', 'manage_mag');
+
+			case 'mass_delete':
+				return Authorization::check('adv', 'mass_delete');
+
+			case 'record':
+				return Authorization::check('adv', 'add_movie');
+			case 'recordings':
+			case 'movies':
+				return Authorization::check('adv', 'movies');
+			case 'queue':
+				return Authorization::check('adv', 'streams') || Authorization::check('adv', 'episodes') || Authorization::check('adv', 'series');
+			case 'movie':
+				if ($rHasID && Authorization::check('adv', 'edit_movie')) {
+					return true;
+				}
+				if (!$rHasID && Authorization::check('adv', 'add_movie')) {
+					if (!RequestManager::has('import') || Authorization::check('adv', 'import_movies')) {
+						return true;
+					}
+				}
+				break;
+			case 'movie_mass':
+				return Authorization::check('adv', 'mass_sedits_vod');
+			case 'package':
+				if ($rHasID && Authorization::check('adv', 'edit_package')) {
+					return true;
+				}
+
+				if ($rHasID || !Authorization::check('adv', 'add_packages')) {
+					break;
+				}
+				return true;
+			case 'packages':
+			case 'addons':
+				return Authorization::check('adv', 'mng_packages');
+
+			case 'player':
+				return Authorization::check('adv', 'player');
+
+			case 'process_monitor':
+				return Authorization::check('adv', 'process_monitor');
+
+			case 'profile':
+				return Authorization::check('adv', 'tprofile');
+
+			case 'profiles':
+				return Authorization::check('adv', 'tprofiles');
+
+			case 'radio':
+				if ($rHasID && Authorization::check('adv', 'edit_radio')) {
+					return true;
+				}
+				if ($rHasID || !Authorization::check('adv', 'add_radio')) {
+					break;
+				}
+				return true;
+			case 'radio_mass':
+				return Authorization::check('adv', 'mass_edit_radio');
+			case 'radios':
+				return Authorization::check('adv', 'radio');
+			case 'user':
+				if ($rHasID && Authorization::check('adv', 'edit_reguser')) {
+					return true;
+				}
+
+				if ($rHasID || !Authorization::check('adv', 'add_reguser')) {
+					break;
+				}
+				return true;
+			case 'user_logs':
+				return Authorization::check('adv', 'reg_userlog');
+			case 'users':
+				return Authorization::check('adv', 'mng_regusers');
+			case 'rtmp_ip':
+				return Authorization::check('adv', 'add_rtmp');
+			case 'rtmp_ips':
+			case 'rtmp_monitor':
+				return Authorization::check('adv', 'rtmp');
+			case 'serie':
+				if ($rHasID && Authorization::check('adv', 'edit_series')) {
+					return true;
+				}
+
+				if ($rHasID || !Authorization::check('adv', 'add_series')) {
+					break;
+				}
+				return true;
+			case 'series':
+				return Authorization::check('adv', 'series');
+			case 'series_order':
+				return Authorization::check('adv', 'edit_series');
+			case 'server':
+			case 'proxy':
+				if ($rHasID && Authorization::check('adv', 'edit_server')) {
+					return true;
+				}
+				if ($rHasID || !Authorization::check('adv', 'add_server')) {
+					break;
+				}
+				return true;
+			case 'server_install':
+				return Authorization::check('adv', 'add_server');
+			case 'servers':
+			case 'cluster_nodes':
+			case 'server_view':
+			case 'server_order':
+			case 'proxies':
+			case 'source_proxies': // srcproxy
+				return Authorization::check('adv', 'servers');
+
+			case 'settings':
+			case 'alerts':
+			case 'translations':
+				return Authorization::check('adv', 'settings');
+
+			case 'backups':
+			case 'cache':
+			case 'setup':
+				return Authorization::check('adv', 'database');
+
+			case 'stream':
+				if ($rHasID && Authorization::check('adv', 'edit_stream')) {
+					return true;
+				}
+
+				if (!$rHasID && Authorization::check('adv', 'add_stream')) {
+					if (!RequestManager::has('import') || Authorization::check('adv', 'import_streams')) {
+						return true;
+					}
+				}
+
+				break;
+
+			case 'review':
+				return Authorization::check('adv', 'import_streams');
+
+			// It renames streams and changes their EPG, categories and bouquets.
+			// No rule named it, and a page no rule names is open to every group.
+			case 'stream_review':
+				return Authorization::check('adv', 'import_streams') || Authorization::check('adv', 'mass_edit_streams');
+
+			// Its lists decide whose MAC guesses are counted and whose address is
+			// blocked at once: the navbar's permission, which no rule asked for.
+			case 'magscan_settings':
+				return Authorization::check('adv', 'manage_mag');
+
+			case 'mass_edit_streams':
+				return Authorization::check('adv', 'edit_stream');
+
+			case 'stream_categories':
+			case 'category_templates':
+			case 'category_template':
+				return Authorization::check('adv', 'categories') || (isset($GLOBALS['rAdminUserInfo']['is_admin']) && $GLOBALS['rAdminUserInfo']['is_admin'] == 1);
+
+			case 'stream_category':
+				return Authorization::check('adv', 'add_cat');
+
+			case 'stream_errors':
+				return Authorization::check('adv', 'stream_errors');
+
+			case 'created_channel_mass':
+			case 'stream_mass':
+				return Authorization::check('adv', 'mass_edit_streams');
+
+			case 'user_mass':
+				return Authorization::check('adv', 'mass_edit_users');
+
+			case 'mag_mass':
+				return Authorization::check('adv', 'mass_edit_mags');
+
+			case 'enigma_mass':
+				return Authorization::check('adv', 'mass_edit_enigmas');
+
+			case 'quick_tools':
+				return Authorization::check('adv', 'quick_tools');
+
+			case 'stream_tools':
+			case 'proxy_checker':
+				return Authorization::check('adv', 'stream_tools');
+
+			case 'stream_view':
+			case 'provider':
+			case 'providers':
+			case 'streams':
+			case 'epg_view':
+			case 'created_channels':
+			case 'stream_rank':
+			case 'archive':
+				return Authorization::check('adv', 'streams');
+
+			case 'ticket':
+				return Authorization::check('adv', 'ticket');
+
+			case 'ticket_view':
+			case 'tickets':
+				return Authorization::check('adv', 'manage_tickets');
+
+			case 'line':
+				if ($rHasID && Authorization::check('adv', 'edit_user')) {
+					return true;
+				}
+
+				if ($rHasID || !Authorization::check('adv', 'add_user')) {
+					break;
+				}
+
+				return true;
+
+			case 'line_activity':
+			case 'theft_detection':
+			case 'line_ips':
+				return Authorization::check('adv', 'connection_logs');
+
+			case 'line_mass':
+			case 'active_codes_mass':
+				return Authorization::check('adv', 'mass_edit_lines');
+
+			// Generating codes creates lines.
+			case 'active_code':
+				return Authorization::check('adv', 'add_user');
+
+			case 'useragents':
+			case 'useragent':
+				return Authorization::check('adv', 'block_uas');
+
+			case 'lines':
+			case 'active_codes':
+			case 'active_codes_batch':
+				return Authorization::check('adv', 'users');
+
+			case 'mysql_syslog':
+			case 'panel_logs':
+				return Authorization::check('adv', 'panel_logs');
+
+			case 'login_logs':
+				return Authorization::check('adv', 'login_logs');
+			case 'admin_actions':
+				return Authorization::check('adv', 'admin_audit');
+
+			case 'restream_logs':
+				return Authorization::check('adv', 'restream_logs');
+
+			default:
+				return $rDefault;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether the current administrator may run a post.php save action.
+	 *
+	 * post.php handles every admin form, and each action is held to the rule of
+	 * the page whose form it saves. Most actions are named after that page; the
+	 * rest are mapped here. An action no rule covers is refused: a new form that
+	 * forgot its rule must not be open to every administrator. Only the
+	 * administrator's own profile is open by design.
+	 *
+	 * @param string $rAction The post.php `action`.
+	 * @param bool   $rIsEdit Whether the form edits an existing record (`edit`).
+	 */
+	public static function checkPostAction(string $rAction, bool $rIsEdit): bool {
+		if ($rAction === 'vod_playlist_preview') {
+			return Authorization::check('adv', 'import_movies');
+		}
+		if (str_starts_with($rAction, 'mass_delete_')) {
+			return self::checkPermissions('mass_delete', $rIsEdit, false);
+		}
+
+		// twofactor and api_tokens are the administrator's own, part of the profile.
+		$rPage = ['import_tmdb_categories' => 'stream_categories', 'twofactor' => 'edit_profile', 'api_tokens' => 'edit_profile'][$rAction] ?? $rAction;
+		if ($rPage === '' || $rPage === 'edit_profile') {
+			return $rPage === 'edit_profile';
+		}
+
+		return self::checkPermissions($rPage, $rIsEdit, false);
+	}
+}

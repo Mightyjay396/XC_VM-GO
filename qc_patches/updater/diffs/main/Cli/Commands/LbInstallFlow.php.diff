@@ -1,0 +1,11 @@
+--- a/Cli/Commands/LbInstallFlow.php
++++ b/Cli/Commands/LbInstallFlow.php
+@@ -52,7 +52,7 @@
+ 			return 'redhat';
+ 		}
+ 		$rMap = [
+-			'ubuntu' => ['18' => 'ubuntu20', '20' => 'ubuntu20', '22' => 'ubuntu22', '24' => 'ubuntu24'],
++			'ubuntu' => ['18' => 'ubuntu20', '20' => 'ubuntu20', '22' => 'ubuntu22', '24' => 'ubuntu24', '26' => 'ubuntu24'],
+ 			'debian' => ['12' => 'debian', '13' => 'debian13', 'ipset'],
+ 		];
+ 		return $rMap[$rDistID][$rMajor] ?? 'debian';

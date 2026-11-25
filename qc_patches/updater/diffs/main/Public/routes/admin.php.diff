@@ -1,0 +1,22 @@
+--- a/Public/routes/admin.php
++++ b/Public/routes/admin.php
+@@ -100,6 +100,8 @@
+ use XcVm\Public\Controllers\Admin\ProviderController;
+ use XcVm\Public\Controllers\Admin\ProviderEditController;
+ use XcVm\Public\Controllers\Admin\ProxiesController;
++use XcVm\Public\Controllers\Admin\SourceProxiesController; // srcproxy
++use XcVm\Public\Controllers\Admin\Ajax\SourceProxyAjaxController;
+ use XcVm\Public\Controllers\Admin\ProxyController;
+ use XcVm\Public\Controllers\Admin\QueueController;
+ use XcVm\Public\Controllers\Admin\QuickToolsController;
+@@ -323,6 +325,10 @@
+ $router->get('edit_profile', [EditProfileController::class, 'index']);
+ $router->get('fingerprint', [FingerprintController::class, 'index']);
+ $router->get('proxies', [ProxiesController::class, 'index']);
++$router->get('source_proxies', [SourceProxiesController::class, 'index']);
++$router->api('source_proxy_save', [SourceProxyAjaxController::class, 'save']);
++$router->api('source_proxy_delete', [SourceProxyAjaxController::class, 'delete']);
++$router->api('source_proxy_test', [SourceProxyAjaxController::class, 'test']);
+ $router->any('proxy', [ProxyController::class, 'index']);
+ $router->any('review', [ReviewController::class, 'index']);
+ $router->any('archive', [ArchiveController::class, 'index']);

@@ -1,0 +1,10 @@
+[Unit]
+Description=QC mpdproxy socket on port %i (held by systemd: service restarts never drop ffmpeg connections)
+
+[Socket]
+ListenStream=127.0.0.1:%i
+Backlog=1024
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

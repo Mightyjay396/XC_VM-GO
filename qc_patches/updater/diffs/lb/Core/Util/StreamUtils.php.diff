@@ -1,0 +1,97 @@
+--- a/Core/Util/StreamUtils.php
++++ b/Core/Util/StreamUtils.php
+@@ -260,7 +260,94 @@
+ 	 * @param int    $rMaxHeight The stream's "Maximum Resolution" (0 for none): the tallest video yt-dlp may pick.
+ 	 * @return string Normalized/resolved URL.
+ 	 */
++	/** QC ClearKey — options ffmpeg (avant -i) mémorisées par URL nettoyée dans parseStreamURL(). */
++	private static array $drmOptions = [];
++
++	/**
++	 * QC ClearKey : retire `decryption_key=KID:KEY` (ou drmkey= / clearkey= / license_key=, KID optionnel)
++	 * de l'URL d'une source et mémorise les options ffmpeg : -cenc_decryption_key (DASH .mpd) ou -decryption_key (MP4/HLS fMP4).
++	 */
++	public static function stripDrmKey(string $rURL): string {
++		$rURL = str_replace('&amp;', '&', $rURL);
++		// KID:KEY (ou KEY seule), plusieurs paires séparées par des virgules : kid1:key1,kid2:key2
++		if (!preg_match('/[?&|#](?:decryption_key|drmkey|clearkey|license_key)=((?:(?:[0-9a-fA-F]{32}:)?[0-9a-fA-F]{32})(?:,(?:[0-9a-fA-F]{32}:)?[0-9a-fA-F]{32})*)(?=$|[&#|])/', $rURL, $m, PREG_OFFSET_CAPTURE)) {
++			return $rURL;
++		}
++		$rPairs = [];
++		$rSingle = '';
++		foreach (explode(',', strtolower($m[1][0])) as $rPair) {
++			$rParts = explode(':', $rPair);
++			if (count($rParts) == 2) {
++				$rPairs[] = $rParts[0] . '=' . $rParts[1];
++			} else {
++				$rSingle = $rParts[0];
++			}
++		}
++		$rClean = substr($rURL, 0, $m[0][1]) . substr($rURL, $m[0][1] + strlen($m[0][0]));
++		$rClean = preg_replace(['/\?&/', '/&&+/', '/[?&#|]$/'], ['?', '&', ''], $rClean);
++		$rIsDash = (bool) preg_match('/\.mpd(\?|$)/i', $rClean);
++		$rOpts = [];
++		if ($rPairs !== []) {
++			$rOpts[] = ($rIsDash ? '-cenc_decryption_keys ' : '-decryption_keys ') . escapeshellarg(implode(':', $rPairs));
++		}
++		if ($rSingle !== '' || $rPairs === []) {
++			$rKey = $rSingle !== '' ? $rSingle : explode('=', $rPairs[0])[1];
++			$rOpts[] = ($rIsDash ? '-cenc_decryption_key ' : '-decryption_key ') . $rKey;
++		} elseif (count($rPairs) == 1) {
++			// une seule paire : la clé sert aussi de clé par défaut (pistes sans KID explicite)
++			$rOpts[] = ($rIsDash ? '-cenc_decryption_key ' : '-decryption_key ') . explode('=', $rPairs[0])[1];
++		}
++		self::$drmOptions[$rClean] = implode(' ', $rOpts);
++		return $rClean;
++	}
++
++	/** Options ffmpeg ClearKey à placer avant -i pour une URL nettoyée par stripDrmKey(), '' si aucune. */
++	public static function drmOptions(string $rURL): string {
++		return self::$drmOptions[$rURL] ?? '';
++	}
++
++	/**
++	 * QC ClearKey : source DASH live (.mpd) servie par mpdproxy (127.0.0.1:8098) en manifeste STATIQUE 30 s derrière
++	 * le direct : ffmpeg ne recharge plus le manifeste (fin des relectures en boucle / désynchro du démuxeur DASH) et lit
++	 * en -re à distance constante du direct. Le proxy HTTP de la chaîne, s'il y en a un, est appliqué par mpdproxy
++	 * (manifeste + relais des segments) → ne pas passer -http_proxy à ffmpeg. null si non applicable / mpdproxy absent.
++	 */
++	/** Lecture d'une source mpdproxy statique (manifeste 60 s derrière le direct) : -re = tampon de 60 s qui absorbe les
++	 *  pauses de publication du packager source (observé : 8 à 40 s à certains splices pub, 100 s une fois) ; après une pause plus longue,
++	 *  rattrapage à 1.5x jusqu'à retrouver les 60 s ; le relais mpdproxy attend qu'un segment existe (jamais de 404 en
++	 *  rafale) ; rw_timeout 60 s par segment > réponse max du relais (~35 s). */
++	public const DASH_STATIC_READ_OPTIONS = '-re -readrate_catchup 1.5 -rw_timeout 90000000';
++
++	/** mpdproxy en N processus (GIL Python) : port = 8098 + crc32(url) % N, stable pour une même source. */
++	public const MPDPROXY_BASE_PORT = 8098;
++	public const MPDPROXY_SHARDS = 16;
++
++	public static function dashStaticSource(string $rURL, string $rProxy = ''): ?string {
++		if (!preg_match('/\.mpd(\?|$)/i', $rURL) || preg_match('#^http://127\.0\.0\.1:8\d{3}/#', $rURL)) {
++			return null;
++		}
++		$rPort = self::MPDPROXY_BASE_PORT + (crc32($rURL) % self::MPDPROXY_SHARDS);
++		$rSock = @fsockopen('127.0.0.1', $rPort, $rErrNo, $rErrStr, 0.5);
++		if (!$rSock && $rPort !== self::MPDPROXY_BASE_PORT) {
++			$rPort = self::MPDPROXY_BASE_PORT;
++			$rSock = @fsockopen('127.0.0.1', $rPort, $rErrNo, $rErrStr, 0.5);
++		}
++		if (!$rSock) {
++			return null;
++		}
++		fclose($rSock);
++		$rStatic = 'http://127.0.0.1:' . $rPort . '/mpd?s=1&d=60&u=' . rawurlencode($rURL) . ($rProxy !== '' ? '&p=' . rawurlencode(self::proxyURL($rProxy)) : '');
++		self::$drmOptions[$rStatic] = self::$drmOptions[$rURL] ?? '';
++		return $rStatic;
++	}
++
++	/** Retire l'argument « proxy » d'une liste d'arguments de flux (mpdproxy applique déjà le proxy). */
++	public static function withoutProxyArgument(array $rArguments): array {
++		return array_values(array_filter($rArguments, fn($rArgument) => ($rArgument['argument_key'] ?? '') !== 'proxy'));
++	}
++
+ 	public static function parseStreamURL(string $rURL, string $rProxy = '', int $rMaxHeight = 0) {
++		$rURL = self::stripDrmKey($rURL);
+ 		$rProtocol = strtolower(substr($rURL, 0, 4));
+ 		if ($rProtocol == 'rtmp') {
+ 			if (stristr($rURL, '$OPT')) {

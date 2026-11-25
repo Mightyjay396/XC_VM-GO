@@ -1,0 +1,10 @@
+--- a/Core/Auth/PageAuthorization.php
++++ b/Core/Auth/PageAuthorization.php
+@@ -332,6 +332,7 @@
+ 			case 'server_view':
+ 			case 'server_order':
+ 			case 'proxies':
++			case 'source_proxies': // srcproxy
+ 				return Authorization::check('adv', 'servers');
+ 
+ 			case 'settings':

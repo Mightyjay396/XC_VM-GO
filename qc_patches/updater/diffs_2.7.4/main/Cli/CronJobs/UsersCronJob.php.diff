@@ -1,0 +1,56 @@
+--- a/Cli/CronJobs/UsersCronJob.php
++++ b/Cli/CronJobs/UsersCronJob.php
+@@ -637,7 +637,7 @@
+ 
+ 						if ($rClose) {
+ 							echo 'Close connection: ' . $rConnection['uuid'] . "\n";
+-							ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
++							ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false, false); // QC-NOKILL-ENDED : connexion deja terminee, ne pas tuer un PID reutilise
+ 							$rRedisDelete['count']++;
+ 							$rRedisDelete['line'][$rConnection['identity']][] = $rConnection['uuid'];
+ 							$rRedisDelete['stream'][$rConnection['stream_id']][] = $rConnection['uuid'];
+@@ -672,7 +672,7 @@
+ 								if ($rConnection['container'] == 'hls') {
+ 									if ($this->hlsEnded($rConnection, $rStartTime)) {
+ 										echo 'Close connection: ' . $rConnection['uuid'] . "\n";
+-										ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
++										ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false, false); // QC-NOKILL-HLS-ENDED : PID d une requete HLS deja reutilise
+ 
+ 										if ($rRedis) {
+ 											$rRedisDelete['count']++;
+@@ -736,7 +736,7 @@
+ 								}
+ 							} else {
+ 								echo 'Close connection: ' . $rConnection['uuid'] . "\n";
+-								ConnectionTracker::closeConnection($rConnection, false, false);
++								ConnectionTracker::closeConnection($rConnection, false, false, time() - intval($rConnection['hls_last_read'] ?? 0) < 900); // QC-KILL-ACTIVE-ONLY
+ 
+ 								if ($rRedis) {
+ 									$rRedisDelete['count']++;
+@@ -759,7 +759,7 @@
+ 							}
+ 						} else {
+ 							echo 'Close connection: ' . $rConnection['uuid'] . "\n";
+-							ConnectionTracker::closeConnection($rConnection, false, false);
++							ConnectionTracker::closeConnection($rConnection, false, false, time() - intval($rConnection['hls_last_read'] ?? 0) < 900); // QC-KILL-ACTIVE-ONLY
+ 
+ 							if ($rRedis) {
+ 								$rRedisDelete['count']++;
+@@ -806,7 +806,7 @@
+ 						continue;
+ 					}
+ 
+-					if (!$rConnection['hls_end']) {
++					if (!$rConnection['hls_end'] && time() - intval($rConnection['hls_last_read'] ?? 0) < 900) { // QC-ACTIVE-COUNT : connexions fantomes exclues de la limite
+ 						$rActiveCount++;
+ 					}
+ 				}
+@@ -815,7 +815,7 @@
+ 					foreach ($rConnections as $rConnection) {
+ 						if (!$rConnection['hls_end']) {
+ 							echo 'Close connection: ' . $rConnection['uuid'] . "\n";
+-							ConnectionTracker::closeConnection($rConnection, false, false);
++							ConnectionTracker::closeConnection($rConnection, false, false, time() - intval($rConnection['hls_last_read'] ?? 0) < 900); // QC-KILL-ACTIVE-ONLY
+ 
+ 							if ($rRedis) {
+ 								$rRedisDelete['count']++;

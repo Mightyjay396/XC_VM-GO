@@ -1,0 +1,49 @@
+--- a/Domain/Cluster/ConnectionIngest.php
++++ b/Domain/Cluster/ConnectionIngest.php
+@@ -415,7 +415,9 @@
+ 				throw new \RuntimeException('store unavailable');
+ 			}
+ 			if (ClusterBus::touch($rServerID, array_intersect_key($rTouches, $rOwn))) {
+-				return;
++				// QC-BUS-TOUCH : le bus ne sert qu'aux viewers HLS ; le check-in d'un worker TS/VOD (toutes les 300 s)
++				// doit aussi arriver au store, que cron:users lit pour workerGone() : sinon il coupait des clients actifs.
++				$rSkipHls = true;
+ 			}
+ 		}
+ 		$rReads = [];
+@@ -423,7 +425,7 @@
+ 			$rReads[(string) $rUUID] = $rRead;
+ 		}
+ 		if (SettingsManager::get('redis_handler')) {
+-			self::touchRedis($rServerID, $rReads);
++			self::touchRedis($rServerID, $rReads, $rSkipHls ?? false);
+ 			return;
+ 		}
+ 		foreach (array_chunk($rReads, 1000, true) as $rChunk) {
+@@ -433,7 +435,7 @@
+ 			}
+ 			$rWhen = 'CASE `uuid`' . str_repeat(' WHEN ? THEN ?', count($rChunk)) . ' ELSE `hls_last_read` END';
+ 			$rIn = implode(',', array_fill(0, count($rChunk), '?'));
+-			if (!self::db()->query('UPDATE `lines_live` SET `hls_last_read` = ' . $rWhen . ' WHERE `server_id` = ? AND `uuid` IN (' . $rIn . ') AND (`hls_last_read` IS NULL OR `hls_last_read` < ' . $rWhen . ');', ...[...$rCase, $rServerID, ...array_map('strval', array_keys($rChunk)), ...$rCase])) {
++			if (!self::db()->query('UPDATE `lines_live` SET `hls_last_read` = ' . $rWhen . ' WHERE `server_id` = ? AND `uuid` IN (' . $rIn . ') AND (`hls_last_read` IS NULL OR `hls_last_read` < ' . $rWhen . ')' . (($rSkipHls ?? false) ? " AND `container` <> 'hls'" : '') . ';', ...[...$rCase, $rServerID, ...array_map('strval', array_keys($rChunk)), ...$rCase])) {
+ 				throw new \RuntimeException('store unavailable');
+ 			}
+ 		}
+@@ -446,7 +448,7 @@
+ 	 *
+ 	 * @param array<string, int> $rReads uuid => hls_last_read
+ 	 */
+-	private static function touchRedis(int $rServerID, array $rReads): void {
++	private static function touchRedis(int $rServerID, array $rReads, bool $rSkipHls = false): void {
+ 		$rRedis = RedisManager::instance();
+ 		if (!$rRedis instanceof \Redis) {
+ 			throw new \RuntimeException('redis unavailable'); // the batch is not applied; the node resends newer values
+@@ -458,7 +460,7 @@
+ 			$rRedis->watch($rUUID);
+ 			$rRaw = $rRedis->get($rUUID);
+ 			$rRecord = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;
+-			if (!is_array($rRecord) || (int) ($rRecord['server_id'] ?? 0) !== $rServerID || (int) ($rRecord['hls_last_read'] ?? 0) >= $rRead) {
++			if (!is_array($rRecord) || (int) ($rRecord['server_id'] ?? 0) !== $rServerID || (int) ($rRecord['hls_last_read'] ?? 0) >= $rRead || ($rSkipHls && ($rRecord['container'] ?? '') === 'hls')) {
+ 				$rRedis->unwatch();
+ 				continue;
+ 			}

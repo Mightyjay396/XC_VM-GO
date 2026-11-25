@@ -1,0 +1,11 @@
+--- a/Streaming/Delivery/StreamRedirector.php
++++ b/Streaming/Delivery/StreamRedirector.php
+@@ -61,7 +61,7 @@
+ 							$rAvailableServers[] = $rServerID;
+ 						}
+ 					} else {
+-						if (($rStreamServers[$rServerID]['on_demand'] == 1 && $rStreamServers[$rServerID]['stream_status'] != 1 || 0 < $rStreamServers[$rServerID]['pid'] && $rStreamServers[$rServerID]['stream_status'] == 0) && $rStreamServers[$rServerID]['to_analyze'] == 0 && (int) $rStreamServers[$rServerID]['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || $rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1) {
++						if (($rStreamServers[$rServerID]['on_demand'] == 1 || 0 < $rStreamServers[$rServerID]['pid'] && $rStreamServers[$rServerID]['stream_status'] == 0 || $rStreamServers[$rServerID]['stream_status'] == 2 && 0 < intval($rStreamServers[$rServerID]['monitor_pid'] ?? 0) /* od_live: 24/7 stream being restarted by its node */) && $rStreamServers[$rServerID]['to_analyze'] == 0 && (int) $rStreamServers[$rServerID]['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || $rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1) {
+ 							$rAvailableServers[] = $rServerID;
+ 						}
+ 					}

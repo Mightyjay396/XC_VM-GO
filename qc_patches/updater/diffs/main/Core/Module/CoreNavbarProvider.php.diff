@@ -1,0 +1,13 @@
+--- a/Core/Module/CoreNavbarProvider.php
++++ b/Core/Module/CoreNavbarProvider.php
+@@ -87,6 +87,10 @@
+ 			->parent('servers')->url('proxies')
+ 			->label('manage_proxies')->permissions(['proxies'])->order(30));
+ 
++		NavbarRegistry::add((new NavbarItem('servers.source_proxies')) // srcproxy
++			->parent('servers')->url('source_proxies')
++			->label('', 'Proxys sources (HTTP)')->permissions(['servers'])->order(31));
++
+ 		NavbarRegistry::add((new NavbarItem('servers.order'))
+ 			->parent('servers')->url('server_order')
+ 			->label('server_order')->permissions(['server_order'])->order(40));

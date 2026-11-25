@@ -1,0 +1,12 @@
+--- a/Domain/Stream/StreamService.php
++++ b/Domain/Stream/StreamService.php
+@@ -429,6 +429,9 @@
+ 						if (isset($rData['http_proxy']) && (string) $rData['http_proxy'] !== '') {
+ 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 2, ?);', $rInsertID, $rData['http_proxy']);
+ 						}
++						if ((int) ($rData['proxy_id'] ?? 0) > 0) { // srcproxy : proxy de la liste → proxy_id + URL résolue dans l'argument 2
++							\XcVm\Domain\Stream\ProxyService::applyToStream((int) $rInsertID, (int) $rData['proxy_id']);
++						}
+ 
+ 						if (isset($rData['cookie']) && (string) $rData['cookie'] !== '') {
+ 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 17, ?);', $rInsertID, $rData['cookie']);

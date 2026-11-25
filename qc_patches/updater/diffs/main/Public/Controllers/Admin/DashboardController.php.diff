@@ -1,0 +1,41 @@
+--- a/Public/Controllers/Admin/DashboardController.php
++++ b/Public/Controllers/Admin/DashboardController.php
+@@ -175,6 +175,7 @@
+ 			self::cronCheck(file_exists($signals) ? filemtime($signals) : null, $now, $bin),
+ 			// A proxy's watchdog blob is its own: the daemon runs on streaming servers.
+ 			self::fanoutCheck(FanoutMode::enabled(), array_filter($servers, static fn(array $rServer): bool => (int) ($rServer['server_type'] ?? 0) === 0), $now, $bin),
++			self::qcGoCheck(array_filter($servers, static fn(array $rServer): bool => (int) ($rServer['server_type'] ?? 0) === 0), $now), // QC-GO-DELIVERY
+ 			self::clusterCheck($rClusterOn, $rNodes, $rPending, $bin),
+ 			self::diskCheck(['panel' => self::usage(MAIN_HOME), 'tmp' => self::usage(TMP_PATH)]),
+ 			self::backupCheck($rSchedule, isset(BackupService::PERIODS[$rSchedule]) ? BackupService::newestBackup() : null, $now, class_exists(BackupVerifier::class) ? BackupVerifier::last((string) SettingsManager::get('backup_verify')) : null),
+@@ -539,6 +540,30 @@
+ 		return $states;
+ 	}
+ 
++	/**
++	 * QC-GO-DELIVERY : serveurs dont la delivery Go QC (odrelay / livehold / ckts, pas fanout) écoute,
++	 * d'après le watchdog de la dernière minute.
++	 *
++	 * @param array<int,array<string,mixed>> $servers
++	 * @return array{state:string,icon:string,title:string,detail:string,help:string,key:string}
++	 */
++	public static function qcGoCheck(array $servers, int $now): array {
++		$rOn = [];
++		$rTotal = 0;
++		foreach ($servers as $srv) {
++			if (empty($srv['enabled']) || $now - intval($srv['last_check_ago'] ?? 0) >= 60) {
++				continue;
++			}
++			$rTotal++;
++			$wd = json_decode($srv['watchdog_data'] ?? '{}', true) ?: [];
++			if (!empty($wd['qc_go'])) {
++				$rOn[] = (string) $srv['server_name'];
++			}
++		}
++		$rDetail = $rOn === [] ? 'Not running on any server' : 'Running on ' . count($rOn) . '/' . $rTotal . ' servers: ' . implode(', ', $rOn);
++		return ['state' => $rOn === [] ? 'off' : 'ok', 'icon' => 'tabler-bolt', 'title' => 'Go delivery (odrelay / livehold / ckts)', 'detail' => $rDetail, 'help' => '', 'key' => 'qc_go'];
++	}
++
+ 	/** @param list<string> $down */
+ 	private static function withDown(string $detail, array $down): string {
+ 		return $down !== [] ? $detail . ' · ' . Translator::get('dashboard_check_servers_down', ['{names}' => implode(', ', $down)]) : $detail;

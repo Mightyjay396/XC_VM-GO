@@ -1,0 +1,44 @@
+--- a/Cli/Commands/MonitorCommand.php
++++ b/Cli/Commands/MonitorCommand.php
+@@ -125,6 +125,8 @@
+ 		$rStreamProbe = false;
+ 		$rSources = [];
+ 		$rSegmentTime = intval(SettingsManager::get('seg_time'));
++		// QC-CLEARKEY-LEGACY: DASH via mpdproxy (slow CDN, SSAI ad break) is stalled only after 150 s, as under the fanout supervisor.
++		$rDashStall = stripos((string) ($rStreamInfo['stream_source'] ?? ''), '.mpd') !== false ? 150 : 0;
+ 		$rPrioritySwitch = false;
+ 		$rMaxFails = 0;
+ 
+@@ -266,7 +268,7 @@
+ 							break;
+ 						}
+ 					}
+-					if (($rSegmentTime * 6) <= time() - $rCheckedTime) {
++					if (max($rSegmentTime * 6, $rDashStall) <= time() - $rCheckedTime) {
+ 						$rNewMd5 = md5_file($rPlaylist);
+ 						if ($rMD5 != $rNewMd5) {
+ 							$rMD5 = $rNewMd5;
+@@ -397,12 +399,12 @@
+ 						// An on-demand source that cannot even be probed is a failed
+ 						// start like any other: honour on_demand_failure_exit here too,
+ 						// instead of re-probing a dead source until the cron stops it.
+-						if (SettingsManager::get('on_demand_failure_exit') && $rStreamInfo['on_demand']) {
++						if (SettingsManager::get('on_demand_failure_exit') && $rStreamInfo['on_demand'] && $rMaxFails >= 3) { // QC-OD-FAST
+ 							echo "On-demand source failed to probe, exiting.\n";
+ 							return 0;
+ 						}
+ 						echo 'Stream start failed (attempt ' . $rMaxFails . '). Sleeping ' . SettingsManager::get('stream_fail_sleep') . " seconds...\n";
+-						sleep(SettingsManager::get('stream_fail_sleep'));
++						sleep($rStreamInfo['on_demand'] ? 1 : SettingsManager::get('stream_fail_sleep')); // QC-OD-FAST
+ 						continue;
+ 					}
+ 					break;
+@@ -439,7 +441,7 @@
+ 				$rFirstSegment = $rFolder . $rStreamID . '_0.ts';
+ 				$rSegmentSeen = false;
+ 				$rChecks = 0;
+-				$rMaxChecks = max(20, min($rSegmentTime * 3, 30), intval($rData['start_timeout'] ?? 0));
++				$rMaxChecks = max(60, min($rSegmentTime * 3, 30), intval($rData['start_timeout'] ?? 0)); // QC-START-WAIT
+ 				while (true) {
+ 					echo 'Checking for playlist ' . ($rChecks + 1) . '/' . $rMaxChecks . "...\n";
+ 					if (!ProcessManager::isStreamRunning($rPID, $rStreamID)) {

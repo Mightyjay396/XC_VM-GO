@@ -1,0 +1,14 @@
+--- a/Streaming/Codec/FfmpegPaths.php
++++ b/Streaming/Codec/FfmpegPaths.php
+@@ -127,4 +127,11 @@
+ 	public static function probe() {
+ 		return self::$probe;
+ 	}
++
++	/** QC : build « <ver>-dash » (ffmpeg avec libxml2 : démuxeur DASH + -cenc_decryption_key) pour les sources ClearKey, ou null. */
++	public static function dash(string $name = 'ffmpeg'): ?string {
++		$rFound = glob(BIN_PATH . 'ffmpeg_bin/*-dash/' . $name) ?: [];
++		rsort($rFound, SORT_NATURAL);
++		return isset($rFound[0]) && is_file($rFound[0]) ? $rFound[0] : null;
++	}
+ }
