@@ -1,11 +1,7 @@
+<h1 align="center">XC_VM-GO</h1>
 <p align="center">
-  <img src="https://avatars.githubusercontent.com/u/149707645?s=400&v=4" width="220" alt="Vateron Media Logo"/>
-</p>
-
-<h1 align="center">XC_VM IPTV Panel</h1>
-<p align="center">
-  <b>Open-source, community-driven Xtream Codes panel</b><br>
-  Built for modern IPTV workflows – powerful, scalable, and free.
+  <b>Unofficial fork of the XC_VM IPTV panel, with a Go delivery engine</b><br>
+  Based on <a href="https://github.com/Vateron-Media/XC_VM">Vateron-Media/XC_VM</a> 2.7.4 · not an official XC_VM release
 </p>
 
 <p align="center">
@@ -13,6 +9,12 @@
   <a href="https://github.com/Mightyjay396/XC_VM-GO/stargazers"><img src="https://img.shields.io/github/stars/Mightyjay396/XC_VM-GO?style=flat" /></a>
   <a href="https://github.com/Mightyjay396/XC_VM-GO/issues"><img src="https://img.shields.io/github/issues/Mightyjay396/XC_VM-GO" /></a>
 </p>
+
+> [!WARNING]
+> **Unofficial fork.** XC_VM-GO is a community fork of [Vateron-Media/XC_VM](https://github.com/Vateron-Media/XC_VM).
+> It is **not** an official XC_VM release and is **not affiliated with, endorsed by or supported by Vateron Media**.
+> Report problems with this fork in [this repository's issues](https://github.com/Mightyjay396/XC_VM-GO/issues), not to the upstream XC_VM project.
+> For the official XC_VM, go to [github.com/Vateron-Media/XC_VM](https://github.com/Vateron-Media/XC_VM).
 
 ---
 
@@ -43,7 +45,11 @@
 
 ## 🚀 Overview
 
-**XC_VM** is an open-source IPTV platform based on Xtream Codes.
+**XC_VM-GO** is an unofficial fork of **XC_VM**. It adds fixes, modules and a Go delivery engine on top of the
+official XC_VM 2.7.4 (see [Go Delivery Engine (this fork)](#-go-delivery-engine-this-fork)). Everything below about
+XC_VM itself comes from the upstream project.
+
+**XC_VM** (upstream) is an open-source IPTV platform based on Xtream Codes.
 It enables:
 
 - 📺 Live & VOD streaming
@@ -63,6 +69,9 @@ It enables:
 ---
 
 ## 📚 Documentation
+
+> The guides below are the **official upstream XC_VM documentation**. They do not cover this fork's changes:
+> see [INSTALL.md](INSTALL.md) for those.
 
 - 🇬🇧 **English Guide**
   [https://vateron-media.github.io/XC_VM/](https://vateron-media.github.io/XC_VM/)
@@ -137,7 +146,7 @@ For new installations:
 
 ## 📥 Quick Install
 
-> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM 2.7.4-p1**: official XC_VM 2.7.4 + the QC fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
+> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM-GO 2.7.4-p1** (unofficial fork): upstream XC_VM 2.7.4 + this fork's fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
 
 ```bash
 # 1. Update system
@@ -316,7 +325,8 @@ Details: [INSTALL.md](INSTALL.md).
 
 ## 🤝 Contributing
 
-We welcome community help!
+This is a fork. For problems with **XC_VM-GO**, open an issue in [this repository](https://github.com/Mightyjay396/XC_VM-GO/issues).
+To contribute to **XC_VM** itself, use the [upstream repository](https://github.com/Vateron-Media/XC_VM).
 
 - 🛠️ [Contributing Guide](CONTRIBUTING.md)
 - 👥 [Contributors List](CONTRIBUTORS.md)
@@ -324,6 +334,10 @@ We welcome community help!
 ---
 
 ### ⚠️ Legal & Project Independence Notice
+
+**XC_VM-GO** is an unofficial, independent fork of XC_VM by Vateron Media. It is not affiliated with, endorsed by or
+supported by Vateron Media. The original copyright and the AGPL-3.0 attribution of XC_VM are kept unchanged, as the
+license requires. Changes made in this fork are also released under AGPL-3.0.
 
 **XC_VM** is an independent software project and is **not affiliated with or endorsed by XUI.one**.
 

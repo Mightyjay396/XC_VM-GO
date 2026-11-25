@@ -1,7 +1,14 @@
-# XC_VM-GO — XC_VM 2.7.4 with the QC Go delivery engine
+# XC_VM-GO — unofficial fork of XC_VM 2.7.4 with the QC Go delivery engine
 
-This fork ships official **XC_VM 2.7.4** plus the QC fixes, modules and the Go delivery engine, released as
-**2.7.4-p1** (an XC_VM patch release). It installs, adds load balancers and updates exactly like the original
+> [!WARNING]
+> **Unofficial fork.** XC_VM-GO is a community fork of [Vateron-Media/XC_VM](https://github.com/Vateron-Media/XC_VM).
+> It is **not** an official XC_VM release and is **not affiliated with, endorsed by or supported by Vateron Media**.
+> Report problems with this fork in [this repository's issues](https://github.com/Mightyjay396/XC_VM-GO/issues), not to the upstream XC_VM project.
+> For the official XC_VM, go to [github.com/Vateron-Media/XC_VM](https://github.com/Vateron-Media/XC_VM).
+
+
+This unofficial fork ships upstream **XC_VM 2.7.4** plus the QC fixes, modules and the Go delivery engine, released as
+**2.7.4-p1** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
 XC_VM — every download points to this repository's Releases, so new servers always get this version.
 No server data is included: no channels, source URLs, EPG, database, proxy list, keys or IP addresses.
 
