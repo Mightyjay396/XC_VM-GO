@@ -37,23 +37,28 @@ cd /root && rm -rf qc_xcvm_pkg && tar xzf qc_xcvm_updater.tgz && python3 qc_xcvm
 the root password is asked once), one at a time, stopping at the first failure. Other options:
 `--dry-run`, `--no-deps`, `--rollback <dir>`, `--force`.
 
-## Go delivery engine (installed and started on every load balancer)
+## Go delivery engine — replaces FFmpeg (installed and started on every load balancer)
 
 | Program | Local port | Role |
 |---|---|---|
-| `odrelay` | 8147 | Fast start for on-demand channels: the viewer gets video immediately while FFmpeg starts (TS and HLS) |
-| `livehold` | 8150 | Keeps viewers connected through FFmpeg restarts and source drops (offline slate instead of a disconnect), TS + HLS |
+| `odrelay` | 8147 | **Replaces FFmpeg for all on-demand channels** (MPEG-TS and HLS sources, incl. HLS with separate audio, per-stream proxy): one shared source connection per channel, first byte in ~1 s |
+| `ffmpeg-golive` | — | **Replaces FFmpeg for live channels** listed in `config/golive_streams.txt` (plain copy to HLS); hands over to FFmpeg for transcoding, filters, logos, encrypted HLS, fMP4 |
+| `livehold` | 8150 | Keeps viewers connected through restarts and source drops (offline slate instead of a disconnect), TS + HLS |
 | `ckts` | 8160 | ClearKey DASH → MPEG-TS engine, with 15 `mpdproxy-ads` relays (8115-8129) for ad breaks |
 | `mpdproxy` | 8098-8113 | DASH/ClearKey proxy (manifests + segments, cache), 16 socket-activated instances |
 | FFmpeg 8.1-dash | — | FFmpeg build used for DASH/ClearKey sources (`bin/ffmpeg_bin/8.1-dash`) |
 
-This is not XC_VM's fanout (left as is). `config/odrelay_streams.txt`, `config/livehold_streams.txt` and
-`/etc/qc_ckts_ids` contain `*` (all channels); replace with stream IDs to limit. The Main dashboard shows a
+FFmpeg remains installed and is used only for what Go does not do: transcoding, filters, logos, encrypted HLS / fMP4,
+several outputs. This is not XC_VM's fanout (left as is). `config/odrelay_streams.txt`, `config/livehold_streams.txt` and
+`/etc/qc_ckts_ids` contain `*` (all channels); replace with stream IDs to limit. `config/golive_streams.txt` is empty by
+default: add live stream IDs (one per line), then restart those channels from the panel. Panel settings (segments,
+prebuffers, wait/scan, fail sleep, probe) drive the Go engine and apply without a restart. The stream list shows a
+`go` badge for channels run by Go, and on-demand channels served by Go show their stats. The Main dashboard shows a
 **Go delivery** line in *Service Status* listing the servers running the engine.
 The binaries ship in the release archives (`bin/qc/`), installed by `bin/qc/qc_deps.sh` (run as root by the
 installer and by every update).
 
-Sources in `qc_patches/go/`: `odrelay` (same as the shipped binary), `livehold` and `mpdproxy` (earlier
+Sources in `qc_patches/go/`: `odrelay` (same as the shipped binary; also built as `ffmpeg-golive`), `livehold` and `mpdproxy` (earlier
 sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc_patches/go/<prog> && CGO_ENABLED=0 go build`.
 
 ## XC_VM fixes
@@ -85,7 +90,7 @@ sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc
 ```
 src/                 XC_VM 2.7.4-p2 (Main tree; release archives add bin/qc/ with the Go binaries)
 qc_patches/updater/  qc_xcvm_updater.py + patched files for 2.7.2 and 2.7.4 (existing panels)
-qc_patches/go/       Go sources (odrelay, livehold, mpdproxy)
+qc_patches/go/       Go sources (odrelay / ffmpeg-golive, livehold, mpdproxy)
 qc_patches/build_dist.py + qc_deps.sh   how the release assets are built (binaries: release archives, bin/qc/)
 ```
 
