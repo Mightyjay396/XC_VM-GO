@@ -1,26 +1,14 @@
 {
-  "version": "2.6.1",
+  "version": "2.7.4-p2",
+  "date": "2026-11-25",
   "changes": [
-    "Added enforcement of module requires_core declarations during loading, installation, and updates.",
-    "Enabled modules to register Admin API actions and moved Watch-folder functionality out of core.",
-    "Removed the Plex module from core to improve separation of optional integrations.",
-    "Moved per-file VOD importing into core through VodItemImporter.",
-    "Added bounded batch processing for Movies and Series imports.",
-    "Added core-managed TMDb genre mapping and improved vod_import_item payload processing.",
-    "Moved DVR recording management into core and improved recording-related stream handling.",
-    "Added a Telegram support bot that answers questions using project documentation, with a free cloud-model default.",
-    "Improved load-balancer installation and updates so nodes follow MAIN's release.",
-    "Improved installer preflight checks, xcvm_core prerequisite validation, SSH host-key handling, and file-transfer verification using SHA-256.",
-    "Improved RAM disk and sysctl configuration validation, including clearer errors and safer mount handling.",
-    "Fixed connection tracking when viewers reconnect through another node and reduced unnecessary waits during connection cleanup.",
-    "Fixed HLS viewer termination, RTMP admission checks, on-demand process cleanup, and native-remux stream previews.",
-    "Improved cluster API state reporting and load-balancer status tracking during updates and rollbacks.",
-    "Fixed HMAC identity handling in cluster reservations and restricted migration backup restoration to xc_vm_migrate.",
-    "Addressed Semgrep findings in import and recording code and improved process execution safety by removing shell-based commands in status and permission operations.",
-    "Fixed MAIN server IP auto-detection to skip loopback addresses.",
-    "Removed invalid voucher routes and fixed chart tooltips to use local time instead of UTC.",
-    "Standardized unit tests on MariaDB and the panel's own stack, updated the test guide and release checklist, and reduced output to PHPUnit's own results.",
-    "Configured static analysis on PHP 8.1, updated PHPStan dependencies, and improved end-to-end test synchronization.",
-    "Removed obsolete repository documentation and metadata files and updated agent documentation to match the code."
+    "Released 2026-11-25 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
+    "On-demand channels: the Go engine (odrelay) replaces FFmpeg - one shared source connection per channel, first byte in ~1.1-1.3 s.",
+    "On-demand: HLS sources supported, including HLS with a separate audio rendition; per-stream HTTP proxy supported; encrypted HLS / fMP4 stays on FFmpeg; DASH stays on ckts.",
+    "On-demand: a reader stuck for 60 s is released (no ghost viewers).",
+    "Live channels: opt-in Go engine (ffmpeg-golive) for plain copy-to-HLS channels via /home/xc_vm/config/golive_streams.txt; anything else is handed to FFmpeg automatically.",
+    "Panel: 'go' badge for channels run by Go; on-demand channels served by Go show codecs, resolution, FPS, bitrate and CPU/RAM.",
+    "Panel settings (segments, prebuffers, wait/scan, fail sleep, analyze + probe extra wait, instant off) drive the Go engine without a restart.",
+    "Transcoding, filters and logos still use FFmpeg."
   ]
 }

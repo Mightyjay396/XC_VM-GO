@@ -8,6 +8,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Mightyjay396/XC_VM-GO" /></a>
   <a href="https://github.com/Mightyjay396/XC_VM-GO/stargazers"><img src="https://img.shields.io/github/stars/Mightyjay396/XC_VM-GO?style=flat" /></a>
   <a href="https://github.com/Mightyjay396/XC_VM-GO/issues"><img src="https://img.shields.io/github/issues/Mightyjay396/XC_VM-GO" /></a>
+  <a href="https://github.com/Mightyjay396/XC_VM-GO/releases/latest"><img src="https://img.shields.io/github/v/release/Mightyjay396/XC_VM-GO?label=latest%20release" /></a>
+  <a href="https://github.com/Mightyjay396/XC_VM-GO/releases/latest"><img src="https://img.shields.io/github/release-date/Mightyjay396/XC_VM-GO?label=released" /></a>
+</p>
+
+<p align="center">
+  <b>Latest update: 2.7.4-p2 — released November 25, 2026</b> · <a href="#-release-history">Release history</a> · <a href="https://github.com/Mightyjay396/XC_VM-GO/releases">All releases</a><br>
+  Get notified of new updates: <b>Watch → Custom → Releases</b> (top of this page)
 </p>
 
 > [!WARNING]
@@ -86,7 +93,20 @@ Not included on purpose: no server data, credentials, streams, customers or EPG 
 ## ⚠️ Status
 
 > **BETA SOFTWARE** — XC_VM itself is in beta, and this fork follows XC_VM releases with a delay.
-> Current fork release: **2.7.4-p2**, based on XC_VM 2.7.4.
+> Current fork release: **2.7.4-p2** (released **2026-11-25**), based on XC_VM 2.7.4.
+
+---
+
+## 📅 Release History
+
+Newest first. Dates are UTC. Each release lists its changes on its [release page](https://github.com/Mightyjay396/XC_VM-GO/releases); the panel's update screen shows them too.
+
+| Version | Released | Highlights |
+| --- | --- | --- |
+| [**2.7.4-p2**](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p2) (latest) | **2026-11-25** | Go replaces FFmpeg for on-demand channels (TS + HLS, separate-audio HLS, per-stream proxy); opt-in Go live engine `ffmpeg-golive`; `go` badge and on-demand stats in the panel; panel settings drive the Go engine |
+| [2.7.4-p1](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p1) | 2026-11-25 | First fork release: XC_VM 2.7.4 + Go delivery engine (odrelay, livehold, ckts, mpdproxy), check-in disconnect fix, modules, fork-based install / updates |
+
+**How updates reach you:** an installed panel checks this repository's latest release (Settings → Updates) and installs it with XC_VM's normal updater; load balancers added afterwards get the same version.
 
 ---
 
