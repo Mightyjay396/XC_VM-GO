@@ -79,7 +79,7 @@ Everything else (live & VOD streaming, load balancing, users/resellers, transcod
 | Panel | Shows `ffmpeg` / stats only for FFmpeg-run streams | `go` badge on channels run by Go; on-demand channels served by Go show codecs, resolution, FPS, bitrate, CPU/RAM |
 | Panel settings | Used by FFmpeg | Also drive the Go engine (segment time/list/delete threshold, prebuffers, wait/scan/fail-sleep, instant-off), applied without restart |
 | Source drops / FFmpeg restarts | Viewers disconnected | Viewers stay connected (offline slate) |
-| ClearKey DASH sources | — | ClearKey DASH → MPEG-TS, DASH proxy with cache, FFmpeg 8.1-dash |
+| ClearKey DASH sources | Not supported | ClearKey DASH → MPEG-TS in Go (`ckts`), Go DASH proxy with cache, FFmpeg 8.1-dash for probing |
 | Active TS/VOD viewers | Cut every 10–20 min (check-in bug) | Fixed |
 | Reseller credits | No refund | Credit refunds with history |
 | APIs | Standard | + trial API, line API, provider import, XAccel-compatible API |
@@ -140,11 +140,11 @@ Migrating from Xtream Codes / XUI.one? Follow the step-by-step migration guide:
 | --------- | ------------- | ------------------------------- |
 | PHP       | 8.1.33        | Backend runtime                 |
 | Nginx     | 1.24          | Web server & reverse proxy      |
-| FFmpeg    | 8.0, 7.1, 4.0 | Media transcoding & processing  |
+| FFmpeg    | 8.0, 7.1, 4.0 | Transcoding, filters, logos and other non-copy jobs (copy jobs: Go engine) |
 | MariaDB   | 11.4          | SQL database engine             |
 | KeyDB     | 6.3.4         | Cache & session storage (Redis) |
 | Go engine | odrelay, livehold, ckts, mpdproxy | Stream delivery on load balancers (this fork) |
-| FFmpeg    | 8.1-dash      | DASH / ClearKey processing (this fork) |
+| FFmpeg    | 8.1-dash      | DASH / ClearKey probing and fallback (this fork) |
 
 ---
 
@@ -370,7 +370,7 @@ whenever FFmpeg would only copy the stream**, and FFmpeg is kept only where it i
 | On-demand channels (MPEG-TS and HLS sources) | PHP starts FFmpeg per channel | **Go (`odrelay`), no FFmpeg** — all on-demand channels |
 | Live channels, plain copy to HLS | FFmpeg per channel | **Go (`ffmpeg-golive`)** for all of them, by default |
 | HLS with a separate audio rendition | FFmpeg | **Go** (merged with gohlslib + mediacommon) |
-| ClearKey DASH | FFmpeg | **Go `ckts` engine** (decryption) + Go copy to HLS |
+| ClearKey DASH | Not supported | **Go `ckts` engine** (decryption) + Go copy to HLS |
 | Transcoding, filters, logos, encrypted HLS, fMP4, extra outputs | FFmpeg | FFmpeg (handed over automatically) |
 
 Programs:
@@ -411,10 +411,11 @@ Details: [INSTALL.md](INSTALL.md).
 | On-demand open (5 channels) | 4.2–9.4 s (probe + first segment) | 1.1–1.3 s to first byte |
 | Live restart → first segment, HLS with separate audio | 4.6–4.7 s | 2.1–2.7 s |
 | Live restart → first segment, MPEG-TS | 1.2–1.3 s | 1.2–1.3 s |
-| RAM per live channel | ~52 MB | ~48 MB |
-| CPU per live copy channel | ~0.8 % | 0.5–2.3 % (HLS + separate audio remux: ~8 %) |
+| RAM per live copy channel (average, 351 FFmpeg / 66 Go channels) | ~54 MB | ~48 MB |
+| CPU per live copy channel (same average) | ~0.56 % | ~0.9 % (HLS + separate audio merge: ~8 %) |
 
-FFmpeg stays slightly cheaper in CPU for a plain copy; Go wins on start time, shared upstream connections and viewer continuity.
+FFmpeg stays cheaper in CPU for a plain copy (about 0.3 % of a core more per channel in Go); Go wins on start time, RAM,
+shared upstream connections and viewer continuity.
 
 ## 🔧 Known Limitations
 

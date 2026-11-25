@@ -46,12 +46,13 @@ the root password is asked once), one at a time, stopping at the first failure. 
 | `livehold` | 8150 | Keeps viewers connected through restarts and source drops (offline slate instead of a disconnect), TS + HLS |
 | `ckts` | 8160 | ClearKey DASH → MPEG-TS engine, with 15 `mpdproxy-ads` relays (8115-8129) for ad breaks |
 | `mpdproxy` | 8098-8113 | DASH/ClearKey proxy (manifests + segments, cache), 16 socket-activated instances |
-| FFmpeg 8.1-dash | — | FFmpeg build used for DASH/ClearKey sources (`bin/ffmpeg_bin/8.1-dash`) |
+| FFmpeg 8.1-dash | — | Probes DASH/ClearKey sources and runs those not handled by `ckts` (`bin/ffmpeg_bin/8.1-dash`) |
 
 FFmpeg remains installed and is used only for what Go does not do: transcoding, filters, logos, encrypted HLS / fMP4,
 several outputs. This is not XC_VM's fanout (left as is). `config/odrelay_streams.txt`, `config/livehold_streams.txt` and
 `/etc/qc_ckts_ids` contain `*` (all channels); replace with stream IDs to limit. `config/golive_streams.txt` contains `*` by
-default (all live channels in Go); put stream IDs (one per line) to limit, or empty it to keep all live channels on FFmpeg.
+default (all live channels in Go); put stream IDs (one per line) to limit, or empty it to keep all live channels on FFmpeg
+(an existing file is never overwritten by an update).
 A channel switches at its next (re)start. Panel settings (segments,
 prebuffers, wait/scan, fail sleep, probe) drive the Go engine and apply without a restart. The stream list shows a
 `go` badge for channels run by Go, and on-demand channels served by Go show their stats. The Main dashboard shows a
@@ -70,8 +71,13 @@ sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc
   (sessions cut at exactly 10, 15, 20 min). TS/VOD check-ins now reach the store too. HLS is unchanged.
 - Ghost connections: records whose worker died are cleaned (`Core/Cluster/QcGhostReaper.php`), and only
   really active connections count toward the connection limit.
-- On-demand fast start (short FFprobe, stream re-arm), HLS continuity, DASH/ClearKey playback
-  (FFmpeg 8.1-dash, mpdproxy, ckts), source reconnect options.
+- Channels still started by FFmpeg (DASH sources, encrypted HLS / fMP4, transcoding, filters, logos): shorter
+  FFprobe for on-demand starts, on-demand channels re-armed after a failed start, `-rw_timeout` + reconnect options
+  on HTTP sources. On-demand channels served by Go skip FFprobe entirely; live channels run by Go keep XC_VM's
+  normal source probe and use its `-rw_timeout` as their read timeout.
+- HLS continuity: channels kept by `livehold` restart without breaking the playlist (files kept, numbering continues).
+- DASH / ClearKey: `ckts` (Go) decrypts to MPEG-TS, then the live channel is copied by Go; `mpdproxy` (Go) caches
+  manifests and segments; FFmpeg 8.1-dash probes these sources and runs the ones not handled by `ckts`.
 - Movies and series: repair and import (TMDB, TVDB fallback), batch import.
 - EPG: per-channel time shift.
 - Source proxies: management page + per-channel "Proxy (list)" option (`source_proxies` table, empty).
