@@ -1,14 +1,11 @@
 {
-  "version": "2.7.4-p2",
+  "version": "2.7.4-p3",
   "date": "2026-11-25",
   "changes": [
     "Released 2026-11-25 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
-    "On-demand channels: the Go engine (odrelay) replaces FFmpeg - one shared source connection per channel, first byte in ~1.1-1.3 s.",
-    "On-demand: HLS sources supported, including HLS with a separate audio rendition; per-stream HTTP proxy supported; encrypted HLS / fMP4 stays on FFmpeg; DASH stays on ckts.",
-    "On-demand: a reader stuck for 60 s is released (no ghost viewers).",
-    "Live channels: opt-in Go engine (ffmpeg-golive) for plain copy-to-HLS channels via /home/xc_vm/config/golive_streams.txt; anything else is handed to FFmpeg automatically.",
-    "Panel: 'go' badge for channels run by Go; on-demand channels served by Go show codecs, resolution, FPS, bitrate and CPU/RAM.",
-    "Panel settings (segments, prebuffers, wait/scan, fail sleep, analyze + probe extra wait, instant off) drive the Go engine without a restart.",
-    "Transcoding, filters and logos still use FFmpeg."
+    "Go is now the default for live channels: every plain copy-to-HLS live channel runs on the Go engine (ffmpeg-golive), no list to maintain.",
+    "/home/xc_vm/config/golive_streams.txt: * = all (default), stream ids = only those, empty = all live channels on FFmpeg. Channels switch at their next (re)start, including restarts from the panel.",
+    "FFmpeg is still used automatically for transcoding, filters, logos, encrypted HLS / fMP4 and several outputs.",
+    "Includes everything from 2.7.4-p2: Go replaces FFmpeg for all on-demand channels, go badge and on-demand stats in the panel, panel settings drive the Go engine."
   ]
 }

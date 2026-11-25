@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <b>Latest update: 2.7.4-p2 — released November 25, 2026</b> · <a href="#-release-history">Release history</a> · <a href="https://github.com/Mightyjay396/XC_VM-GO/releases">All releases</a><br>
+  <b>Latest update: 2.7.4-p3 — released November 25, 2026</b> · <a href="#-release-history">Release history</a> · <a href="https://github.com/Mightyjay396/XC_VM-GO/releases">All releases</a><br>
   Get notified of new updates: <b>Watch → Custom → Releases</b> (top of this page)
 </p>
 
@@ -57,7 +57,7 @@
 based on Xtream Codes. It keeps XC_VM 2.7.4 as its base and adds:
 
 - ⚡ a **Go delivery engine that replaces FFmpeg** wherever FFmpeg only copied the stream: every on-demand channel,
-  and the live channels you choose (copy-to-HLS). FFmpeg is kept only for what Go cannot do (transcoding, filters,
+  and every live channel that is a plain copy to HLS (by default). FFmpeg is kept only for what Go cannot do (transcoding, filters,
   logos, encrypted HLS / fMP4). Viewers kept through source drops, ClearKey DASH → TS, DASH proxy
 - 🩹 a fix for active TS/VOD viewers being **disconnected every 10–20 minutes** (XC_VM 2.7.2 / 2.7.4)
 - 🧩 extra modules: reseller credit refunds, trial API, line API, provider import, XAccel-compatible API, source proxies
@@ -71,11 +71,11 @@ Everything else (live & VOD streaming, load balancing, users/resellers, transcod
 
 ## 🆕 What This Fork Changes
 
-| Area | Upstream XC_VM 2.7.4 | XC_VM-GO 2.7.4-p2 |
+| Area | Upstream XC_VM 2.7.4 | XC_VM-GO 2.7.4-p3 |
 | --- | --- | --- |
 | Stream delivery on load balancers | PHP / fanout | + Go engine: **odrelay**, **livehold**, **ckts**, **mpdproxy** (started automatically, survive reboots) |
 | On-demand channels | PHP starts FFmpeg per channel; viewer waits for the probe + first segment (4–9 s measured) | **Go replaces FFmpeg**: one shared source connection per channel, first byte in ~1.1–1.3 s, TS and HLS sources (incl. HLS with a separate audio rendition), per-stream proxy |
-| Live channels (copy) | One FFmpeg process per channel | **Opt-in Go engine** (`ffmpeg-golive`) instead of FFmpeg for plain copy-to-HLS channels; FFmpeg is kept automatically for transcoding, filters/logos, encrypted HLS / fMP4 and DASH |
+| Live channels (copy) | One FFmpeg process per channel | **Go engine by default** (`ffmpeg-golive`) for every plain copy-to-HLS channel; FFmpeg is kept automatically for transcoding, filters/logos, encrypted HLS / fMP4 |
 | Panel | Shows `ffmpeg` / stats only for FFmpeg-run streams | `go` badge on channels run by Go; on-demand channels served by Go show codecs, resolution, FPS, bitrate, CPU/RAM |
 | Panel settings | Used by FFmpeg | Also drive the Go engine (segment time/list/delete threshold, prebuffers, wait/scan/fail-sleep, instant-off), applied without restart |
 | Source drops / FFmpeg restarts | Viewers disconnected | Viewers stay connected (offline slate) |
@@ -94,7 +94,7 @@ Not included on purpose: no server data, credentials, streams, customers or EPG 
 ## ⚠️ Status
 
 > **BETA SOFTWARE** — XC_VM itself is in beta, and this fork follows XC_VM releases with a delay.
-> Current fork release: **2.7.4-p2** (released **2026-11-25**), based on XC_VM 2.7.4.
+> Current fork release: **2.7.4-p3** (released **2026-11-25**), based on XC_VM 2.7.4.
 
 ---
 
@@ -104,7 +104,8 @@ Newest first. Dates are UTC. Each release lists its changes on its [release page
 
 | Version | Released | Highlights |
 | --- | --- | --- |
-| [**2.7.4-p2**](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p2) (latest) | **2026-11-25** | Go replaces FFmpeg for on-demand channels (TS + HLS, separate-audio HLS, per-stream proxy); opt-in Go live engine `ffmpeg-golive`; `go` badge and on-demand stats in the panel; panel settings drive the Go engine |
+| [**2.7.4-p3**](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p3) (latest) | **2026-11-25** | **Go is the default for live channels too**: every plain copy-to-HLS live channel runs on Go (`golive_streams.txt` = `*`), no list to maintain; FFmpeg only for transcoding, filters, logos, encrypted HLS / fMP4 |
+| [2.7.4-p2](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p2) | 2026-11-25 | Go replaces FFmpeg for on-demand channels (TS + HLS, separate-audio HLS, per-stream proxy); opt-in Go live engine `ffmpeg-golive`; `go` badge and on-demand stats in the panel; panel settings drive the Go engine |
 | [2.7.4-p1](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p1) | 2026-11-25 | First fork release: XC_VM 2.7.4 + Go delivery engine (odrelay, livehold, ckts, mpdproxy), check-in disconnect fix, modules, fork-based install / updates |
 
 **How updates reach you:** an installed panel checks this repository's latest release (Settings → Updates) and installs it with XC_VM's normal updater; load balancers added afterwards get the same version.
@@ -191,7 +192,7 @@ For new installations:
 
 ## 📥 Quick Install
 
-> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM-GO 2.7.4-p2** (unofficial fork): upstream XC_VM 2.7.4 + this fork's fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
+> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM-GO 2.7.4-p3** (unofficial fork): upstream XC_VM 2.7.4 + this fork's fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
 
 ```bash
 # 1. Update system
@@ -241,7 +242,7 @@ Go delivery engine (load balancers):
 ```bash
 systemctl status odrelay livehold ckts             # Status
 pgrep -c ffmpeg-golive                             # Live channels currently run by Go
-cat /home/xc_vm/config/golive_streams.txt          # Live channels set to Go (one stream id per line)
+cat /home/xc_vm/config/golive_streams.txt          # * = all live channels in Go (default); ids = only those; empty = none
 systemctl list-units 'mpdproxy*' --no-pager        # DASH proxy instances
 sudo bash /home/xc_vm/bin/qc/qc_deps.sh            # Reinstall / restart the Go engine
 ```
@@ -364,10 +365,10 @@ Installed and started automatically on every load balancer (not XC_VM's fanout, 
 **In upstream XC_VM, every channel is an FFmpeg process started by PHP. In XC_VM-GO, the Go engine does that work
 whenever FFmpeg would only copy the stream**, and FFmpeg is kept only where it is really needed.
 
-| Job | Upstream XC_VM | XC_VM-GO 2.7.4-p2 |
+| Job | Upstream XC_VM | XC_VM-GO 2.7.4-p3 |
 | --- | --- | --- |
 | On-demand channels (MPEG-TS and HLS sources) | PHP starts FFmpeg per channel | **Go (`odrelay`), no FFmpeg** — all on-demand channels |
-| Live channels, plain copy to HLS | FFmpeg per channel | **Go (`ffmpeg-golive`)** for the channels listed in `golive_streams.txt` |
+| Live channels, plain copy to HLS | FFmpeg per channel | **Go (`ffmpeg-golive`)** for all of them, by default |
 | HLS with a separate audio rendition | FFmpeg | **Go** (merged with gohlslib + mediacommon) |
 | ClearKey DASH | FFmpeg | **Go `ckts` engine** (decryption) + Go copy to HLS |
 | Transcoding, filters, logos, encrypted HLS, fMP4, extra outputs | FFmpeg | FFmpeg (handed over automatically) |
@@ -380,12 +381,13 @@ Programs:
   rendition is merged with [gohlslib](https://github.com/bluenviron/gohlslib) +
   [mediacommon](https://github.com/bluenviron/mediacommon), MIT). Encrypted HLS / fMP4 is detected and stays on
   FFmpeg (cached 24 h). A reader stuck for 60 s is released (no ghost viewers).
-- **ffmpeg-golive** — **replaces FFmpeg for live channels**, per stream id in `/home/xc_vm/config/golive_streams.txt`
-  (empty by default = all live channels on FFmpeg). XC_VM still builds its normal FFmpeg command; Go runs it when it
+- **ffmpeg-golive** — **replaces FFmpeg for live channels, by default for all of them**. `/home/xc_vm/config/golive_streams.txt`
+  contains `*` (all live channels); put stream ids instead (one per line) to limit, or leave it empty to keep every live
+  channel on FFmpeg. XC_VM still builds its normal FFmpeg command; Go runs it when it
   is a plain copy to HLS (MPEG-TS, HLS, HLS with separate audio, ckts output) and hands it to the real FFmpeg
   (`exec`) for anything else. It writes the segments, playlist and `-progress` file (frame, fps, bitrate) that XC_VM
-  monitors, so restarts from the panel, automatic restarts and FPS checks work as before. After adding a channel,
-  restart it from the panel.
+  monitors, so restarts from the panel, automatic restarts and FPS checks work as before. A channel switches to Go at
+  its next (re)start.
 - **Panel settings drive Go**: segment time, list size, delete threshold, client/restreamer prebuffer, on-demand
   wait/scan, segment wait time, stream fail sleep, analyze duration + probe extra wait, instant off — changes apply
   without a restart.

@@ -1142,7 +1142,7 @@ class StreamProcess {
 			}
 
 			$rFFMPEG = ((isset($rStream['stream_info']['transcode_attributes']['gpu']) ? $rFFMPEG_GPU : $rFFMPEG_CPU)) . ' -y -nostdin -hide_banner -loglevel ' . (($rSettings['ffmpeg_warnings'] ? 'warning' : 'error')) . ' -err_detect ignore_err -thread_queue_size 1024 ' . $rOptions . ' {GEN_PTS} {READ_NATIVE} ' . $rLLODInputFlags . '-probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' -progress "' . $rProgressFile . '" {CONCAT} -i {STREAM_SOURCE} {LOGO} -max_muxing_queue_size 1024 ';
-			if (in_array((string) intval($rStreamID), preg_split('/\s+/', trim((string) @file_get_contents(MAIN_HOME . 'config/golive_streams.txt'))), true) && is_executable('/opt/odrelay/ffmpeg-golive')) { $rFFMPEG = '/opt/odrelay/ffmpeg-golive --ffmpeg=' . $rFFMPEG; } // QC-GOLIVE: live channel in Go (ffmpeg drop-in, falls back to ffmpeg by itself)
+			$rGoList = @file_get_contents(MAIN_HOME . 'config/golive_streams.txt'); $rGoIDs = $rGoList === false ? ['*'] : preg_split('/\s+/', trim($rGoList)); if ((in_array('*', $rGoIDs, true) || in_array((string) intval($rStreamID), $rGoIDs, true)) && is_executable('/opt/odrelay/ffmpeg-golive')) { $rFFMPEG = '/opt/odrelay/ffmpeg-golive --ffmpeg=' . $rFFMPEG; } // QC-GOLIVE: live channels in Go by default (golive_streams.txt: * = all, ids = only those, empty = none; ffmpeg drop-in, falls back to ffmpeg by itself)
 
 			self::applyDefaultCopyCodecs($rStream['stream_info']['transcode_attributes']);
 

@@ -8,7 +8,7 @@
 
 
 This unofficial fork ships upstream **XC_VM 2.7.4** plus the QC fixes, modules and the Go delivery engine, released as
-**2.7.4-p2** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
+**2.7.4-p3** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
 XC_VM — every download points to this repository's Releases, so new servers always get this version.
 No server data is included: no channels, source URLs, EPG, database, proxy list, keys or IP addresses.
 
@@ -83,7 +83,7 @@ sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc
 ## Repository layout
 
 ```
-src/                 XC_VM 2.7.4-p2 (Main tree; release archives add bin/qc/ with the Go binaries)
+src/                 XC_VM 2.7.4-p3 (Main tree; release archives add bin/qc/ with the Go binaries)
 qc_patches/updater/  qc_xcvm_updater.py + patched files for 2.7.2 and 2.7.4 (existing panels)
 qc_patches/go/       Go sources (odrelay, livehold, mpdproxy)
 qc_patches/build_dist.py + qc_deps.sh   how the release assets are built (binaries: release archives, bin/qc/)

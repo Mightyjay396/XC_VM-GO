@@ -62,8 +62,8 @@ if [ "$ROLE" = lb ]; then
 		[ -s "$l" ] || echo '*' > "$l"
 	done
 	chown xc_vm:xc_vm "$XC/config/odrelay_streams.txt" "$XC/config/livehold_streams.txt" 2>/dev/null
-	# live channels run by the Go engine instead of ffmpeg: opt-in list of stream ids (one per line), empty = all on ffmpeg
-	[ -e "$XC/config/golive_streams.txt" ] || : > "$XC/config/golive_streams.txt"
+	# live channels run by the Go engine instead of ffmpeg: "*" = all (default), or stream ids one per line = only those, empty file = all on ffmpeg
+	[ -e "$XC/config/golive_streams.txt" ] || echo "*" > "$XC/config/golive_streams.txt"
 	chown xc_vm:xc_vm "$XC/config/golive_streams.txt" 2>/dev/null
 fi
 

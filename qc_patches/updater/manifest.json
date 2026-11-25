@@ -272,19 +272,19 @@
    "role": "main",
    "path": "Domain/Stream/StreamProcess.php",
    "kind": "core",
-   "ours_md5": "a568938923a211452d161c827e8f113a",
+   "ours_md5": "5eb00e52b5924ccb5e2b90adf81212ed",
    "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
    "diff": "diffs/main/Domain/Stream/StreamProcess.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
-     "ours_md5": "a568938923a211452d161c827e8f113a",
+     "ours_md5": "5eb00e52b5924ccb5e2b90adf81212ed",
      "file": "files/main/Domain/Stream/StreamProcess.php",
      "diff": "diffs/main/Domain/Stream/StreamProcess.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "f5b30d4a771765ffa825c2a6078b8da5",
-     "ours_md5": "867403a9f0b2a812d75006ed1343ce2d",
+     "ours_md5": "82b5cdc1fdd284138e5ccb2e69f1cb73",
      "file": "files_2.7.4/main/Domain/Stream/StreamProcess.php",
      "diff": "diffs_2.7.4/main/Domain/Stream/StreamProcess.php.diff"
     }
@@ -975,19 +975,19 @@
    "role": "lb",
    "path": "Domain/Stream/StreamProcess.php",
    "kind": "core",
-   "ours_md5": "0b017b3093f6c75216a45764b6356fdf",
+   "ours_md5": "1661e529250259d1b6f6dad2b6b659c3",
    "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
    "diff": "diffs/lb/Domain/Stream/StreamProcess.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "6b10e10862bcf33bbb45423aa96ae7e4",
-     "ours_md5": "0b017b3093f6c75216a45764b6356fdf",
+     "ours_md5": "1661e529250259d1b6f6dad2b6b659c3",
      "file": "files/lb/Domain/Stream/StreamProcess.php",
      "diff": "diffs/lb/Domain/Stream/StreamProcess.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "f5b30d4a771765ffa825c2a6078b8da5",
-     "ours_md5": "5399edf2226def3595de2087841017fe",
+     "ours_md5": "79ec69a9ff3cf72e81d68946f6b336a8",
      "file": "files_2.7.4/lb/Domain/Stream/StreamProcess.php",
      "diff": "diffs_2.7.4/lb/Domain/Stream/StreamProcess.php.diff"
     }
