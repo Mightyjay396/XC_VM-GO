@@ -24,6 +24,7 @@
 <summary><strong>📘 Contents</strong></summary>
 
 - 🏁 [Overview](#-overview)
+- 🆕 [What This Fork Changes](#-what-this-fork-changes)
 - ⚠️ [Status](#️-status)
 - 📚 [Documentation](#-documentation)
 - 🔄 [Migration Guide](#-migration-guide)
@@ -45,26 +46,44 @@
 
 ## 🚀 Overview
 
-**XC_VM-GO** is an unofficial fork of **XC_VM**. It adds fixes, modules and a Go delivery engine on top of the
-official XC_VM 2.7.4 (see [Go Delivery Engine (this fork)](#-go-delivery-engine-this-fork)). Everything below about
-XC_VM itself comes from the upstream project.
+**XC_VM-GO** is an unofficial fork of [XC_VM](https://github.com/Vateron-Media/XC_VM), the open-source IPTV panel
+based on Xtream Codes. It keeps XC_VM 2.7.4 as its base and adds:
 
-**XC_VM** (upstream) is an open-source IPTV platform based on Xtream Codes.
-It enables:
+- ⚡ a **Go delivery engine** on every load balancer: instant channel start, viewers kept through source drops,
+  ClearKey DASH → TS, DASH proxy
+- 🩹 a fix for active TS/VOD viewers being **disconnected every 10–20 minutes** (XC_VM 2.7.2 / 2.7.4)
+- 🧩 extra modules: reseller credit refunds, trial API, line API, provider import, XAccel-compatible API, source proxies
+- 🔁 its **own releases**: installs, new load balancers and panel updates all come from this repository
 
-- 📺 Live & VOD streaming
-- 🔀 Load balancing
-- 📊 Full user/reseller control
-- 🎚️ Transcoding & EPG
-- 🔐 Hardened security fixes
+Everything else (live & VOD streaming, load balancing, users/resellers, transcoding, EPG) is XC_VM's and works the same.
 
-> ✅ 100% free. No license checks. No server locks.
+> ✅ Free and open source (AGPL-3.0), like XC_VM. No license checks. No server locks.
+
+---
+
+## 🆕 What This Fork Changes
+
+| Area | Upstream XC_VM 2.7.4 | XC_VM-GO 2.7.4-p1 |
+| --- | --- | --- |
+| Stream delivery on load balancers | PHP / fanout | + Go engine: **odrelay**, **livehold**, **ckts**, **mpdproxy** (started automatically, survive reboots) |
+| On-demand channels | Viewer waits for FFmpeg to start | Video starts instantly while FFmpeg starts |
+| Source drops / FFmpeg restarts | Viewers disconnected | Viewers stay connected (offline slate) |
+| ClearKey DASH sources | — | ClearKey DASH → MPEG-TS, DASH proxy with cache, FFmpeg 8.1-dash |
+| Active TS/VOD viewers | Cut every 10–20 min (check-in bug) | Fixed |
+| Reseller credits | No refund | Credit refunds with history |
+| APIs | Standard | + trial API, line API, provider import, XAccel-compatible API |
+| Source proxies | — | Per-stream source proxies |
+| Dashboard *Service Status* | — | "Go delivery" line per server |
+| Install / updates / new LBs | Vateron-Media releases | This fork's releases |
+
+Not included on purpose: no server data, credentials, streams, customers or EPG — every install starts empty.
 
 ---
 
 ## ⚠️ Status
 
-> **BETA SOFTWARE** — actively developed
+> **BETA SOFTWARE** — XC_VM itself is in beta, and this fork follows XC_VM releases with a delay.
+> Current fork release: **2.7.4-p1**, based on XC_VM 2.7.4.
 
 ---
 
@@ -99,6 +118,8 @@ Migrating from Xtream Codes / XUI.one? Follow the step-by-step migration guide:
 | FFmpeg    | 8.0, 7.1, 4.0 | Media transcoding & processing  |
 | MariaDB   | 11.4          | SQL database engine             |
 | KeyDB     | 6.3.4         | Cache & session storage (Redis) |
+| Go engine | odrelay, livehold, ckts, mpdproxy | Stream delivery on load balancers (this fork) |
+| FFmpeg    | 8.1-dash      | DASH / ClearKey processing (this fork) |
 
 ---
 
@@ -189,6 +210,14 @@ sudo systemctl restart xc_vm   # Restart
 sudo systemctl status xc_vm    # Status
 sudo /home/xc_vm/bin/nginx/sbin/nginx -s reload    # Reload Nginx config
 journalctl -u xc_vm -f         # Live logs
+```
+
+Go delivery engine (load balancers):
+
+```bash
+systemctl status odrelay livehold ckts             # Status
+systemctl list-units 'mpdproxy*' --no-pager        # DASH proxy instances
+sudo bash /home/xc_vm/bin/qc/qc_deps.sh            # Reinstall / restart the Go engine
 ```
 
 ---
@@ -292,12 +321,16 @@ Measured: 352 channels, ~2 Gbps inbound, 36 s ring
 
 ## ✅ Features
 
+From XC_VM:
+
 - ✅ No server restrictions
 - ✅ EPG importer
 - ✅ VOD management
 - ✅ User/reseller panel
 - ✅ Security patches
 - ✅ Clean UI
+
+Added by this fork: see below and [What This Fork Changes](#-what-this-fork-changes).
 
 ### ⚡ Go Delivery Engine (this fork)
 
@@ -318,8 +351,10 @@ Details: [INSTALL.md](INSTALL.md).
 ## 🔧 Known Limitations
 
 - ❌ Requires Linux knowledge
-- ❌ Community-based support
-- ❌ Some bugs in transcoding module (in progress)
+- ❌ Community-based support — for this fork, only through [its issues](https://github.com/Mightyjay396/XC_VM-GO/issues)
+- ❌ Some bugs in transcoding module (upstream, in progress)
+- ❌ New XC_VM versions reach this fork only once its changes are carried over to them
+- ❌ The Go engine is installed on Ubuntu / Debian x86-64 only
 
 ---
 
