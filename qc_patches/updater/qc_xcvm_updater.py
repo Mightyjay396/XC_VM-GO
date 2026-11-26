@@ -298,6 +298,27 @@ def apt_install(pkgs):
     return bool(m) and sh([m, "install", "-y"] + pkgs).returncode == 0
 
 
+def install_ffaac(src):
+    # ckts checks the sound of each DASH segment with "ffmpeg -f aac -i pipe:0 ... -f s16le pipe:1" (~30/s on a busy LB).
+    # The distro ffmpeg loads ~200 libraries per run: route only that call to a small static AAC decoder (no ckts restart).
+    os.makedirs("/opt/qc-ffaac", exist_ok=True)
+    for b in ("ffaac", "ffmpeg-launch"):
+        t = f"/opt/qc-ffaac/{b}"
+        if not (os.path.exists(t) and md5(t) == md5(f"{src}/{b}")):
+            place(f"{src}/{b}", t); os.chmod(t, 0o755)
+    if md5("/usr/bin/ffmpeg") == md5("/opt/qc-ffaac/ffmpeg-launch"):
+        return
+    if "LOCAL" not in sh(["dpkg-divert", "--listpackage", "/usr/bin/ffmpeg"]).stdout:
+        if os.path.exists("/usr/bin/ffmpeg.distrib"):
+            os.remove("/usr/bin/ffmpeg.distrib")
+        os.link("/usr/bin/ffmpeg", "/usr/bin/ffmpeg.distrib")
+        sh(["dpkg-divert", "--local", "--no-rename", "--divert", "/usr/bin/ffmpeg.distrib", "--add", "/usr/bin/ffmpeg"])
+    shutil.copy("/opt/qc-ffaac/ffmpeg-launch", "/usr/bin/ffmpeg.qcnew"); os.chmod("/usr/bin/ffmpeg.qcnew", 0o755)
+    os.replace("/usr/bin/ffmpeg.qcnew", "/usr/bin/ffmpeg")
+    ok = sh(["/usr/bin/ffmpeg", "-version"]).returncode == 0
+    say("deps: ckts sound check uses the small AAC decoder" + ("" if ok else " - ffmpeg launcher check FAILED"))
+
+
 def install_deps(bk, meta, role):
     d = f"{PKG}/deps"
     if not os.path.isdir(d):
@@ -342,6 +363,8 @@ def install_deps(bk, meta, role):
             save(bk, t, meta["unit_files"]); place(f"{d}/systemd/{u}", t)
             changed.update(want)
         units += want
+    if role == "lb" and os.path.isdir(f"{d}/ffaac") and os.path.exists("/usr/bin/ffmpeg"):
+        install_ffaac(f"{d}/ffaac")
     for lst, name in ALL_LISTS.items():
         if role == "lb" and name in names and (not os.path.exists(lst) or not open(lst).read().strip()):
             save(bk, lst, meta["created"]); open(lst, "w").write("*\n")  # empty list = feature off: turn it on for all channels

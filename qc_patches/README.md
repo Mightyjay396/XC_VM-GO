@@ -8,7 +8,7 @@
 
 
 This unofficial fork ships upstream **XC_VM 2.7.4** plus the QC fixes, modules and the Go delivery engine, released as
-**2.7.4-p5** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
+**2.7.4-p6** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
 XC_VM — every download points to this repository's Releases, so new servers always get this version.
 No server data is included: no channels, source URLs, EPG, database, proxy list, keys or IP addresses.
 
@@ -47,6 +47,7 @@ the root password is asked once), one at a time, stopping at the first failure. 
 | `ckts` | 8160 | ClearKey DASH → MPEG-TS engine, with 15 `mpdproxy-ads` relays (8115-8129) for ad breaks |
 | `mpdproxy` | 8098-8113 | DASH/ClearKey proxy (manifests + segments, cache), 16 socket-activated instances |
 | ckts-auto | — | Starts `ckts` with a memory limit (10 % of RAM, 4–32 GiB) and a core cap (a third of the cores, 4–32) sized to the server; override with `CKTS_MEMLIMIT` / `CKTS_MAXPROCS` in the unit |
+| qc-ffaac | — | Small static AAC decoder used for the `ckts` sound check (~30 runs/s): `/usr/bin/ffmpeg` becomes a launcher (`dpkg-divert`, real one = `/usr/bin/ffmpeg.distrib`) that routes only that call to `/opt/qc-ffaac/ffaac` |
 | FFmpeg 8.1-dash | — | Probes DASH/ClearKey sources and runs those not handled by `ckts` (`bin/ffmpeg_bin/8.1-dash`) |
 
 FFmpeg remains installed and is used only for what Go does not do: transcoding, filters, logos, encrypted HLS / fMP4,
@@ -96,7 +97,7 @@ sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc
 ## Repository layout
 
 ```
-src/                 XC_VM 2.7.4-p5 (Main tree; release archives add bin/qc/ with the Go binaries)
+src/                 XC_VM 2.7.4-p6 (Main tree; release archives add bin/qc/ with the Go binaries)
 qc_patches/updater/  qc_xcvm_updater.py + patched files for 2.7.2 and 2.7.4 (existing panels)
 qc_patches/go/       Go sources (odrelay / ffmpeg-golive, livehold, mpdproxy)
 qc_patches/build_dist.py + qc_deps.sh   how the release assets are built (binaries: release archives, bin/qc/)

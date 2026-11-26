@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -281,6 +282,11 @@ func panelSettings() map[string]string {
 	return r
 }
 
+func settingsSum() [32]byte {
+	b, _ := os.ReadFile(panelSettingsFile)
+	return sha256.Sum256(b)
+}
+
 // liveCfg: the panel values a live channel runs with; command values first, panel settings override (and follow later edits).
 type liveCfg struct {
 	seg               float64
@@ -481,6 +487,7 @@ func runGoLive() {
 	if st, err := os.Stat(panelSettingsFile); err == nil {
 		setMod = st.ModTime()
 	}
+	setSum := settingsSum()
 	lastChk := time.Now()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
@@ -515,11 +522,15 @@ func runGoLive() {
 			lastChk = time.Now()
 			if st, err := os.Stat(panelSettingsFile); err == nil && !st.ModTime().Equal(setMod) {
 				setMod = st.ModTime()
-				if c := o.cfg(panelSettings()); c != cfg {
-					cfg = c
-					h.applyLive(cfg, rw)
-					w.o.hlsTime, w.o.list, w.o.del = cfg.seg, cfg.list, cfg.del
-					log.Printf("golive %s panel changed: seg=%gs list=%d del=%d wait=%s fail_sleep=%s first_video=%s", id, cfg.seg, cfg.list, cfg.del, cfg.wait, cfg.fail, cfg.probe)
+				// XC_VM rewrites the cache every minute: start PHP only when its content really changed
+				if sum := settingsSum(); sum != setSum {
+					setSum = sum
+					if c := o.cfg(panelSettings()); c != cfg {
+						cfg = c
+						h.applyLive(cfg, rw)
+						w.o.hlsTime, w.o.list, w.o.del = cfg.seg, cfg.list, cfg.del
+						log.Printf("golive %s panel changed: seg=%gs list=%d del=%d wait=%s fail_sleep=%s first_video=%s", id, cfg.seg, cfg.list, cfg.del, cfg.wait, cfg.fail, cfg.probe)
+					}
 				}
 			}
 		}

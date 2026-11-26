@@ -2,7 +2,7 @@
 """Builds the fork's release assets: official XC_VM 2.7.4 + QC patches + Go engine, as XC_VM's own installer/updater expect them."""
 import glob, hashlib, json, os, re, shutil, subprocess, sys, zipfile
 
-VERSION, OWNER, REPO = "2.7.4-p3", "Mightyjay396", "XC_VM-GO"
+VERSION, OWNER, REPO = "2.7.4-p6", "Mightyjay396", "XC_VM-GO"
 PKG, OUT, SRC = "/root/qc_xcvm_pkg", "/tmp/qc_dist", {"main": "/tmp/r274_main", "lb": "/tmp/r274_lb"}
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,7 +47,7 @@ def build_tree(role):
     # Go engine + FFmpeg + installer hook, run as root by install_xcvm_core.sh (fresh install) and ./update (updates)
     q = f"{t}/bin/qc"
     os.makedirs(f"{q}/systemd", exist_ok=True)
-    for n in (("odrelay", "livehold", "ckts", "mpdproxy") if role == "lb" else ("mpdproxy",)) + ("ffmpeg_8.1-dash",):
+    for n in (("odrelay", "livehold", "ckts", "mpdproxy", "ffaac") if role == "lb" else ("mpdproxy",)) + ("ffmpeg_8.1-dash",):
         shutil.copytree(f"{PKG}/deps/{n}", f"{q}/{n}")
     for u in glob.glob(f"{HERE}/systemd/*"):
         shutil.copy2(u, f"{q}/systemd/")

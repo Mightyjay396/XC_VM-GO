@@ -1,11 +1,11 @@
 {
-  "version": "2.7.4-p5",
+  "version": "2.7.4-p6",
   "date": "2026-11-26",
   "changes": [
     "Released 2026-11-26 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
-    "ClearKey DASH engine (ckts) sized to the server at start: memory limit = 10 % of RAM (4 to 32 GiB) instead of a fixed 8 GiB, and at most a third of the cores (4 to 32). A busy server no longer hits the old limit, which made ckts clean memory non-stop and fall behind on every DASH channel at once.",
-    "Override in the ckts unit with CKTS_MEMLIMIT (e.g. 12GiB) and CKTS_MAXPROCS (e.g. 16).",
-    "Updating restarts ckts once (DASH channels restart).",
-    "Includes everything from 2.7.4-p4: CPU fix for Go live channels, Go default for live and on-demand channels."
+    "CPU fix on busy load balancers: the ClearKey DASH engine (ckts) checks the sound of every DASH segment by running the system ffmpeg (about 30 times per second on a busy server). The distro ffmpeg loads about 200 libraries on each run (~73 ms of CPU and thousands of memory page faults), which made all cores fight over the kernel memory lock in bursts. That one call now goes to a small static AAC decoder (/opt/qc-ffaac): about 5x less CPU and 7x fewer page faults, same sound result. Everything else still uses the real ffmpeg. No ckts restart.",
+    "Go live channels no longer start PHP every minute: XC_VM rewrites its settings cache every minute with the same content, and every Go live channel re-read it through PHP at the same moment. They now re-read it only when the panel settings really change (still applied live).",
+    "Updating replaces ffmpeg-golive without restarting odrelay (on-demand viewers stay connected); running live channels use the new version at their next restart.",
+    "Includes everything from 2.7.4-p5: ckts memory and core limits sized to the server."
   ]
 }

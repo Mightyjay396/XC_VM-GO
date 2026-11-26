@@ -1,0 +1,3 @@
+# build on an x86_64 Ubuntu host
+./configure --disable-everything --disable-autodetect --disable-network --disable-doc --disable-debug --disable-ffplay --disable-ffprobe --disable-x86asm --enable-small --enable-static --disable-shared --extra-ldflags=-static --enable-decoder=aac,aac_latm --enable-parser=aac,aac_latm --enable-demuxer=aac,mpegts,mov --enable-muxer=pcm_s16le,wav,null --enable-encoder=pcm_s16le --enable-protocol=pipe,file --enable-filter=aresample,aformat,anull,abuffer,abuffersink,format,null,buffer,buffersink --enable-swresample && make -j8 ffmpeg && cp ffmpeg ffaac
+gcc -O2 -static -o fflaunch fflaunch.c && strip fflaunch

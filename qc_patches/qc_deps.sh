@@ -44,7 +44,9 @@ for n in $NAMES; do
 		t="/opt/$n/$(basename "$f")"
 		[ "$(basename "$f")" = offline.ts ] && [ -e "$t" ] && continue
 		cmp -s "$f" "$t" && continue
-		cp "$f" "$t.qcnew" && mv -f "$t.qcnew" "$t"; changed=1
+		cp "$f" "$t.qcnew" && mv -f "$t.qcnew" "$t"
+		# ffmpeg-golive is started per live channel by XC_VM, not by odrelay.service: no restart for it
+		[ "$(basename "$f")" = ffmpeg-golive ] || changed=1
 		case $t in *.ts) chmod 644 "$t" ;; *) chmod 755 "$t" ;; esac
 	done
 	case $n in ckts) PAT="ckts* mpdproxy-ads@*" ;; mpdproxy) PAT="mpdproxy@*" ;; *) PAT="$n*" ;; esac
@@ -65,6 +67,21 @@ if [ "$ROLE" = lb ]; then
 	# live channels run by the Go engine instead of ffmpeg: "*" = all (default), or stream ids one per line = only those, empty file = all on ffmpeg
 	[ -e "$XC/config/golive_streams.txt" ] || echo "*" > "$XC/config/golive_streams.txt"
 	chown xc_vm:xc_vm "$XC/config/golive_streams.txt" 2>/dev/null
+	# ckts checks the sound of every DASH segment with "ffmpeg -f aac -i pipe:0 ... -f s16le pipe:1" (~30 per second on a busy LB).
+	# The distro ffmpeg loads ~200 libraries per run; route only that call to a small static AAC decoder. No ckts restart needed.
+	if [ -d "$Q/ffaac" ] && [ -x /usr/bin/ffmpeg ]; then
+		mkdir -p /opt/qc-ffaac
+		for b in ffaac ffmpeg-launch; do
+			cmp -s "$Q/ffaac/$b" "/opt/qc-ffaac/$b" || { cp "$Q/ffaac/$b" "/opt/qc-ffaac/$b.qcnew" && chmod 755 "/opt/qc-ffaac/$b.qcnew" && mv -f "/opt/qc-ffaac/$b.qcnew" "/opt/qc-ffaac/$b"; }
+		done
+		if ! cmp -s /opt/qc-ffaac/ffmpeg-launch /usr/bin/ffmpeg; then
+			if ! dpkg-divert --listpackage /usr/bin/ffmpeg 2>/dev/null | grep -q LOCAL; then
+				ln -f /usr/bin/ffmpeg /usr/bin/ffmpeg.distrib && dpkg-divert --local --no-rename --divert /usr/bin/ffmpeg.distrib --add /usr/bin/ffmpeg >/dev/null
+			fi
+			[ -x /usr/bin/ffmpeg.distrib ] && cp /opt/qc-ffaac/ffmpeg-launch /usr/bin/ffmpeg.qcnew && chmod 755 /usr/bin/ffmpeg.qcnew && mv -f /usr/bin/ffmpeg.qcnew /usr/bin/ffmpeg
+		fi
+		/usr/bin/ffmpeg -version >/dev/null 2>&1 || log "ffmpeg launcher check failed"
+	fi
 fi
 
 systemctl daemon-reload
