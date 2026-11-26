@@ -1,11 +1,11 @@
 {
-  "version": "2.7.4-p4",
+  "version": "2.7.4-p5",
   "date": "2026-11-26",
   "changes": [
     "Released 2026-11-26 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
-    "CPU fix for live channels in Go: an HLS source with separate audio (video and audio in different playlists) leaked one background task per second; after a few hours one channel could use dozens of CPU cores. Fixed.",
-    "Go live channels now use at most 4 threads each, and their memory limit grows with real use instead of a fixed 48 MB (a fixed limit made memory cleanup run non-stop).",
-    "Same binary for on-demand (odrelay) and live (ffmpeg-golive). Updating restarts odrelay once (on-demand viewers reconnect); live channels pick up the fix at their next (re)start.",
-    "Includes everything from 2.7.4-p3: Go is the default for live channels, Go replaces FFmpeg for all on-demand channels."
+    "ClearKey DASH engine (ckts) sized to the server at start: memory limit = 10 % of RAM (4 to 32 GiB) instead of a fixed 8 GiB, and at most a third of the cores (4 to 32). A busy server no longer hits the old limit, which made ckts clean memory non-stop and fall behind on every DASH channel at once.",
+    "Override in the ckts unit with CKTS_MEMLIMIT (e.g. 12GiB) and CKTS_MAXPROCS (e.g. 16).",
+    "Updating restarts ckts once (DASH channels restart).",
+    "Includes everything from 2.7.4-p4: CPU fix for Go live channels, Go default for live and on-demand channels."
   ]
 }
