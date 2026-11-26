@@ -144,9 +144,10 @@ func (h *Hub) pullHLSMux(src string) int64 {
 		lim = segWait
 	}
 	start := time.Now()
+	done := c.Wait() // once: each Wait() call starts a goroutine that lives until the client ends (leaked ~1/s)
 	for {
 		select {
-		case err := <-c.Wait():
+		case err := <-done:
 			log.Printf("hub %s hls mux ended: %v", h.id, err)
 			return f.total.Load()
 		case <-tick.C:

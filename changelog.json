@@ -1,11 +1,11 @@
 {
-  "version": "2.7.4-p3",
-  "date": "2026-11-25",
+  "version": "2.7.4-p4",
+  "date": "2026-11-26",
   "changes": [
-    "Released 2026-11-25 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
-    "Go is now the default for live channels: every plain copy-to-HLS live channel runs on the Go engine (ffmpeg-golive), no list to maintain.",
-    "/home/xc_vm/config/golive_streams.txt: * = all (default), stream ids = only those, empty = all live channels on FFmpeg. Channels switch at their next (re)start, including restarts from the panel.",
-    "FFmpeg is still used automatically for transcoding, filters, logos, encrypted HLS / fMP4 and several outputs.",
-    "Includes everything from 2.7.4-p2: Go replaces FFmpeg for all on-demand channels, go badge and on-demand stats in the panel, panel settings drive the Go engine."
+    "Released 2026-11-26 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
+    "CPU fix for live channels in Go: an HLS source with separate audio (video and audio in different playlists) leaked one background task per second; after a few hours one channel could use dozens of CPU cores. Fixed.",
+    "Go live channels now use at most 4 threads each, and their memory limit grows with real use instead of a fixed 48 MB (a fixed limit made memory cleanup run non-stop).",
+    "Same binary for on-demand (odrelay) and live (ffmpeg-golive). Updating restarts odrelay once (on-demand viewers reconnect); live channels pick up the fix at their next (re)start.",
+    "Includes everything from 2.7.4-p3: Go is the default for live channels, Go replaces FFmpeg for all on-demand channels."
   ]
 }

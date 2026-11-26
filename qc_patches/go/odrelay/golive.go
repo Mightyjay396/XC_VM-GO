@@ -16,7 +16,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -451,8 +453,10 @@ func runGoLive() {
 	}
 	// RAM like ffmpeg: no TS viewer reads this hub's ring, and segments live on disk once written
 	ringMax = 2 << 20
-	debug.SetGCPercent(-1) // collect only near the limit: far less GC CPU, RAM stays bounded
+	runtime.GOMAXPROCS(min(runtime.NumCPU(), 4)) // a copy job needs few threads; also caps GC workers per channel
+	debug.SetGCPercent(-1)                       // collect only near the limit: far less GC CPU, RAM stays bounded
 	debug.SetMemoryLimit(48 << 20)
+	go memGuard(id)
 	h := newHub(id, []string{o.in}, o.hdr)
 	if o.proxy != "" {
 		c, err := proxyClient(o.proxy)
@@ -659,4 +663,22 @@ func frames(d []byte, vpid int) int {
 		return aud
 	}
 	return pes
+}
+
+// memGuard keeps the memory limit above twice the live heap: a limit under the live heap makes the GC run non-stop
+// (seen on an HLS source with separate audio: 7+ cores busy in GC).
+func memGuard(id string) {
+	smp := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	lim, n := int64(48<<20), 0
+	for range time.Tick(2 * time.Second) {
+		metrics.Read(smp)
+		live := int64(smp[0].Value.Uint64())
+		if want := max(48<<20, 2*live); want > lim*5/4 || want < lim*3/4 {
+			lim = want
+			debug.SetMemoryLimit(lim)
+		}
+		if n++; n%300 == 0 { // every 10 min
+			log.Printf("golive %s mem: live=%dMB limit=%dMB goroutines=%d", id, live>>20, lim>>20, runtime.NumGoroutine())
+		}
+	}
 }
