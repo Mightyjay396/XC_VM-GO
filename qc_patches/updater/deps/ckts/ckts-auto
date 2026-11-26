@@ -1,0 +1,9 @@
+#!/bin/sh
+# Sizes the Go runtime to this server, then starts ckts: memory limit = 10 % of RAM (4-32 GiB), at most a third of the cores (4-32).
+# CKTS_MEMLIMIT / CKTS_MAXPROCS (e.g. 12GiB / 16) override the automatic values.
+ram=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+lim=$((ram / 10)); [ "$lim" -lt 4096 ] && lim=4096; [ "$lim" -gt 32768 ] && lim=32768
+cpu=$(nproc); p=$((cpu / 3)); [ "$p" -lt 4 ] && p=4; [ "$p" -gt 32 ] && p=32; [ "$p" -gt "$cpu" ] && p=$cpu
+export GOMEMLIMIT="${CKTS_MEMLIMIT:-${lim}MiB}" GOMAXPROCS="${CKTS_MAXPROCS:-$p}"
+echo "ckts-auto: GOMEMLIMIT=$GOMEMLIMIT GOMAXPROCS=$GOMAXPROCS (RAM ${ram} MiB, ${cpu} cores)" >&2
+exec "$@"
