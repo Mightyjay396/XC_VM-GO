@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <b>Latest update: 2.7.4-p6 — released November 26, 2026</b> · <a href="#-release-history">Release history</a> · <a href="https://github.com/Mightyjay396/XC_VM-GO/releases">All releases</a><br>
+  <b>Latest update: 2.7.4-p7 — released November 27, 2026</b> · <a href="#-release-history">Release history</a> · <a href="https://github.com/Mightyjay396/XC_VM-GO/releases">All releases</a><br>
   Get notified of new updates: <b>Watch → Custom → Releases</b> (top of this page)
 </p>
 
@@ -71,7 +71,7 @@ Everything else (live & VOD streaming, load balancing, users/resellers, transcod
 
 ## 🆕 What This Fork Changes
 
-| Area | Upstream XC_VM 2.7.4 | XC_VM-GO 2.7.4-p6 |
+| Area | Upstream XC_VM 2.7.4 | XC_VM-GO 2.7.4-p7 |
 | --- | --- | --- |
 | Stream delivery on load balancers | PHP / fanout | + Go engine: **odrelay**, **livehold**, **ckts**, **mpdproxy** (started automatically, survive reboots) |
 | On-demand channels | PHP starts FFmpeg per channel; viewer waits for the probe + first segment (4–9 s measured) | **Go replaces FFmpeg**: one shared source connection per channel, first byte in ~1.1–1.3 s, TS and HLS sources (incl. HLS with a separate audio rendition), per-stream proxy |
@@ -94,7 +94,7 @@ Not included on purpose: no server data, credentials, streams, customers or EPG 
 ## ⚠️ Status
 
 > **BETA SOFTWARE** — XC_VM itself is in beta, and this fork follows XC_VM releases with a delay.
-> Current fork release: **2.7.4-p6** (released **2026-11-26**), based on XC_VM 2.7.4.
+> Current fork release: **2.7.4-p7** (released **2026-11-27**), based on XC_VM 2.7.4.
 
 ---
 
@@ -104,7 +104,8 @@ Newest first. Dates are UTC. Each release lists its changes on its [release page
 
 | Version | Released | Highlights |
 | --- | --- | --- |
-| [**2.7.4-p6**](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p6) (latest) | **2026-11-26** | **CPU fix on busy load balancers**: the `ckts` sound check (~30 runs/s of the system ffmpeg, ~200 libraries loaded each time) now uses a small static AAC decoder (`/opt/qc-ffaac`), and Go live channels no longer start PHP every minute to re-read unchanged panel settings |
+| [**2.7.4-p7**](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p7) (latest) | **2026-11-27** | **Go reconnects like FFmpeg, panel shows the right engine**: a dead or mute source makes Go exit so XC_VM restarts the channel with its own timings, still on Go (no more permanent switch to FFmpeg after source cuts); channels running an updated Go binary are shown as Go again instead of FFmpeg |
+| [2.7.4-p6](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p6) | 2026-11-26 | **CPU fix on busy load balancers**: the `ckts` sound check (~30 runs/s of the system ffmpeg, ~200 libraries loaded each time) now uses a small static AAC decoder (`/opt/qc-ffaac`), and Go live channels no longer start PHP every minute to re-read unchanged panel settings |
 | [2.7.4-p5](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p5) | 2026-11-26 | **ClearKey engine sized to the server**: `ckts` memory limit = 10 % of RAM (4–32 GiB) and at most a third of the cores (4–32), computed at start instead of a fixed 8 GiB |
 | [2.7.4-p4](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p4) | 2026-11-26 | **CPU fix for live channels in Go**: HLS sources with separate audio leaked one task per second and ended up using many CPU cores; Go live channels now use at most 4 threads and their memory limit follows real use |
 | [2.7.4-p3](https://github.com/Mightyjay396/XC_VM-GO/releases/tag/2.7.4-p3) | 2026-11-25 | **Go is the default for live channels too**: every plain copy-to-HLS live channel runs on Go (`golive_streams.txt` = `*`), no list to maintain; FFmpeg only for transcoding, filters, logos, encrypted HLS / fMP4 |
@@ -195,7 +196,7 @@ For new installations:
 
 ## 📥 Quick Install
 
-> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM-GO 2.7.4-p6** (unofficial fork): upstream XC_VM 2.7.4 + this fork's fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
+> ✅ Ubuntu 22.04+, Debian 12+ — installs **XC_VM-GO 2.7.4-p7** (unofficial fork): upstream XC_VM 2.7.4 + this fork's fixes, modules and Go delivery engine (odrelay, livehold, ckts, mpdproxy)
 
 ```bash
 # 1. Update system
@@ -368,7 +369,7 @@ Installed and started automatically on every load balancer (not XC_VM's fanout, 
 **In upstream XC_VM, every channel is an FFmpeg process started by PHP. In XC_VM-GO, the Go engine does that work
 whenever FFmpeg would only copy the stream**, and FFmpeg is kept only where it is really needed.
 
-| Job | Upstream XC_VM | XC_VM-GO 2.7.4-p6 |
+| Job | Upstream XC_VM | XC_VM-GO 2.7.4-p7 |
 | --- | --- | --- |
 | On-demand channels (MPEG-TS and HLS sources) | PHP starts FFmpeg per channel | **Go (`odrelay`), no FFmpeg** — all on-demand channels |
 | Live channels, plain copy to HLS | FFmpeg per channel | **Go (`ffmpeg-golive`)** for all of them, by default |

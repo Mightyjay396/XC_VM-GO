@@ -1,11 +1,11 @@
 {
-  "version": "2.7.4-p6",
-  "date": "2026-11-26",
+  "version": "2.7.4-p7",
+  "date": "2026-11-27",
   "changes": [
-    "Released 2026-11-26 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
-    "CPU fix on busy load balancers: the ClearKey DASH engine (ckts) checks the sound of every DASH segment by running the system ffmpeg (about 30 times per second on a busy server). The distro ffmpeg loads about 200 libraries on each run (~73 ms of CPU and thousands of memory page faults), which made all cores fight over the kernel memory lock in bursts. That one call now goes to a small static AAC decoder (/opt/qc-ffaac): about 5x less CPU and 7x fewer page faults, same sound result. Everything else still uses the real ffmpeg. No ckts restart.",
-    "Go live channels no longer start PHP every minute: XC_VM rewrites its settings cache every minute with the same content, and every Go live channel re-read it through PHP at the same moment. They now re-read it only when the panel settings really change (still applied live).",
-    "Updating replaces ffmpeg-golive without restarting odrelay (on-demand viewers stay connected); running live channels use the new version at their next restart.",
-    "Includes everything from 2.7.4-p5: ckts memory and core limits sized to the server."
+    "Released 2026-11-27 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
+    "Go live channels reconnect like FFmpeg with the panel timings: when the source is down or sends nothing (under 256 KB before first_video, or silent longer than segment_wait_time), Go exits and XC_VM restarts the channel after stream_fail_sleep, still on Go. Source cuts no longer count toward the '3 failures in 10 min' rule, so unstable sources stop ending up permanently on FFmpeg.",
+    "FFmpeg takes over only for a real incompatibility: the source sends data but Go finds no video in it.",
+    "Panel: channels started before an update replaced the Go binary were shown as FFmpeg (Linux reports the old file as 'ffmpeg-golive (deleted)'); they are shown as Go again.",
+    "Includes everything from 2.7.4-p6 (ckts sound check on a small AAC decoder, fewer PHP starts) and 2.7.4-p5 (ckts sized to the server)."
   ]
 }

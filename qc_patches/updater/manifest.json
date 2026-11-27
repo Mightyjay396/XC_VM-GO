@@ -1218,19 +1218,19 @@
    "role": "lb",
    "path": "Core/Process/ProcessManager.php",
    "kind": "core",
-   "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+   "ours_md5": "d8e32e5499c5cd556847dd83a1652dd7",
    "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
    "diff": "diffs/lb/Core/Process/ProcessManager.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
-     "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+     "ours_md5": "d8e32e5499c5cd556847dd83a1652dd7",
      "file": "files/lb/Core/Process/ProcessManager.php",
      "diff": "diffs/lb/Core/Process/ProcessManager.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
-     "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+     "ours_md5": "d8e32e5499c5cd556847dd83a1652dd7",
      "file": "files_2.7.4/lb/Core/Process/ProcessManager.php",
      "diff": "diffs_2.7.4/lb/Core/Process/ProcessManager.php.diff"
     }
@@ -1240,19 +1240,19 @@
    "role": "main",
    "path": "Core/Process/ProcessManager.php",
    "kind": "core",
-   "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+   "ours_md5": "d8e32e5499c5cd556847dd83a1652dd7",
    "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
    "diff": "diffs/main/Core/Process/ProcessManager.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
-     "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+     "ours_md5": "d8e32e5499c5cd556847dd83a1652dd7",
      "file": "files/main/Core/Process/ProcessManager.php",
      "diff": "diffs/main/Core/Process/ProcessManager.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "6ef6f899c4d716f28162b0ad391f6c5b",
-     "ours_md5": "6ba702b34e6974f49472ce835e7325c0",
+     "ours_md5": "d8e32e5499c5cd556847dd83a1652dd7",
      "file": "files_2.7.4/main/Core/Process/ProcessManager.php",
      "diff": "diffs_2.7.4/main/Core/Process/ProcessManager.php.diff"
     }

@@ -2,7 +2,7 @@
 """Builds the fork's release assets: official XC_VM 2.7.4 + QC patches + Go engine, as XC_VM's own installer/updater expect them."""
 import glob, hashlib, json, os, re, shutil, subprocess, sys, zipfile
 
-VERSION, OWNER, REPO = "2.7.4-p6", "Mightyjay396", "XC_VM-GO"
+VERSION, OWNER, REPO = "2.7.4-p7", "Mightyjay396", "XC_VM-GO"
 PKG, OUT, SRC = "/root/qc_xcvm_pkg", "/tmp/qc_dist", {"main": "/tmp/r274_main", "lb": "/tmp/r274_lb"}
 HERE = os.path.dirname(os.path.abspath(__file__))
 

@@ -536,10 +536,17 @@ func runGoLive() {
 		}
 		switch {
 		case w.n == 0 && time.Since(w.t0) > cfg.probe:
-			addFail(failF)
-			fallback(fmt.Sprintf("no video from the source in %s", cfg.probe))
+			h.mu.Lock()
+			up := h.upBytes
+			h.mu.Unlock()
+			// source down or nearly mute: a source problem, ffmpeg would not do better -> XC_VM restarts us, still in Go
+			if up < 256<<10 {
+				log.Printf("golive %s: source sent %d bytes in %s (first_video), exit for XC_VM restart", id, up, cfg.probe)
+				os.Exit(1)
+			}
+			addFail(failF) // data came but Go found no video in it: hand over to ffmpeg
+			fallback(fmt.Sprintf("no video from the source in %s (%d bytes received)", cfg.probe, up))
 		case w.n > 0 && time.Since(w.lastW) > cfg.wait:
-			addFail(failF)
 			log.Printf("golive %s: source silent %s (segment_wait_time), exit for XC_VM restart", id, cfg.wait)
 			os.Exit(1)
 		}
