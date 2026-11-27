@@ -6,6 +6,7 @@
     "No scheduled channel restart is installed: the panel's Auto-restart (stream settings, days + time) stays off until you pick days for a channel; the time box only suggests 04:00.",
     "Fixed panel Auto-restart: it restarted the channel again and again during the whole scheduled minute; it now fires once.",
     "Fixed panel Auto-restart: a change to the days/time only applied after the channel's next restart; it now applies within 5 minutes.",
+    "Updater: Local changes protected: paths listed in config/qc_keep_local.txt (one per line, relative to the XC_VM folder) are never replaced by an update; nginx location blocks already present are no longer added a second time, and an update whose nginx config fails nginx -t is rolled back automatically.",
     "Includes everything from 2.7.4-p8 (ClearKey on every server, other mpdproxy/ckts builds replaced, no night-time restarts by unattended upgrades, safe livehold update) and earlier."
   ]
 }

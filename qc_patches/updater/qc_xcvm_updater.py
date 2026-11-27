@@ -180,19 +180,39 @@ def older_qc(cur, ours):
     return bool(marks(cur))
 
 
+KEEP_LOCAL = f"{XC}/config/qc_keep_local.txt"  # one path per line (relative to the XC_VM folder): never touched by updates
+
+
+def kept_local():
+    if not os.path.exists(KEEP_LOCAL):
+        return set()
+    return {os.path.join(XC, l.strip().lstrip("/")) if not l.strip().startswith(XC) else l.strip()
+            for l in open(KEEP_LOCAL) if l.strip() and not l.lstrip().startswith("#")}
+
+
+def nginx_blocks_present(t, diff):
+    """True when every nginx location the diff adds already exists in the file (added in another order earlier)."""
+    added = [l[1:].strip() for l in open(diff) if l.startswith("+") and not l.startswith("+++") and l[1:].strip().startswith("location")]
+    cur = {l.strip() for l in open(t, errors="ignore")}
+    return bool(added) and all(a in cur for a in added)
+
+
 def plan(entries, ver):
     out = []
+    keep = kept_local()
     for e in (resolve(x, ver) for x in entries):
         tg = targets(e["path"])
         if not tg:
             out.append((e, None, "absent (module not installed) - skipped")); continue
         for t in tg:
+            if t in keep and os.path.exists(t):
+                out.append((e, t, "keep (local)")); continue
             if e["kind"] == "template":
                 out.append((e, t, "keep (exists)" if os.path.exists(t) else "create")); continue
             if not os.path.exists(t):
                 out.append((e, t, "create" if e["kind"] == "new" else "MISSING core file - skipped")); continue
             cur = md5(t)
-            if cur == e["ours_md5"]:
+            if cur == e["ours_md5"] or (t.endswith(".conf") and e.get("diff") and nginx_blocks_present(t, f"{PKG}/{e['diff']}")):
                 out.append((e, t, "already installed"))
             elif e["kind"] == "new":
                 out.append((e, t, "replace"))
@@ -537,6 +557,11 @@ def main():
         bad = [t for t in changed if php and t.endswith(".php") and sh([php, "-n", "-l", t]).returncode]
         if bad:
             raise RuntimeError(f"PHP syntax error in {bad}")
+        ngx = f"{XC}/bin/nginx/sbin/nginx"
+        if any(t.endswith(".conf") and "/nginx/" in t for t in changed) and os.path.exists(ngx):
+            r = sh([ngx, "-t", "-p", f"{XC}/bin/nginx/", "-c", f"{XC}/bin/nginx/conf/nginx.conf"])
+            if r.returncode:
+                raise RuntimeError(f"nginx config test failed: {(r.stderr or r.stdout).strip().splitlines()[0]}")
         say(f"files: {len(changed)} installed, " + ("PHP syntax OK" if php else "WARNING: no working PHP found, syntax not checked"))
         if role == "main":
             ok, err = run_sql(f"{PKG}/sql/main.sql")

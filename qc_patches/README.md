@@ -51,6 +51,8 @@ list mode): before, an updated library restarted every channel during the night;
 
 No scheduled channel restart is installed: the panel's Auto-restart (stream settings, days + time) stays off until you pick days for a channel; the time box only suggests 04:00. A scheduled restart fires once at the chosen minute (panel timezone) and a change applies within 5 minutes without restarting the channel.
 
+Local changes protected: paths listed in `config/qc_keep_local.txt` (one per line, relative to the XC_VM folder) are never replaced by an update; nginx `location` blocks already present are no longer added a second time, and an update whose nginx config fails `nginx -t` is rolled back automatically.
+
 | Program | Local port | Role |
 |---|---|---|
 | `odrelay` | 8147 | **Replaces FFmpeg for all on-demand channels** (MPEG-TS and HLS sources, incl. HLS with separate audio, per-stream proxy): one shared source connection per channel, first byte in ~1 s |
