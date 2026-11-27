@@ -8,7 +8,7 @@
 
 
 This unofficial fork ships upstream **XC_VM 2.7.4** plus the QC fixes, modules and the Go delivery engine, released as
-**2.7.4-p7** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
+**2.7.4-p8** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
 XC_VM — every download points to this repository's Releases, so new servers always get this version.
 No server data is included: no channels, source URLs, EPG, database, proxy list, keys or IP addresses.
 
@@ -38,6 +38,16 @@ the root password is asked once), one at a time, stopping at the first failure. 
 `--dry-run`, `--no-deps`, `--rollback <dir>`, `--force`.
 
 ## Go delivery engine — replaces FFmpeg (installed and started on every load balancer)
+
+The ClearKey part (`ckts`, `mpdproxy`, `mpdproxy-ads`, FFmpeg 8.1-dash, system ffmpeg, qc-ffaac) is installed and started on the Main
+server too, so ClearKey DASH channels work wherever they run. If a server already has another `mpdproxy` or `ckts` build
+(file `/opt/mpdproxy`, `mpdproxy.service`/`.socket`, drop-ins changing `ExecStart`, or one of these programs on their ports),
+it is stopped and replaced by this one; the old files are kept (`/var/backups/qc_replaced_*` for a fresh install,
+`*.qc-replaced_*` for the updater, which `--rollback` restores and restarts). A port held by an unrelated program is never touched:
+that part is then skipped with a message.
+
+Ubuntu's automatic security updates no longer restart XC_VM and the delivery services (`/etc/needrestart/conf.d/qc-no-autorestart.conf`,
+list mode): before, an updated library restarted every channel during the night; updated libraries now load at the next normal restart.
 
 | Program | Local port | Role |
 |---|---|---|
@@ -97,7 +107,7 @@ sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc
 ## Repository layout
 
 ```
-src/                 XC_VM 2.7.4-p7 (Main tree; release archives add bin/qc/ with the Go binaries)
+src/                 XC_VM 2.7.4-p8 (Main tree; release archives add bin/qc/ with the Go binaries)
 qc_patches/updater/  qc_xcvm_updater.py + patched files for 2.7.2 and 2.7.4 (existing panels)
 qc_patches/go/       Go sources (odrelay / ffmpeg-golive, livehold, mpdproxy)
 qc_patches/build_dist.py + qc_deps.sh   how the release assets are built (binaries: release archives, bin/qc/)

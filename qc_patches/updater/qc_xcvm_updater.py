@@ -21,6 +21,10 @@ DEP_UNITS = {"odrelay": ["odrelay.service"], "livehold": ["livehold.service"],
              "mpdproxy": [f"mpdproxy@{p}.{k}" for p in MPD for k in ("socket", "service")]}
 ALL_LISTS = {f"{XC}/config/odrelay_streams.txt": "odrelay", f"{XC}/config/livehold_streams.txt": "livehold",
              "/etc/qc_ckts_ids": "ckts"}
+CLEARKEY = ("ckts", "mpdproxy")  # another build of these is replaced by ours (moved aside, --rollback puts it back)
+LEGACY_UNITS = {"mpdproxy": ["mpdproxy.socket", "mpdproxy.service"], "ckts": []}
+FAMILY = {"mpdproxy": ("mpdproxy",), "ckts": ("ckts", "mpdproxy-ads")}
+SYSD = "/etc/systemd/system"
 
 
 def md5(p):
@@ -259,7 +263,16 @@ def rollback(bk):
     for u in meta.get("unit_files", []):
         if os.path.exists(u):
             os.remove(u)
+    for orig, moved in reversed(meta.get("moved", [])):
+        if os.path.lexists(moved):
+            if os.path.isdir(orig) and not os.path.islink(orig):
+                shutil.rmtree(orig)
+            os.replace(moved, orig)
     sh(["systemctl", "daemon-reload"])
+    for u in meta.get("was_active", []):  # what ran before the update runs again (the other ClearKey build included)
+        sh(["systemctl", "enable", u]); sh(["systemctl", "restart" if u.endswith(".service") else "start", u])
+    for u in meta.get("stopped", []):
+        sh(["systemctl", "enable", "--now", u])
     say(f"rollback done from {bk}")
 
 
@@ -319,30 +332,105 @@ def install_ffaac(src):
     say("deps: ckts sound check uses the small AAC decoder" + ("" if ok else " - ffmpeg launcher check FAILED"))
 
 
+def move_aside(p, meta):
+    dst = f"{p}.qc-replaced_{time.strftime('%Y%m%d_%H%M%S')}"
+    os.replace(p, dst); meta["moved"].append([p, dst])
+
+
+def port_owners(p):
+    out = sh(f"ss -ltnpH 'sport = :{p}'").stdout
+    return [(c, int(pid)) for c, pid in re.findall(r'\("([^"]+)",pid=(\d+)', out)]
+
+
+def take_over(name, want, meta):
+    """Replaces another build of the ClearKey stack by ours. None if a port is held by an unrelated program."""
+    took = False
+    for u in LEGACY_UNITS[name]:
+        if os.path.exists(f"{SYSD}/{u}"):
+            sh(["systemctl", "disable", "--now", u]); meta["stopped"].append(u)
+            move_aside(f"{SYSD}/{u}", meta); took = True
+    for fam in FAMILY[name]:
+        for conf in glob.glob(f"{SYSD}/{fam}@*.service.d/*.conf") + glob.glob(f"{SYSD}/{fam}.service.d/*.conf"):
+            if "ExecStart" in open(conf, errors="replace").read():
+                move_aside(conf, meta); took = True
+    p = f"/opt/{name}"
+    if os.path.lexists(p) and (os.path.islink(p) or not os.path.isdir(p)):
+        move_aside(p, meta); took = True
+    if took:
+        sh(["systemctl", "daemon-reload"])
+    socks = sh(["systemctl", "list-sockets", "--all", "--no-legend"]).stdout.splitlines()
+    for port in DEP_PORTS[name]:
+        for comm, pid in port_owners(port):
+            if comm == "systemd":
+                for line in socks:
+                    f = line.split()
+                    if len(f) > 1 and f[0].endswith(f":{port}") and f[1] not in want:
+                        sh(["systemctl", "disable", "--now", f[1]]); meta["stopped"].append(f[1]); took = True
+            elif any(comm.startswith(x) for x in FAMILY[name]):
+                unit = sh(["ps", "-o", "unit=", "-p", str(pid)]).stdout.strip()
+                if unit and unit not in want and not unit.endswith(".scope"):
+                    sh(["systemctl", "disable", "--now", unit]); meta["stopped"].append(unit); took = True
+                elif not unit or unit.endswith(".scope"):
+                    sh(["kill", str(pid)]); took = True
+            else:
+                say(f"deps: {name} NOT installed: port {port} is used by another program ({comm})"); return None
+    if took:
+        time.sleep(1)
+        say(f"deps: {name} from another build replaced by this version (old files kept as *.qc-replaced_*)")
+    return took
+
+
+NEEDRESTART = "/etc/needrestart/conf.d/qc-no-autorestart.conf"
+
+
+def no_autorestart(meta):
+    """Unattended Ubuntu upgrades must never restart XC_VM / delivery services (it cut every channel at night)."""
+    want = "# QC: updated libraries are listed, services are never restarted automatically\n$nrconf{restart} = 'l';\n"
+    if os.path.exists(NEEDRESTART) and open(NEEDRESTART).read() == want:
+        return
+    os.makedirs(os.path.dirname(NEEDRESTART), exist_ok=True)
+    if not os.path.exists(NEEDRESTART):
+        meta["created"].append(NEEDRESTART)
+    open(NEEDRESTART, "w").write(want); say("unattended upgrades: services are no longer restarted automatically")
+
+
 def install_deps(bk, meta, role):
+    no_autorestart(meta)
     d = f"{PKG}/deps"
     if not os.path.isdir(d):
         say("deps: not in package - skipped"); return
     ff = f"{XC}/bin/ffmpeg_bin/8.1-dash"
-    if os.path.isdir(f"{d}/ffmpeg_8.1-dash") and not os.path.exists(f"{ff}/ffmpeg"):
+    if os.path.isdir(f"{d}/ffmpeg_8.1-dash"):  # ClearKey DASH build: always ours (an older copy is replaced, backup kept)
         os.makedirs(ff, exist_ok=True)
         for b in ("ffmpeg", "ffprobe"):
-            place(f"{d}/ffmpeg_8.1-dash/{b}", f"{ff}/{b}"); os.chmod(f"{ff}/{b}", 0o755); own(f"{ff}/{b}")
-        meta["created"] += [f"{ff}/ffmpeg", f"{ff}/ffprobe"]; say("deps: FFmpeg 8.1-dash installed")
-    names = ("odrelay", "livehold", "ckts", "mpdproxy") if role == "lb" else ("mpdproxy",)
+            if os.path.exists(f"{ff}/{b}") and md5(f"{ff}/{b}") == md5(f"{d}/ffmpeg_8.1-dash/{b}"):
+                continue
+            save(bk, f"{ff}/{b}", meta["created"]); place(f"{d}/ffmpeg_8.1-dash/{b}", f"{ff}/{b}")
+            os.chmod(f"{ff}/{b}", 0o755); own(f"{ff}/{b}"); say(f"deps: FFmpeg 8.1-dash {b} installed")
+    names = ("odrelay", "livehold", "ckts", "mpdproxy") if role == "lb" else ("ckts", "mpdproxy")  # ClearKey on every server
     if "ckts" in names and not shutil.which("ffmpeg"):
         say("deps: system ffmpeg (used by ckts) " + ("installed" if apt_install(["ffmpeg"]) else "COULD NOT be installed"))
     units, changed = [], set()
     for name in names:
-        want = [u for u in DEP_UNITS[name] if role == "lb" or u.startswith("mpdproxy@")]
+        want = DEP_UNITS[name]
         dst_dir = f"/opt/{name}"
+        if not os.path.isdir(f"{d}/{name}"):
+            continue
+        if name in CLEARKEY:
+            meta.setdefault("was_active", []).extend(
+                u for u in want if sh(["systemctl", "is-active", "--quiet", u]).returncode == 0)
+            replaced = take_over(name, want, meta)
+            if replaced is None:
+                continue
+            if replaced:
+                changed.update(want)
         if os.path.exists(dst_dir) and not os.path.isdir(dst_dir):
             say(f"deps: /opt/{name} already exists (other install) - skipped"); continue
         running = sh(["systemctl", "is-active", "--quiet", want[0]]).returncode == 0
         exe = sh(["systemctl", "show", "-p", "ExecStart", want[0].replace(".socket", ".service")]).stdout
-        if running and f"/opt/{name}/{name}" not in exe:
+        if running and f"/opt/{name}/{name}" not in exe and name not in CLEARKEY:
             say(f"deps: {name} already runs from another build on this server - kept as is"); continue
-        busy = [p for p in DEP_PORTS[name] if port_busy(p)] if not running else []
+        busy = [p for p in DEP_PORTS[name] if port_busy(p)] if not running and name not in CLEARKEY else []
         if busy:
             say(f"deps: {name} skipped, port(s) in use by another program: {busy}"); continue
         os.makedirs(dst_dir, exist_ok=True)
@@ -363,10 +451,10 @@ def install_deps(bk, meta, role):
             save(bk, t, meta["unit_files"]); place(f"{d}/systemd/{u}", t)
             changed.update(want)
         units += want
-    if role == "lb" and os.path.isdir(f"{d}/ffaac") and os.path.exists("/usr/bin/ffmpeg"):
+    if "ckts" in names and os.path.isdir(f"{d}/ffaac") and os.path.exists("/usr/bin/ffmpeg"):
         install_ffaac(f"{d}/ffaac")
     for lst, name in ALL_LISTS.items():
-        if role == "lb" and name in names and (not os.path.exists(lst) or not open(lst).read().strip()):
+        if name in names and (not os.path.exists(lst) or not open(lst).read().strip()):
             save(bk, lst, meta["created"]); open(lst, "w").write("*\n")  # empty list = feature off: turn it on for all channels
             if lst.startswith(XC):
                 own(lst)
@@ -417,7 +505,7 @@ def main():
             push_lbs(a)
         return
     bk = backup_dir()
-    meta = {"created": [], "unit_files": [], "units": [], "role": role}
+    meta = {"created": [], "unit_files": [], "units": [], "role": role, "moved": [], "stopped": []}
     try:
         changed = []
         for e, t, st in steps:

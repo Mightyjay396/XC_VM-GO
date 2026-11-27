@@ -1,11 +1,13 @@
 {
-  "version": "2.7.4-p7",
+  "version": "2.7.4-p8",
   "date": "2026-11-27",
   "changes": [
     "Released 2026-11-27 (XC_VM-GO, unofficial fork based on XC_VM 2.7.4).",
-    "Go live channels reconnect like FFmpeg with the panel timings: when the source is down or sends nothing (under 256 KB before first_video, or silent longer than segment_wait_time), Go exits and XC_VM restarts the channel after stream_fail_sleep, still on Go. Source cuts no longer count toward the '3 failures in 10 min' rule, so unstable sources stop ending up permanently on FFmpeg.",
-    "FFmpeg takes over only for a real incompatibility: the source sends data but Go finds no video in it.",
-    "Panel: channels started before an update replaced the Go binary were shown as FFmpeg (Linux reports the old file as 'ffmpeg-golive (deleted)'); they are shown as Go again.",
-    "Includes everything from 2.7.4-p6 (ckts sound check on a small AAC decoder, fewer PHP starts) and 2.7.4-p5 (ckts sized to the server)."
+    "ClearKey on every server: the Main server now gets the full ClearKey stack like the load balancers (ckts with its 15 ad-break relays, mpdproxy on 16 ports, FFmpeg 8.1-dash, system ffmpeg, small AAC decoder) instead of mpdproxy alone.",
+    "Another mpdproxy or ckts build already on a server (file /opt/mpdproxy, mpdproxy.service/.socket, drop-ins changing ExecStart, or one of these programs on their ports) is stopped and replaced by this version instead of being kept; old files are kept and the updater's --rollback restores and restarts them. A port used by an unrelated program is never touched.",
+    "Fixed: after an update, changed mpdproxy / mpdproxy-ads instances were not restarted by the installer and kept running the old binary.",
+    "FFmpeg 8.1-dash is now updated when the copy on the server differs, not only installed when missing.",
+    "Ubuntu's automatic security updates no longer restart XC_VM and all channels during the night (needrestart in list mode); updated libraries apply at the next normal restart.",
+    "Includes everything from 2.7.4-p7 (Go reconnects like FFmpeg with the panel timings, panel shows Go correctly) and earlier."
   ]
 }
