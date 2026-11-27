@@ -7,6 +7,7 @@
     "Another mpdproxy or ckts build already on a server (file /opt/mpdproxy, mpdproxy.service/.socket, drop-ins changing ExecStart, or one of these programs on their ports) is stopped and replaced by this version instead of being kept; old files are kept and the updater's --rollback restores and restarts them. A port used by an unrelated program is never touched.",
     "Fixed: after an update, changed mpdproxy / mpdproxy-ads instances were not restarted by the installer and kept running the old binary.",
     "FFmpeg 8.1-dash is now updated when the copy on the server differs, not only installed when missing.",
+    "livehold updated to the version running on the reference load balancer (offline slate sent as soon as a viewer's player runs empty). An update no longer restarts livehold while it holds viewers (a stop drains them for up to 4 h and would refuse new viewers meanwhile): it is swapped at once when nobody is held, otherwise at the next restart.",
     "Ubuntu's automatic security updates no longer restart XC_VM and all channels during the night (needrestart in list mode); updated libraries apply at the next normal restart.",
     "Includes everything from 2.7.4-p7 (Go reconnects like FFmpeg with the panel timings, panel shows Go correctly) and earlier."
   ]

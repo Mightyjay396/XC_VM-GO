@@ -394,6 +394,18 @@ def no_autorestart(meta):
     open(NEEDRESTART, "w").write(want); say("unattended upgrades: services are no longer restarted automatically")
 
 
+def livehold_swap():
+    """livehold drains viewers up to 4 h on stop (a restart refuses new viewers that long): swap only when nobody is held."""
+    try:
+        v = sum(x.get("viewers", 0) for x in json.loads(sh("curl -s -m 3 127.0.0.1:8150/stats").stdout).values())
+    except Exception:
+        v = None
+    if v == 0:
+        sh(["systemctl", "kill", "-s", "SIGKILL", "livehold.service"]); say("deps: livehold new version started")
+    else:
+        say(f"deps: livehold {v if v is not None else '?'} viewer(s) held - new version starts at the next restart")
+
+
 def install_deps(bk, meta, role):
     no_autorestart(meta)
     d = f"{PKG}/deps"
@@ -460,7 +472,10 @@ def install_deps(bk, meta, role):
                 own(lst)
     sh(["systemctl", "daemon-reload"], check=True)
     for u in units:  # restart only what changed: an unchanged running service keeps its viewers
-        sh(["systemctl", "enable", u]); sh(["systemctl", "restart" if u in changed and u.endswith(".service") else "start", u])
+        sh(["systemctl", "enable", u])
+        if u == "livehold.service" and u in changed and sh(["systemctl", "is-active", "--quiet", u]).returncode == 0:
+            livehold_swap(); continue
+        sh(["systemctl", "restart" if u in changed and u.endswith(".service") else "start", u])
     meta["units"] = units
     bad = [u for u in units if sh(["systemctl", "is-active", "--quiet", u]).returncode]
     say(f"deps: {len(units)} services enabled and started" + (f", NOT active: {bad}" if bad else ", all active"))

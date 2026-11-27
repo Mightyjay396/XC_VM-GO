@@ -137,10 +137,24 @@ fi
 mkdir -p /etc/needrestart/conf.d
 printf '%s\n' "# QC: updated libraries are listed, services are never restarted automatically" "\$nrconf{restart} = 'l';" > /etc/needrestart/conf.d/qc-no-autorestart.conf
 
+# livehold drains its viewers for up to 4 h on stop: a restart would refuse new viewers that long. Swapped at once
+# only when nobody is held; otherwise the new version starts at the next restart (reboot).
+livehold_swap() {
+	local v=$(curl -s -m 3 127.0.0.1:8150/stats | python3 -c 'import json,sys;print(sum(x.get("viewers",0) for x in json.load(sys.stdin).values()))' 2>/dev/null)
+	if [ "$v" = 0 ]; then systemctl kill -s SIGKILL livehold.service; log "livehold: new version started"
+	else log "livehold: ${v:-?} viewer(s) held - new version starts at the next restart"; fi
+}
+
 systemctl daemon-reload
 for u in $ALL; do
 	systemctl enable "$u" >/dev/null 2>&1
-	case " $CHANGED " in *" $u "*) [[ $u == *.service ]] && systemctl restart "$u" || systemctl start "$u" ;; *) systemctl start "$u" ;; esac
+	case " $CHANGED " in
+	*" $u "*)
+		if [ $u = livehold.service ] && systemctl is-active -q $u; then livehold_swap
+		elif [[ $u == *.service ]]; then systemctl restart "$u"
+		else systemctl start "$u"; fi ;;
+	*) systemctl start "$u" ;;
+	esac
 done
 bad=$(for u in $ALL; do systemctl is-active --quiet "$u" || echo "$u"; done | tr '\n' ' ')
 log "$(echo $ALL | wc -w) services enabled${bad:+, NOT active: $bad}"
