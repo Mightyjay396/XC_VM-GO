@@ -167,12 +167,24 @@ class MonitorCommand implements CommandInterface {
 		while (true) {
 			if (0 < $rPID) {
 				$db->close_mysql();
-				$rStartedTime = $rDurationChecked = $rAudioChecked = $rCheckedTime = $rBackupsChecked = time();
+				$rStartedTime = $rDurationChecked = $rAudioChecked = $rCheckedTime = $rBackupsChecked = $rAutoRead = time();
 				$rMD5 = file_exists($rPlaylist) ? md5_file($rPlaylist) : false;
 				$rStreamFailed = ProcessManager::isStreamRunning($rPID, $rStreamID) && file_exists($rPlaylist);
 				$rBaselineFps = null;
 				while (ProcessManager::isStreamRunning($rPID, $rStreamID) && file_exists($rPlaylist)) {
-					if ($this->isAutoRestartDue($rAutoRestart)) {
+					// QC-AUTORESTART: the panel's scheduled restart is re-read every 5 min (a change applies without
+					// restarting the channel) and fires once per scheduled minute (not again after the new start).
+					if (300 <= time() - $rAutoRead) {
+						$rAutoRead = time();
+						$db->db_connect();
+						$rFresh = StreamSource::nodeRow($rStreamID, $db);
+						$db->close_mysql();
+						if ($rFresh !== null) {
+							$rAutoRestart = json_decode((string) $rFresh['auto_restart'], true);
+						}
+					}
+					if ($this->isAutoRestartDue($rAutoRestart) && ($rAutoDone ?? '') !== date('Y-m-d H:i')) {
+						$rAutoDone = date('Y-m-d H:i');
 						echo "Auto-restart\n";
 						StreamProcess::streamLog($rStreamID, SERVER_ID, 'AUTO_RESTART', $rCurrentSource);
 						$rStreamFailed = false;

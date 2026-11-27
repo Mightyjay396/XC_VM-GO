@@ -163,7 +163,7 @@ $rArg = static function (string $key, $rOptId) use ($rStationOptions, $rStationA
                     </div>
                     <div class="mb-6">
                         <label class="form-label" for="time_to_restart"><?= $language::get('time_to_restart'); ?></label>
-                        <input id="time_to_restart" name="time_to_restart" type="text" class="form-control opt-field" value="<?= htmlspecialchars((string) ($rAutoRestart['at'] ?? '06:00'), ENT_QUOTES); ?>">
+                        <input id="time_to_restart" name="time_to_restart" type="text" class="form-control opt-field" value="<?= htmlspecialchars((string) ($rAutoRestart['at'] ?? '04:00'), ENT_QUOTES); ?>">
                     </div>
                 </div>
 

@@ -8,7 +8,7 @@
 
 
 This unofficial fork ships upstream **XC_VM 2.7.4** plus the QC fixes, modules and the Go delivery engine, released as
-**2.7.4-p8** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
+**2.7.4-p9** (a release of this fork, not of XC_VM). It installs, adds load balancers and updates exactly like the original
 XC_VM — every download points to this repository's Releases, so new servers always get this version.
 No server data is included: no channels, source URLs, EPG, database, proxy list, keys or IP addresses.
 
@@ -48,6 +48,8 @@ that part is then skipped with a message.
 
 Ubuntu's automatic security updates no longer restart XC_VM and the delivery services (`/etc/needrestart/conf.d/qc-no-autorestart.conf`,
 list mode): before, an updated library restarted every channel during the night; updated libraries now load at the next normal restart.
+
+No scheduled channel restart is installed: the panel's Auto-restart (stream settings, days + time) stays off until you pick days for a channel; the time box only suggests 04:00. A scheduled restart fires once at the chosen minute (panel timezone) and a change applies within 5 minutes without restarting the channel.
 
 | Program | Local port | Role |
 |---|---|---|
@@ -107,7 +109,7 @@ sources than the shipped binaries). `ckts` ships as a binary only. Build: `cd qc
 ## Repository layout
 
 ```
-src/                 XC_VM 2.7.4-p8 (Main tree; release archives add bin/qc/ with the Go binaries)
+src/                 XC_VM 2.7.4-p9 (Main tree; release archives add bin/qc/ with the Go binaries)
 qc_patches/updater/  qc_xcvm_updater.py + patched files for 2.7.2 and 2.7.4 (existing panels)
 qc_patches/go/       Go sources (odrelay / ffmpeg-golive, livehold, mpdproxy)
 qc_patches/build_dist.py + qc_deps.sh   how the release assets are built (binaries: release archives, bin/qc/)

@@ -252,7 +252,7 @@ $rTitle = $rIsEdit ? $rStream['stream_display_name'] : ($rIsImport ? 'Import Str
                                 <?php endforeach; ?>
                             </select>
                         </div>
-                        <div class="col-md-4"><label class="form-label" for="time_to_restart"><?= $language::get('time_to_restart'); ?></label><input id="time_to_restart" name="time_to_restart" type="text" class="form-control" value="<?= htmlspecialchars((string) ($rAutoRestart['at'] ?? '06:00'), ENT_QUOTES); ?>"></div>
+                        <div class="col-md-4"><label class="form-label" for="time_to_restart"><?= $language::get('time_to_restart'); ?></label><input id="time_to_restart" name="time_to_restart" type="text" class="form-control" value="<?= htmlspecialchars((string) ($rAutoRestart['at'] ?? '04:00'), ENT_QUOTES); ?>"></div>
                     </div>
                     <div class="mb-6">
                         <label class="form-label" for="adaptive_link">Adaptive Link</label>

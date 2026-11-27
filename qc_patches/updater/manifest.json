@@ -30,19 +30,19 @@
    "role": "main",
    "path": "Cli/Commands/MonitorCommand.php",
    "kind": "core",
-   "ours_md5": "faef55f54a9beb5d3e25c4ec3703022c",
+   "ours_md5": "486872f2518eacdd3356c56a0faae108",
    "pristine_md5": "65cc1f07014a7326ca2ea12521aee983",
    "diff": "diffs/main/Cli/Commands/MonitorCommand.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "65cc1f07014a7326ca2ea12521aee983",
-     "ours_md5": "faef55f54a9beb5d3e25c4ec3703022c",
+     "ours_md5": "486872f2518eacdd3356c56a0faae108",
      "file": "files/main/Cli/Commands/MonitorCommand.php",
      "diff": "diffs/main/Cli/Commands/MonitorCommand.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "e62fb21b0a5b149c00974bff944469d5",
-     "ours_md5": "2b4e5572c7d3c4b384e6d510aa254faa",
+     "ours_md5": "ab9fa4911d4415e3074b8720bd8b81be",
      "file": "files_2.7.4/main/Cli/Commands/MonitorCommand.php",
      "diff": "diffs_2.7.4/main/Cli/Commands/MonitorCommand.php.diff"
     }
@@ -404,19 +404,19 @@
    "role": "main",
    "path": "Public/Views/admin/stream.php",
    "kind": "core",
-   "ours_md5": "6f88acfc341fe1e5e00cc21e9cec2824",
+   "ours_md5": "7a87810bff735c45f9571236bb77aaf1",
    "pristine_md5": "b722e8046c8750df963f4af5b542580f",
    "diff": "diffs/main/Public/Views/admin/stream.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "b722e8046c8750df963f4af5b542580f",
-     "ours_md5": "6f88acfc341fe1e5e00cc21e9cec2824",
+     "ours_md5": "7a87810bff735c45f9571236bb77aaf1",
      "file": "files/main/Public/Views/admin/stream.php",
      "diff": "diffs/main/Public/Views/admin/stream.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "21552ab663d727c0b2ad9edea6ba7884",
-     "ours_md5": "fff6939ffe73e1f339cd1729f9f54200",
+     "ours_md5": "8e1b899896d3c2aea8de02b85823e15e",
      "file": "files_2.7.4/main/Public/Views/admin/stream.php",
      "diff": "diffs_2.7.4/main/Public/Views/admin/stream.php.diff"
     }
@@ -887,19 +887,19 @@
    "role": "lb",
    "path": "Cli/Commands/MonitorCommand.php",
    "kind": "core",
-   "ours_md5": "df14d2df5b69ad3d687359894f3bef7c",
+   "ours_md5": "f5abd05703b203aaa121afac22a06bf0",
    "pristine_md5": "65cc1f07014a7326ca2ea12521aee983",
    "diff": "diffs/lb/Cli/Commands/MonitorCommand.php.diff",
    "v": {
     "2.7.2": {
      "pristine_md5": "65cc1f07014a7326ca2ea12521aee983",
-     "ours_md5": "df14d2df5b69ad3d687359894f3bef7c",
+     "ours_md5": "f5abd05703b203aaa121afac22a06bf0",
      "file": "files/lb/Cli/Commands/MonitorCommand.php",
      "diff": "diffs/lb/Cli/Commands/MonitorCommand.php.diff"
     },
     "2.7.4": {
      "pristine_md5": "e62fb21b0a5b149c00974bff944469d5",
-     "ours_md5": "31631db300167f6ba66d04575bbcdbae",
+     "ours_md5": "9d4ec66305bc729875f6b831848fd1f0",
      "file": "files_2.7.4/lb/Cli/Commands/MonitorCommand.php",
      "diff": "diffs_2.7.4/lb/Cli/Commands/MonitorCommand.php.diff"
     }

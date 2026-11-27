@@ -9,7 +9,34 @@
  		$rPrioritySwitch = false;
  		$rMaxFails = 0;
  
-@@ -266,7 +268,7 @@
+@@ -189,12 +191,24 @@
+ 		while (true) {
+ 			if (0 < $rPID) {
+ 				$db->close_mysql();
+-				$rStartedTime = $rDurationChecked = $rAudioChecked = $rCheckedTime = $rBackupsChecked = time();
++				$rStartedTime = $rDurationChecked = $rAudioChecked = $rCheckedTime = $rBackupsChecked = $rAutoRead = time();
+ 				$rMD5 = file_exists($rPlaylist) ? md5_file($rPlaylist) : false;
+ 				$rStreamFailed = ProcessManager::isStreamRunning($rPID, $rStreamID) && file_exists($rPlaylist);
+ 				$rBaselineFps = null;
+ 				while (ProcessManager::isStreamRunning($rPID, $rStreamID) && file_exists($rPlaylist)) {
+-					if ($this->isAutoRestartDue($rAutoRestart)) {
++					// QC-AUTORESTART: the panel's scheduled restart is re-read every 5 min (a change applies without
++					// restarting the channel) and fires once per scheduled minute (not again after the new start).
++					if (300 <= time() - $rAutoRead) {
++						$rAutoRead = time();
++						$db->db_connect();
++						$rFresh = StreamSource::nodeRow($rStreamID, $db);
++						$db->close_mysql();
++						if ($rFresh !== null) {
++							$rAutoRestart = json_decode((string) $rFresh['auto_restart'], true);
++						}
++					}
++					if ($this->isAutoRestartDue($rAutoRestart) && ($rAutoDone ?? '') !== date('Y-m-d H:i')) {
++						$rAutoDone = date('Y-m-d H:i');
+ 						echo "Auto-restart\n";
+ 						StreamProcess::streamLog($rStreamID, SERVER_ID, 'AUTO_RESTART', $rCurrentSource);
+ 						$rStreamFailed = false;
+@@ -266,7 +280,7 @@
  							break;
  						}
  					}
@@ -18,7 +45,7 @@
  						$rNewMd5 = md5_file($rPlaylist);
  						if ($rMD5 != $rNewMd5) {
  							$rMD5 = $rNewMd5;
-@@ -397,12 +399,12 @@
+@@ -397,12 +411,12 @@
  						// An on-demand source that cannot even be probed is a failed
  						// start like any other: honour on_demand_failure_exit here too,
  						// instead of re-probing a dead source until the cron stops it.
@@ -33,7 +60,7 @@
  						continue;
  					}
  					break;
-@@ -439,7 +441,7 @@
+@@ -439,7 +453,7 @@
  				$rFirstSegment = $rFolder . $rStreamID . '_0.ts';
  				$rSegmentSeen = false;
  				$rChecks = 0;
